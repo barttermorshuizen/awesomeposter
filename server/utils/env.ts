@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { useRuntimeConfig } from 'nitropack/runtime'
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().url(),
