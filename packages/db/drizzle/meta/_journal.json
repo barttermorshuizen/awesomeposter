@@ -1,0 +1,48 @@
+{
+  "version": "5",
+  "dialect": "pg",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1734372000000,
+      "tag": "0000_pale_rawhide_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1734372000000,
+      "tag": "0001_add_description_and_asset_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1734372000000,
+      "tag": "0002_4_knob_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1756382334600,
+      "tag": "0003_majestic_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1756382334600,
+      "tag": "0004_add_language_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1756390041446,
+      "tag": "0005_steady_zzzax",
+      "breakpoints": true
+    }
+  ]
+}
