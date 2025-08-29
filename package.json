@@ -16,12 +16,20 @@
     "lint": "eslint . --fix"
   },
   "dependencies": {
+    "@awesomeposter/db": "file:../../packages/db",
+    "@awesomeposter/shared": "file:../../packages/shared",
+    "@aws-sdk/client-s3": "^3.864.0",
+    "@aws-sdk/s3-request-presigner": "^3.873.0",
     "@mdi/font": "^7.4.47",
+    "drizzle-orm": "^0.44.4",
+    "openai": "^5.12.2",
+    "pg": "^8.16.3",
     "pinia": "^3.0.3",
     "sass": "^1.91.0",
     "vue": "^3.5.18",
     "vue-router": "^4.5.1",
-    "vuetify": "^3.9.6"
+    "vuetify": "^3.9.6",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.2",
