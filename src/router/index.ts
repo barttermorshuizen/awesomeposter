@@ -36,12 +36,7 @@ const router = createRouter({
     {
       path: '/clients',
       name: 'clients',
-      component: () => import('@/views/PlaceholderView.vue'),
-      props: () => ({
-        title: 'Clients screen',
-        icon: 'mdi-account-multiple-outline',
-        description: 'List/detail with profile data and policy settings.',
-      }),
+      component: () => import('@/views/ClientsView.vue'),
     },
     {
       path: '/assets',
