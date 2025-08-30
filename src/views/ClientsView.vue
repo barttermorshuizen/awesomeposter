@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
 
 type Client = {
   id: string
@@ -55,7 +58,7 @@ async function load() {
 onMounted(load)
 
 // UI handlers (no-op for now)
-function onNewClient(): void { /* no-op */ }
+function onNewClient(): void { router.push({ name: 'clients-new' }) }
 function onEdit(row: Client): void { void row }
 function onDelete(row: Client): void { void row }
 </script>

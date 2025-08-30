@@ -39,6 +39,11 @@ const router = createRouter({
       component: () => import('@/views/ClientsView.vue'),
     },
     {
+      path: '/clients/new',
+      name: 'clients-new',
+      component: () => import('@/views/ClientsNewView.vue'),
+    },
+    {
       path: '/assets',
       name: 'assets',
       component: () => import('@/views/PlaceholderView.vue'),
