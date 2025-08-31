@@ -44,6 +44,11 @@ const router = createRouter({
       component: () => import('@/views/ClientsNewView.vue'),
     },
     {
+      path: '/clients/:id/edit',
+      name: 'clients-edit',
+      component: () => import('@/views/ClientsEditView.vue'),
+    },
+    {
       path: '/assets',
       name: 'assets',
       component: () => import('@/views/PlaceholderView.vue'),

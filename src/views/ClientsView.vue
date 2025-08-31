@@ -59,7 +59,7 @@ onMounted(load)
 
 // UI handlers (no-op for now)
 function onNewClient(): void { router.push({ name: 'clients-new' }) }
-function onEdit(row: Client): void { void row }
+function onEdit(row: Client): void { router.push({ name: 'clients-edit', params: { id: row.id } }) }
 function onDelete(row: Client): void { void row }
 </script>
 
