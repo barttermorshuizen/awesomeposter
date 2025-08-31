@@ -15,6 +15,7 @@ const industry = ref('')
 const primaryLanguage = ref<string>('')
 const tonePreset = ref<string>('')
 const toneGuidelines = ref('')
+const specialInstructions = ref('')
 const objectivePrimary = ref('')
 const audienceSegments = ref('')
 const defaultPlatform = ref<string>('linkedin')
@@ -135,6 +136,8 @@ async function loadData() {
     const tone = p.tone || {}
     tonePreset.value = tone.preset || ''
     toneGuidelines.value = tone.guidelines || ''
+    const si = p.specialInstructions || {}
+    specialInstructions.value = si.instructions || ''
 
     const objectives = p.objectives || {}
     objectivePrimary.value = (objectives.primary ?? '') as string
@@ -193,6 +196,7 @@ async function updateClient() {
           preset: tonePreset.value,
           guidelines: toneGuidelines.value.trim() || undefined
         },
+        specialInstructions: { instructions: specialInstructions.value.trim() },
         platformPrefs: defaultPlatform.value ? { [defaultPlatform.value]: {} } : {}
       }
     }),
@@ -422,6 +426,18 @@ function onCancel() {
               v-model="toneGuidelines"
               label="Tone guidelines"
               placeholder="Clear, concise, confident."
+              variant="outlined"
+              density="comfortable"
+              rows="3"
+              auto-grow
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12">
+            <v-textarea
+              v-model="specialInstructions"
+              label="Special instructions for the agent"
+              placeholder="Any constraints, brand do's/don'ts, must-include or must-avoid phrases, compliance notes, etc."
               variant="outlined"
               density="comfortable"
               rows="3"

@@ -14,6 +14,7 @@ const industry = ref('')
 const primaryLanguage = ref<string>('')
 const tonePreset = ref<string>('')
 const toneGuidelines = ref('')
+const specialInstructions = ref('')
 const objectivePrimary = ref('')
 const audienceSegments = ref('')
 const defaultPlatform = ref<string>('linkedin')
@@ -129,6 +130,7 @@ async function upsertProfile(clientId: string) {
   const objectives = { primary: objectivePrimary.value.trim() }
   const audiences = { segments: audienceSegments.value.split(',').map(s => s.trim()).filter(Boolean) }
   const tone = { preset: tonePreset.value, guidelines: toneGuidelines.value.trim() || undefined }
+  const specialInstructionsObj = { instructions: specialInstructions.value.trim() }
   const platformPrefs = defaultPlatform.value ? { [defaultPlatform.value]: {} } as Record<string, unknown> : {}
 
   const res = await fetch(`/api/clients/${clientId}/profile`, {
@@ -139,6 +141,7 @@ async function upsertProfile(clientId: string) {
       objectives,
       audiences,
       tone,
+      specialInstructions: specialInstructionsObj,
       platformPrefs,
     }),
   })
@@ -323,6 +326,18 @@ function onCancel() {
               v-model="toneGuidelines"
               label="Tone guidelines"
               placeholder="Clear, concise, confident."
+              variant="outlined"
+              density="comfortable"
+              rows="3"
+              auto-grow
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12">
+            <v-textarea
+              v-model="specialInstructions"
+              label="Special instructions for the agent"
+              placeholder="Any constraints, brand do's/don'ts, must-include or must-avoid phrases, compliance notes, etc."
               variant="outlined"
               density="comfortable"
               rows="3"
