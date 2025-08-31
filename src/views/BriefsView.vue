@@ -20,6 +20,7 @@ const error = ref<string | null>(null)
 const items = ref<Brief[]>([])
 const search = ref('')
 const router = useRouter()
+const approvingId = ref<string | null>(null)
 
 const headers = [
   { title: 'Title', key: 'title' },
@@ -68,6 +69,29 @@ onMounted(load)
 function onNewBrief(): void { router.push({ name: 'briefs-new' }) }
 function onEdit(row: Brief): void { router.push({ name: 'briefs-edit', params: { id: row.id } }) }
 function onDelete(row: Brief): void { alert(`Delete Brief ${row.id}: not implemented yet`) }
+
+async function onApprove(row: Brief): Promise<void> {
+  if (row.status !== 'draft') return
+  approvingId.value = row.id
+  try {
+    const res = await fetch(`/api/briefs/${row.id}/approve`, {
+      method: 'POST',
+      headers: { accept: 'application/json' }
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data?.ok !== true) {
+      throw new Error(data?.statusMessage || data?.error || 'Failed to approve brief')
+    }
+    // Update local row status without refetching all items
+    items.value = items.value.map((b) =>
+      b.id === row.id ? { ...b, status: 'approved', updatedAt: new Date().toISOString() } : b
+    )
+  } catch (e: unknown) {
+    alert((e as Error)?.message || 'Unknown error approving brief')
+  } finally {
+    approvingId.value = null
+  }
+}
 
 function statusColor(status?: string | null): string {
   switch (status) {
@@ -164,6 +188,12 @@ function statusColor(status?: string | null): string {
                   prepend-icon="mdi-pencil-outline"
                   title="Edit"
                   @click="onEdit(item as any)"
+                />
+                <v-list-item
+                  prepend-icon="mdi-check-circle-outline"
+                  title="Approve"
+                  :disabled="(item as any).status !== 'draft' || approvingId === (item as any).id"
+                  @click="onApprove(item as any)"
                 />
                 <v-list-item
                   prepend-icon="mdi-delete-outline"

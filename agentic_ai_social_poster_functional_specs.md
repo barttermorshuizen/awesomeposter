@@ -160,6 +160,8 @@ Define the functional requirements, use cases, and UX design for the Agentic AI 
 3. Set exploration vs. exploitation parameters.
 4. Define knob optimization priorities.
 
+
+
 ## 5. UX Design
 ### 5.1 Navigation
 - **Sidebar:** Dashboard, Briefs, Inbox, Clients, Assets, Settings, Analytics.
