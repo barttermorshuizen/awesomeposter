@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 
 type Brief = {
   id: string
@@ -18,6 +19,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const items = ref<Brief[]>([])
 const search = ref('')
+const router = useRouter()
 
 const headers = [
   { title: 'Title', key: 'title' },
@@ -63,7 +65,7 @@ async function load() {
 onMounted(load)
 
 // No-op handlers for now
-function onNewBrief(): void { alert('New Brief: not implemented yet') }
+function onNewBrief(): void { router.push({ name: 'briefs-new' }) }
 function onEdit(row: Brief): void { alert(`Edit Brief ${row.id}: not implemented yet`) }
 function onDelete(row: Brief): void { alert(`Delete Brief ${row.id}: not implemented yet`) }
 
