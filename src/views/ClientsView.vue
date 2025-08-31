@@ -18,6 +18,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const items = ref<Client[]>([])
 const search = ref('')
+const deletingId = ref<string | null>(null)
 
 const headers = [
   { title: 'Name', key: 'name' },
@@ -60,7 +61,43 @@ onMounted(load)
 // UI handlers (no-op for now)
 function onNewClient(): void { router.push({ name: 'clients-new' }) }
 function onEdit(row: Client): void { router.push({ name: 'clients-edit', params: { id: row.id } }) }
-function onDelete(row: Client): void { void row }
+async function onDelete(row: Client) {
+  if (!row?.id) return
+  const confirmed = confirm('Delete this client? This will permanently remove all related data (briefs, assets, posts, tasks).')
+  if (!confirmed) return
+  deletingId.value = row.id
+  try {
+    const res = await fetch(`/api/clients/${row.id}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' }
+    })
+    if (!res.ok) {
+      const ctype = res.headers.get('content-type') || ''
+      let message = `HTTP ${res.status}`
+      if (ctype.includes('application/json')) {
+        const data = await res.json().catch(() => ({}))
+        message = (data?.statusMessage || data?.message || data?.error || message)
+      } else {
+        const text = await res.text().catch(() => '')
+        if (text) message += `: ${text.slice(0, 120)}`
+      }
+      throw new Error(message)
+    }
+    // Drain body to free stream
+    const ctypeOk = res.headers.get('content-type') || ''
+    if (ctypeOk.includes('application/json')) {
+      await res.json().catch(() => ({}))
+    } else {
+      await res.text().catch(() => '')
+    }
+    // Remove from local list
+    items.value = items.value.filter(i => i.id !== row.id)
+  } catch (e: unknown) {
+    alert((e as Error)?.message || 'Failed to delete client')
+  } finally {
+    deletingId.value = null
+  }
+}
 </script>
 
 <template>
@@ -150,6 +187,7 @@ function onDelete(row: Client): void { void row }
                 <v-list-item
                   prepend-icon="mdi-delete-outline"
                   title="Delete"
+                  :disabled="deletingId === (item as any).id"
                   @click="onDelete(item as any)"
                 />
               </v-list>
