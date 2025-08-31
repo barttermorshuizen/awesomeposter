@@ -160,7 +160,13 @@ Define the functional requirements, use cases, and UX design for the Agentic AI 
 3. Set exploration vs. exploitation parameters.
 4. Define knob optimization priorities.
 
-
+### UC12: Create Post
+**Actor:** Digital Marketeer  
+**Trigger:** User wants to create a post for an approved brief   
+**Steps:**
+1. System puts the agents to work
+2. System shows main elements of brief and progress of agents while working
+3. System shows results when finished working
 
 ## 5. UX Design
 ### 5.1 Navigation

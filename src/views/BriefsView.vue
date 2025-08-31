@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import CreatePostPopup from '@/components/CreatePostPopup.vue'
 
 type Brief = {
   id: string
@@ -21,6 +22,10 @@ const items = ref<Brief[]>([])
 const search = ref('')
 const router = useRouter()
 const approvingId = ref<string | null>(null)
+
+const createPostOpen = ref(false)
+const selectedBrief = ref<Brief | null>(null)
+function onCreatePost(row: Brief): void { selectedBrief.value = row; createPostOpen.value = true }
 
 const headers = [
   { title: 'Title', key: 'title' },
@@ -185,6 +190,11 @@ function statusColor(status?: string | null): string {
               </template>
               <v-list density="comfortable">
                 <v-list-item
+                  prepend-icon="mdi-robot-outline"
+                  title="Create post"
+                  @click="onCreatePost(item as any)"
+                />
+                <v-list-item
                   prepend-icon="mdi-pencil-outline"
                   title="Edit"
                   @click="onEdit(item as any)"
@@ -218,6 +228,11 @@ function statusColor(status?: string | null): string {
         </v-data-table>
       </v-card-text>
     </v-card>
+
+    <CreatePostPopup
+      v-model="createPostOpen"
+      :brief="selectedBrief ? { id: selectedBrief.id, clientId: selectedBrief.clientId, title: selectedBrief.title, objective: selectedBrief.objective, audienceId: selectedBrief.audienceId ?? null } : null"
+    />
   </v-container>
 </template>
 
