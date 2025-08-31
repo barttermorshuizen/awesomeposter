@@ -66,7 +66,7 @@ onMounted(load)
 
 // No-op handlers for now
 function onNewBrief(): void { router.push({ name: 'briefs-new' }) }
-function onEdit(row: Brief): void { alert(`Edit Brief ${row.id}: not implemented yet`) }
+function onEdit(row: Brief): void { router.push({ name: 'briefs-edit', params: { id: row.id } }) }
 function onDelete(row: Brief): void { alert(`Delete Brief ${row.id}: not implemented yet`) }
 
 function statusColor(status?: string | null): string {

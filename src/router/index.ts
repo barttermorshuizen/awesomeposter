@@ -24,6 +24,11 @@ const router = createRouter({
       component: () => import('@/views/BriefsNewView.vue'),
     },
     {
+      path: '/briefs/:id/edit',
+      name: 'briefs-edit',
+      component: () => import('@/views/BriefsEditView.vue'),
+    },
+    {
       path: '/inbox',
       name: 'inbox',
       component: () => import('@/views/PlaceholderView.vue'),
