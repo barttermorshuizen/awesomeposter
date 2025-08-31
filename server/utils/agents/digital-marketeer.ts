@@ -24,8 +24,6 @@ export class DigitalMarketeerAgent {
       const images = assets.filter(a => a.type === 'image')
       const documents = assets.filter(a => a.type === 'document')
       const videos = assets.filter(a => a.type === 'video')
-      const _audio = assets.filter(a => a.type === 'audio')
-      const _other = assets.filter(a => !['image', 'document', 'video', 'audio'].includes(a.type))
 
       // Analyze asset quality and capabilities
       const assetQuality = {
@@ -46,14 +44,14 @@ export class DigitalMarketeerAgent {
       // Determine achievable formats
       const formatFeasibility = this.assessFormatFeasibility(assetQuality)
       const achievableFormats = Object.entries(formatFeasibility)
-        .filter(([_, assessment]) => assessment.feasible)
+        .filter(([, assessment]) => assessment.feasible)
         .map(([format]) => format as FormatType)
 
       // Recommend best format
       const recommendedFormat = this.recommendBestFormat(assetQuality, achievableFormats)
 
       // Generate recommendations
-      const recommendations = this.generateAssetRecommendations(assetQuality, formatFeasibility)
+      const recommendations = this.generateAssetRecommendations(assetQuality)
 
       return {
         availableAssets: assets,
@@ -170,8 +168,7 @@ export class DigitalMarketeerAgent {
       images: { count: number; quality: string };
       documents: { count: number; hasSlides: boolean };
       videos: { count: number; duration?: number };
-    }, 
-    _formatFeasibility: Record<string, unknown>
+    }
   ): string[] {
     const recommendations: string[] = []
     
@@ -726,10 +723,16 @@ Recommended Format: ${assetAnalysis.recommendedFormat}
 - Pain Points: ${Array.isArray(clientProfile.audiencesJson?.painPoints) && clientProfile.audiencesJson.painPoints.length > 0 ? clientProfile.audiencesJson.painPoints.join(', ') : 'Information overload, time constraints'}
 - Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
-- Special Instructions: ${clientProfile.specialInstructionsJson?.instructions || 'Focus on actionable insights and professional tone'}
-- Platform Preferences: ${clientProfile.platformPrefsJson?.primary || 'LinkedIn'}, ${clientProfile.platformPrefsJson?.secondary || 'X (Twitter)'}
-- Focus: ${clientProfile.platformPrefsJson?.focus || 'Professional networking and thought leadership'}
-- Guardrails: Banned topics (${Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? clientProfile.guardrailsJson.banned.join(', ') : 'None'}), Sensitive topics (${Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? clientProfile.guardrailsJson.sensitive.join(', ') : 'None'}), Required elements (${Array.isArray(clientProfile.guardrailsJson?.required) && clientProfile.guardrailsJson.required.length > 0 ? clientProfile.guardrailsJson.required.join(', ') : 'Professional tone, clear messaging'})` : 'Client Profile: Not provided';
+${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
+${clientProfile.platformPrefsJson?.primary || clientProfile.platformPrefsJson?.secondary ? `- Platform Preferences: ${[clientProfile.platformPrefsJson?.primary, clientProfile.platformPrefsJson?.secondary].filter(Boolean).join(', ')}` : ''}
+${clientProfile.platformPrefsJson?.focus ? `- Focus: ${clientProfile.platformPrefsJson.focus}` : ''}
+${(() => {
+  const banned = Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? `Banned topics (${clientProfile.guardrailsJson.banned.join(', ')})` : '';
+  const sensitive = Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? `Sensitive topics (${clientProfile.guardrailsJson.sensitive.join(', ')})` : '';
+  const required = Array.isArray(clientProfile.guardrailsJson?.required) && clientProfile.guardrailsJson.required.length > 0 ? `Required elements (${clientProfile.guardrailsJson.required.join(', ')})` : '';
+  const parts = [banned, sensitive, required].filter(Boolean);
+  return parts.length ? `- Guardrails: ${parts.join(', ')}` : '';
+})()}` : 'Client Profile: Not provided';
 
     return `You are a digital marketing strategist agent.  
 Your task is to design a **tailored social media strategy** for the given client and brief.  

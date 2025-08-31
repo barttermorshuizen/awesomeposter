@@ -678,10 +678,10 @@ ${clientProfile ? `Client Profile:
 - Pain Points: ${Array.isArray(clientProfile.audiencesJson?.painPoints) && clientProfile.audiencesJson.painPoints.length > 0 ? clientProfile.audiencesJson.painPoints.join(', ') : 'Information overload, time constraints'}
 - Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
-- Special Instructions: ${clientProfile.specialInstructionsJson?.instructions || 'Focus on actionable insights and professional tone'}
-- Platform Preferences: ${clientProfile.platformPrefsJson?.primary || 'LinkedIn'}, ${clientProfile.platformPrefsJson?.secondary || 'X (Twitter)'}
-- Focus: ${clientProfile.platformPrefsJson?.focus || 'Professional networking and thought leadership'}
-- Guardrails: Banned topics (${Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? clientProfile.guardrailsJson.banned.join(', ') : 'None'}), Sensitive topics (${Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? clientProfile.guardrailsJson.sensitive.join(', ') : 'None'}), Required elements (${Array.isArray(clientProfile.guardrailsJson?.required) && clientProfile.guardrailsJson.required.length > 0 ? clientProfile.guardrailsJson.required.join(', ') : 'Professional tone, clear messaging'})` : 'Client Profile: Not provided'}
+${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
+${clientProfile.platformPrefsJson?.primary || clientProfile.platformPrefsJson?.secondary ? `- Platform Preferences: ${[clientProfile.platformPrefsJson?.primary, clientProfile.platformPrefsJson?.secondary].filter(Boolean).join(', ')}` : ''}
+${clientProfile.platformPrefsJson?.focus ? `- Focus: ${clientProfile.platformPrefsJson.focus}` : ''}
+${(() => { const banned = Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? `Banned topics (${clientProfile.guardrailsJson.banned.join(', ')})` : ''; const sensitive = Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? `Sensitive topics (${clientProfile.guardrailsJson.sensitive.join(', ')})` : ''; const required = Array.isArray(clientProfile.guardrailsJson?.required) && clientProfile.guardrailsJson.required.length > 0 ? `Required elements (${clientProfile.guardrailsJson.required.join(', ')})` : ''; const parts = [banned, sensitive, required].filter(Boolean); return parts.length ? `- Guardrails: ${parts.join(', ')}` : ''; })()}` : 'Client Profile: Not provided'}
 
 Make the first line the headline (this is also the hook). After the headline, insert a single blank line, then the body. Do not include separate headline options. Provide a JSON response with:
 {
@@ -735,8 +735,8 @@ ${clientProfile ? `Client Profile Context:
 - Target Audience: ${clientProfile.audiencesJson?.target || 'General professional audience'}
 - Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
-- Special Instructions: ${clientProfile.specialInstructionsJson?.instructions || 'Focus on actionable insights and professional tone'}
-- Guardrails: Banned topics (${Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? clientProfile.guardrailsJson.banned.join(', ') : 'None'}), Sensitive topics (${Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? clientProfile.guardrailsJson.sensitive.join(', ') : 'None'})` : 'Client Profile: Not provided'}
+${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
+${(() => { const banned = Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? `Banned topics (${clientProfile.guardrailsJson.banned.join(', ')})` : ''; const sensitive = Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? `Sensitive topics (${clientProfile.guardrailsJson.sensitive.join(', ')})` : ''; const parts = [banned, sensitive].filter(Boolean); return parts.length ? `- Guardrails: ${parts.join(', ')}` : ''; })()}` : 'Client Profile: Not provided'}
 
 Feedback: ${instruction.feedback}
 Suggested Changes: ${Array.isArray(instruction.suggestedChanges) ? instruction.suggestedChanges.join(', ') : 'Not specified'}
