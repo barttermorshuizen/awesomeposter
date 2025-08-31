@@ -16,12 +16,7 @@ const router = createRouter({
     {
       path: '/briefs',
       name: 'briefs',
-      component: () => import('@/views/PlaceholderView.vue'),
-      props: () => ({
-        title: 'Briefs screen',
-        icon: 'mdi-file-document-edit-outline',
-        description: 'Table with filters, row/bulk actions, knob settings display.',
-      }),
+      component: () => import('@/views/BriefsView.vue'),
     },
     {
       path: '/inbox',
