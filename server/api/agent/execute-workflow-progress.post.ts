@@ -1,6 +1,36 @@
+import { defineEventHandler, readBody, createError } from 'h3'
 import { AgentOrchestrator } from '../../utils/agents/orchestrator'
-import type { AgentState } from '@awesomeposter/shared'
+import type { AgentState, Asset as SharedAsset, AssetType } from '@awesomeposter/shared'
 import { workflowStatuses } from './workflow-status.get'
+import { getDb } from '../../utils/db'
+import { assets, briefs, eq } from '@awesomeposter/db'
+
+// Minimal row shape used for enrichment from DB
+type AssetRow = {
+  id: string
+  filename?: string | null
+  originalName?: string | null
+  url: string
+  type?: string | null
+  mimeType?: string | null
+  fileSize?: number | null
+  metaJson?: Record<string, unknown> | null
+  briefId?: string | null
+  clientId?: string | null
+}
+
+
+const toAssetType = (rawType?: string | null, mime?: string | null): AssetType => {
+  const v = (rawType || '').toLowerCase()
+  if (v === 'image' || v === 'document' || v === 'video' || v === 'audio' || v === 'other') {
+    return v as AssetType
+  }
+  if (mime?.startsWith('image/')) return 'image'
+  if (mime?.startsWith('video/')) return 'video'
+  if (mime?.startsWith('audio/')) return 'audio'
+  if (mime?.includes('pdf') || mime?.includes('presentation') || mime?.startsWith('application/')) return 'document'
+  return 'other'
+}
 
 export default defineEventHandler(async (event) => {
   try {
@@ -14,12 +44,67 @@ export default defineEventHandler(async (event) => {
     }
 
     const state: AgentState = body.state
+
+    // Enrich assets in state if missing and a brief id is provided
+    if ((!state.inputs.assets || state.inputs.assets.length === 0) && state.inputs.brief?.id) {
+      try {
+        const db = getDb()
+        const briefId = state.inputs.brief.id
+        console.log(`🔍 Enriching state with assets for brief ${briefId} (progressive workflow)...`)
+        
+        // 1) Brief-scoped assets
+        const rowsBrief = await db.select().from(assets).where(eq(assets.briefId, briefId))
+
+        // 2) Also include client brand assets (briefId null) for this brief's client
+        let rowsClient: AssetRow[] = []
+        try {
+          const [briefRow] = await db.select().from(briefs).where(eq(briefs.id, briefId)).limit(1)
+          const clientId = (briefRow as { clientId?: string | null } | undefined)?.clientId
+          if (clientId) {
+            const allClientAssets = await db.select().from(assets).where(eq(assets.clientId, clientId)) as AssetRow[]
+            rowsClient = allClientAssets.filter(a => a.briefId === null || a.briefId === undefined)
+          }
+        } catch (innerErr) {
+          console.warn('⚠️ Could not fetch client brand assets for enrichment', innerErr)
+        }
+
+        // 3) Combine (brief assets + client brand assets), avoid duplicates by id
+        const seen = new Set<string>()
+        const combined = [...rowsBrief, ...rowsClient].filter(a => {
+          if (!a?.id) return false
+          if (seen.has(a.id)) return false
+          seen.add(a.id)
+          return true
+        })
+
+        const transformedAssets: SharedAsset[] = (combined as AssetRow[]).map((asset) => ({
+          id: asset.id,
+          filename: asset.filename || '',
+          originalName: asset.originalName || '',
+          url: asset.url,
+          type: toAssetType(asset.type, asset.mimeType),
+          mimeType: asset.mimeType || '',
+          fileSize: asset.fileSize || 0,
+          metaJson: asset.metaJson || {}
+        }))
+        
+        state.inputs.assets = transformedAssets
+        console.log(`✅ Enriched state with ${transformedAssets.length} assets (brief + brand)`)
+        console.log('🔍 Asset details:', transformedAssets.map(a => ({ id: a.id, filename: a.filename, type: a.type, mimeType: a.mimeType })))
+      } catch (err) {
+        console.warn('⚠️ Failed to enrich assets for brief; continuing without assets', err)
+        state.inputs.assets = []
+      }
+    }
+
     const orchestrator = new AgentOrchestrator()
     
     // Log the received state for debugging
     console.log('🔍 Received agent state:', {
       hasBrief: !!state.inputs?.brief,
       hasClientProfile: !!state.inputs?.clientProfile,
+      hasAssets: !!state.inputs?.assets && state.inputs.assets.length > 0,
+      assetsCount: state.inputs?.assets?.length || 0,
       clientProfileKeys: state.inputs?.clientProfile ? Object.keys(state.inputs.clientProfile) : 'none',
       objectivesKeys: state.inputs?.clientProfile?.objectivesJson ? Object.keys(state.inputs.clientProfile.objectivesJson) : 'none',
       audiencesKeys: state.inputs?.clientProfile?.audiencesJson ? Object.keys(state.inputs.clientProfile.audiencesJson) : 'none',

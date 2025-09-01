@@ -198,6 +198,15 @@ export class DigitalMarketeerAgent {
    */
   async planStrategy(state: AgentState): Promise<AgentResponse> {
     try {
+      // Debug: log asset presence before analysis
+      console.log('🧩 planStrategy received assets:', {
+        hasAssetsArray: !!state.inputs?.assets,
+        assetsCount: state.inputs?.assets?.length || 0,
+        sample: (state.inputs?.assets || []).slice(0, 2).map(a => ({
+          id: a.id, filename: a.filename, type: a.type, mimeType: a.mimeType
+        }))
+      })
+
       // First, analyze available assets if they exist
       let assetAnalysis: AssetAnalysis | undefined
       if (state.inputs.assets && state.inputs.assets.length > 0) {

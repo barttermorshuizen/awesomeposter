@@ -1,10 +1,9 @@
 import { DigitalMarketeerAgent } from './digital-marketeer'
 import { CopywriterAgent } from './copywriter'
-import type { 
-  AgentState, 
-  Draft, 
-  Knobs,
-  Asset
+import type {
+  AgentState,
+  Draft,
+  Knobs
 } from '@awesomeposter/shared'
 import { agentThresholds } from '@awesomeposter/shared'
 
@@ -17,27 +16,6 @@ export class AgentOrchestrator {
     this.copywriter = new CopywriterAgent()
   }
 
-  /**
-   * Fetch assets for a specific brief
-   */
-  private async fetchBriefAssets(briefId: string): Promise<Asset[]> {
-    try {
-      console.log(`🔍 Fetching assets for brief ${briefId}...`)
-      
-      // Make API call to fetch assets
-      const response = await $fetch(`/api/briefs/${briefId}/assets`)
-      if (response.ok && response.assets) {
-        console.log(`✅ Fetched ${response.assets.length} assets for brief ${briefId}`)
-        return response.assets
-      }
-      
-      console.log('⚠️ No assets found for brief')
-      return []
-    } catch (error) {
-      console.error('Error fetching brief assets:', error)
-      return []
-    }
-  }
 
   /**
    * Execute the complete agent workflow with 4-knob optimization
@@ -51,18 +29,7 @@ export class AgentOrchestrator {
       let state = { ...initialState }
       let revisionCycle = 0
 
-      // Step 0: Fetch assets if not provided and briefId exists
-      if (!state.inputs.assets && state.inputs.brief?.id) {
-        console.log('🔍 Fetching assets for brief...')
-        try {
-          const assets = await this.fetchBriefAssets(state.inputs.brief.id)
-          state.inputs.assets = assets
-          console.log(`✅ Fetched ${assets.length} assets for brief`)
-        } catch (error) {
-          console.warn('⚠️ Failed to fetch assets, proceeding without assets:', error)
-          state.inputs.assets = []
-        }
-      }
+      // Assets are expected to be provided via API enrichment (state.inputs.assets)
 
       // Step 1: Plan Strategy with 4-knob optimization
       console.log('🔄 Planning strategy with 4-knob optimization...')

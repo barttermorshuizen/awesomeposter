@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import type { AgentState } from '@awesomeposter/shared'
+import type { AgentState, Asset } from '@awesomeposter/shared'
 
 type BriefInput = {
   id: string
@@ -132,6 +132,27 @@ async function runAgentWorkflow() {
       }
     }
 
+    // 2.1) Enrich with brief assets so server agents have assets immediately
+    try {
+      const assetsRes = await fetch(`/api/briefs/${props.brief.id}/assets`, {
+        headers: { accept: 'application/json' }
+      })
+      const assetsData = await assetsRes.json().catch(() => ({}))
+      if (assetsRes.ok && Array.isArray(assetsData?.assets)) {
+        const briefAssets = assetsData.assets as Asset[]
+        state.inputs.assets = briefAssets
+        console.log('🧩 Attached assets to agent state', {
+          count: briefAssets.length,
+          sample: briefAssets.slice(0, 2).map((a: Asset) => ({
+            id: a.id, filename: a.filename, type: a.type, mimeType: a.mimeType
+          }))
+        })
+      } else {
+        console.warn('⚠️ Could not load brief assets for enrichment', assetsData)
+      }
+    } catch (err) {
+      console.warn('⚠️ Error loading brief assets for enrichment', err)
+    }
     // 3) Start progressive workflow
     const startRes = await fetch('/api/agent/execute-workflow-progress', {
       method: 'POST',
