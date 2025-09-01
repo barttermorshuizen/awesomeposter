@@ -108,17 +108,36 @@ async function runAgentWorkflow() {
       throw new Error(profData?.statusMessage || profData?.error || 'Failed to load client profile')
     }
 
-    // 2) Build minimal agent state from brief + profile
+    // 2) Load full brief to ensure description/objective/title are present
+    loadingStep.value = 'Loading brief details...'
+    const briefRes = await fetch(`/api/briefs/${props.brief.id}`, {
+      headers: { accept: 'application/json' }
+    })
+    const briefData = await briefRes.json().catch(() => ({}))
+    if (!briefRes.ok || briefData?.ok !== true || !briefData?.brief) {
+      throw new Error(briefData?.statusMessage || briefData?.error || 'Failed to load brief details')
+    }
+    const briefFull = briefData.brief as {
+      id: string
+      title?: string | null
+      description?: string | null
+      objective?: string | null
+      audienceId?: string | null
+    }
+
+    // 3) Build agent state from enriched brief + profile
     loadingStep.value = 'Starting AI workflow...'
     const state: AgentState = {
-      objective: props.brief.objective || 'Create high-quality social post variants',
+      objective: (briefFull.objective ?? props.brief.objective) || 'Create high-quality social post variants',
       inputs: {
         brief: {
-          id: props.brief.id,
-          title: props.brief.title || '',
-          description: props.brief.description || '',
-          objective: props.brief.objective || '',
-          audienceId: props.brief.audienceId || undefined
+          id: briefFull.id,
+          title: (briefFull.title ?? props.brief.title) || '',
+          description: (typeof briefFull.description === 'string' && briefFull.description.trim().length > 0)
+            ? briefFull.description
+            : (props.brief.description || ''),
+          objective: (briefFull.objective ?? props.brief.objective) || '',
+          audienceId: (briefFull.audienceId ?? props.brief.audienceId) || undefined
         },
         clientProfile: {
           primaryCommunicationLanguage: profData.profile?.primaryLanguage,
