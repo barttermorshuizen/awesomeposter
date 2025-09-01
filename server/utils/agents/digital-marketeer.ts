@@ -533,8 +533,8 @@ export class DigitalMarketeerAgent {
       messages: [
         {
           role: 'system',
-          content: `You are evaluating social media content with 4-knob optimization. Score the given post on multiple dimensions
-          and provide a composite score. Consider how well the content aligns with the knob settings.
+          content: `You are evaluating social media content with 4-knob optimization. Score the given post on these dimensions
+          and provide a score for each knob how well the content aligns with that knob setting.
           Always respond with valid JSON.`
         },
         {
