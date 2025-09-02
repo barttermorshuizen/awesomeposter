@@ -8,8 +8,13 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:app": "vite",
     "dev:api": "PORT=3001 nitropack dev",
+    "dev:agents": "cd packages/agents-server && npm run dev",
+    "dev:both": "run-p dev:app dev:agents",
+    "dev:all": "run-p dev:app dev:api dev:agents",
     "build": "run-p type-check \"build-only {@}\" --",
+    "build:agents": "cd packages/agents-server && npm run build",
     "build:api": "nitropack build",
     "start:api": "node .output/server/index.mjs",
     "preview": "vite preview",
