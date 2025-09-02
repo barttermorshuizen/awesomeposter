@@ -2,6 +2,8 @@ import { AgentRuntime } from './agent-runtime'
 import { StrategyManagerAgent } from '../agents/strategy-manager'
 import { ContentGeneratorAgent } from '../agents/content-generator'
 import { QualityAssuranceAgent } from '../agents/quality-assurance'
+import { registerIOTools } from '../tools/io'
+import { registerStrategyTools } from '../tools/strategy'
 
 type Agents = {
   runtime: AgentRuntime
@@ -15,6 +17,9 @@ let cached: Agents | null = null
 export function getAgents(): Agents {
   if (cached) return cached
   const runtime = new AgentRuntime()
+  // Register core IO tools on first initialization
+  registerIOTools(runtime)
+  registerStrategyTools(runtime)
   cached = {
     runtime,
     strategy: new StrategyManagerAgent(runtime),
@@ -23,4 +28,3 @@ export function getAgents(): Agents {
   }
   return cached
 }
-

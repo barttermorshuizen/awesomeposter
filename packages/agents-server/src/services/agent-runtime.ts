@@ -40,7 +40,10 @@ export class AgentRuntime {
     return schema.parse(JSON.parse(raw))
   }
 
-  async runWithTools(messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>) {
+  async runWithTools(
+    messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+  ) {
     const toolSpecs = this.tools.map((t) => ({
       type: 'function' as const,
       function: {
@@ -53,6 +56,7 @@ export class AgentRuntime {
     const convo: any[] = [...messages]
 
     while (true) {
+      const turnStart = Date.now()
       const res = await this.client.chat.completions.create({
         model: this.model,
         messages: convo as any,
@@ -63,23 +67,38 @@ export class AgentRuntime {
       const msg = res.choices[0]?.message
       if (!msg) throw new Error('No message from model')
 
+      const totalTokens = (res as any).usage?.total_tokens
+      if (onEvent && typeof totalTokens === 'number') {
+        onEvent({ type: 'metrics', tokens: totalTokens, durationMs: Date.now() - turnStart })
+      }
+
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
         return msg
       }
+
+      // Important: first append the assistant message with tool_calls,
+      // then append each corresponding tool result message.
+      convo.push({ role: 'assistant', tool_calls: msg.tool_calls, content: msg.content || null } as any)
 
       for (const call of msg.tool_calls) {
         const tool = this.tools.find((t) => t.name === call.function.name)
         if (!tool) continue
         const args = JSON.parse(call.function.arguments || '{}')
-        const result = await tool.handler(args)
+        const started = Date.now()
+        onEvent?.({ type: 'tool_call', name: tool.name, args })
+        let result: any
+        try {
+          result = await tool.handler(args)
+        } catch (err: any) {
+          result = { error: true, message: err?.message || 'Tool handler error' }
+        }
         convo.push({
           role: 'tool',
           tool_call_id: call.id,
           content: typeof result === 'string' ? result : JSON.stringify(result)
         } as any)
+        onEvent?.({ type: 'tool_result', name: tool.name, result, durationMs: Date.now() - started })
       }
-
-      convo.push({ role: 'assistant', tool_calls: msg.tool_calls, content: msg.content || null } as any)
     }
   }
 

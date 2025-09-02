@@ -22,6 +22,12 @@ export class OrchestratorAgent {
       { role: 'system', content: system },
       { role: 'user', content: req.objective }
     ]
+    if (req.briefId) {
+      messages.push({
+        role: 'user',
+        content: `Context: briefId=${req.briefId}. You may use tools like io_get_brief, io_list_assets, io_get_client_profile if needed.`
+      })
+    }
 
     try {
       if (req.mode === 'chat') {
@@ -38,13 +44,28 @@ export class OrchestratorAgent {
         return { final: { message: full }, metrics: { durationMs } }
       }
 
-      // Applicative mode (structured)
+      // Applicative mode (structured via tools loop)
       onEvent({ type: 'phase', phase: 'planning', message: 'Structured run started', correlationId: cid })
-      const result = await this.runtime.runStructured(AppResultSchema, messages)
+      const finalMsg: any = await this.runtime.runWithTools(messages, (e) => {
+        if (e.type === 'tool_call') {
+          onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
+        } else if (e.type === 'tool_result') {
+          onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
+        } else if (e.type === 'metrics') {
+          onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
+        }
+      })
+      // Try to parse JSON result per AppResultSchema; fallback to wrapping text
+      let parsed: any
+      try {
+        parsed = AppResultSchema.parse(JSON.parse(finalMsg?.content || '{}'))
+      } catch {
+        parsed = { result: finalMsg?.content || '' }
+      }
       const durationMs = Date.now() - start
-      onEvent({ type: 'complete', data: result, durationMs, correlationId: cid })
+      onEvent({ type: 'complete', data: parsed, durationMs, correlationId: cid })
       log.info('orchestrator_run_complete', { cid, mode: 'app', durationMs })
-      return { final: result, metrics: { durationMs } }
+      return { final: parsed, metrics: { durationMs } }
     } catch (error: any) {
       onEvent({ type: 'error', message: error?.message || 'Unknown error', correlationId: cid })
       log.error('orchestrator_run_error', { cid, err: error?.message })
