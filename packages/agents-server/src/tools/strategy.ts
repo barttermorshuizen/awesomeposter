@@ -1,6 +1,7 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import type { Asset, FormatType } from '@awesomeposter/shared'
 import { getDb, assets as assetsTable, eq } from '@awesomeposter/db'
+import { z } from 'zod'
 
 export function analyzeAssetsLocal(assets: Asset[]) {
   const images = assets.filter((a) => a.type === 'image')
@@ -63,14 +64,10 @@ export function registerStrategyTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'strategy_analyze_assets',
     description: 'Analyze provided assets to determine feasible formats and a recommendation',
-    parameters: {
-      type: 'object',
-      properties: {
-        assets: { type: 'array', items: { type: 'object' } },
-        briefId: { type: 'string' }
-      },
-      required: []
-    },
+    parameters: z.object({
+      assets: z.array(z.any()).optional(),
+      briefId: z.string().optional()
+    }),
     handler: async ({ assets, briefId }: { assets?: Asset[]; briefId?: string }) => {
       let sourceAssets: Asset[] | undefined = assets
       if ((!sourceAssets || !Array.isArray(sourceAssets)) && briefId) {
@@ -98,16 +95,12 @@ export function registerStrategyTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'strategy_plan_knobs',
     description: 'Plan 4-knob configuration based on objective and asset analysis',
-    parameters: {
-      type: 'object',
-      properties: {
-        objective: { type: 'string' },
-        assetAnalysis: { type: 'object' },
-        clientPolicy: { type: 'object' },
-        briefId: { type: 'string' }
-      },
-      required: ['objective']
-    },
+    parameters: z.object({
+      objective: z.string(),
+      assetAnalysis: z.any().optional(),
+      clientPolicy: z.any().optional(),
+      briefId: z.string().optional()
+    }),
     handler: async ({ objective, assetAnalysis, clientPolicy, briefId }: { objective: string; assetAnalysis?: any; clientPolicy?: any; briefId?: string }) => {
       let analysis = assetAnalysis
       if (!analysis && briefId) {

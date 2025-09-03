@@ -3,10 +3,12 @@
   "compilerOptions": {
     "outDir": "./.tsbuild",
     "rootDir": ".",
+    "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,
+    "noImplicitAny": false,
     "types": [
       "node"
     ]
@@ -20,4 +22,3 @@
     ".output"
   ]
 }
-

@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z, ZodObject } from 'zod'
 import { Agent as OAAgent, Runner, tool as agentTool } from '@openai/agents'
 
 type ToolHandler = (args: any) => Promise<any> | any
@@ -6,7 +6,8 @@ type ToolHandler = (args: any) => Promise<any> | any
 export type RegisteredTool = {
   name: string
   description: string
-  parameters: Record<string, any>
+  // Prefer Zod schemas; fallback to JSON schema objects during migration
+  parameters: z.ZodTypeAny | Record<string, any>
   handler: ToolHandler
 }
 
@@ -70,7 +71,10 @@ export class AgentRuntime {
     // If only text is needed we could do: stream.toTextStream(). But we prefer finalOutput for structured parsing upstream
     await stream.completed
     const result: any = await stream.finalResult
-    onEvent?.({ type: 'metrics', durationMs: Date.now() - started })
+    const durationMs = Date.now() - started
+    // Try to surface token usage if provided by the SDK
+    const tokens = (result?.usage?.inputTokens || 0) + (result?.usage?.outputTokens || 0)
+    onEvent?.({ type: 'metrics', durationMs, tokens: Number.isFinite(tokens) && tokens > 0 ? tokens : undefined })
     // Return a shape comparable to previous implementation
     return { content: typeof result?.finalOutput === 'string' ? result.finalOutput : JSON.stringify(result?.finalOutput ?? '') }
   }
@@ -105,12 +109,13 @@ export class AgentRuntime {
     const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') || 'You are a helpful assistant.'
     const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
 
-    const wrappedTools = this.tools.map((t) =>
-      agentTool({
+    const wrappedTools = this.tools.map((t) => {
+      // Prefer ZodObject; fallback to an empty object schema for permissive tools
+      const paramsSchema = t.parameters instanceof ZodObject ? (t.parameters as z.ZodObject<any>) : z.object({})
+      return agentTool({
         name: t.name,
         description: t.description,
-        // Use permissive schema for now; can convert from JSON Schema later
-        parameters: z.any(),
+        parameters: paramsSchema,
         execute: async (input: any) => {
           const start = Date.now()
           onEvent?.({ type: 'tool_call', name: t.name, args: input })
@@ -119,13 +124,17 @@ export class AgentRuntime {
             onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
             return res
           } catch (err: any) {
-            const res = { error: true, message: err?.message || 'Tool handler error' }
+            const res = {
+              error: true,
+              code: 'TOOL_HANDLER_ERROR',
+              message: err?.message || 'Tool handler error'
+            }
             onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
             return res
           }
         }
       })
-    )
+    })
 
     const agent = new OAAgent({
       name: 'Orchestrator',

@@ -2,7 +2,6 @@ import { defineNitroConfig } from 'nitropack/config'
 
 export default defineNitroConfig({
   compatibilityDate: '2025-09-02',
-  devServer: { port: 3002 },
   srcDir: '.',
   future: { nativeSWR: true },
   runtimeConfig: {
