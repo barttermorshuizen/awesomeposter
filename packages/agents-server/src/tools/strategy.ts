@@ -2,7 +2,7 @@ import { AgentRuntime } from '../services/agent-runtime'
 import type { Asset, FormatType } from '@awesomeposter/shared'
 import { getDb, assets as assetsTable, eq } from '@awesomeposter/db'
 
-function analyzeAssetsLocal(assets: Asset[]) {
+export function analyzeAssetsLocal(assets: Asset[]) {
   const images = assets.filter((a) => a.type === 'image')
   const documents = assets.filter((a) => a.type === 'document')
   const videos = assets.filter((a) => a.type === 'video')

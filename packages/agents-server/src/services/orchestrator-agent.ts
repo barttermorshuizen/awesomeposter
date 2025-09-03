@@ -2,6 +2,8 @@ import { AppResultSchema, type AgentRunRequest, type AgentEvent } from '@awesome
 import { getLogger } from './logger'
 import { AgentRuntime } from './agent-runtime'
 import { getAgents } from './agents-container'
+import { getDb, assets as assetsTable, eq } from '@awesomeposter/db'
+import { analyzeAssetsLocal } from '../tools/strategy'
 
 export class OrchestratorAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -55,12 +57,44 @@ export class OrchestratorAgent {
           onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
         }
       })
-      // Try to parse JSON result per AppResultSchema; fallback to wrapping text
+      // Try to parse JSON result per AppResultSchema; fallback and synthesize if empty
       let parsed: any
+      let contentStr = finalMsg?.content || ''
       try {
-        parsed = AppResultSchema.parse(JSON.parse(finalMsg?.content || '{}'))
+        parsed = AppResultSchema.parse(JSON.parse(contentStr || '{}'))
       } catch {
-        parsed = { result: finalMsg?.content || '' }
+        parsed = { result: contentStr }
+      }
+
+      // If model returned nothing useful, synthesize a minimal result using tools/DB
+      if (!parsed?.result || (typeof parsed.result === 'string' && parsed.result.trim() === '')) {
+        try {
+          if (req.briefId) {
+            const db = getDb()
+            const rows = await db.select().from(assetsTable).where(eq(assetsTable.briefId, req.briefId))
+            const mapped = rows.map((r: any) => ({
+              id: r.id,
+              filename: r.filename || '',
+              originalName: r.originalName || undefined,
+              url: r.url,
+              type: (r.type || 'other') as any,
+              mimeType: r.mimeType || undefined,
+              fileSize: r.fileSize || undefined,
+              metaJson: r.metaJson || undefined
+            }))
+            const analysis = analyzeAssetsLocal(mapped as any)
+            const format: any = analysis?.recommendedFormat || 'text'
+            let hookIntensity = /awareness|launch|new/i.test(req.objective) ? 0.75 : 0.6
+            const expertiseDepth = /technical|deep|guide|how\-to/i.test(req.objective) ? 0.7 : 0.5
+            const structure = { lengthLevel: format === 'document_pdf' ? 0.9 : format === 'text' ? 0.7 : 0.4, scanDensity: format === 'text' ? 0.6 : 0.5 }
+            const knobs = { formatType: format, hookIntensity, expertiseDepth, structure }
+            parsed = { result: { analysis, knobs }, rationale: 'Heuristic fallback used due to empty model output.' }
+          } else {
+            parsed = { result: { message: contentStr || 'No content generated' }, rationale: 'Fallback due to empty model output.' }
+          }
+        } catch {
+          // keep parsed as is if synthesis fails
+        }
       }
       const durationMs = Date.now() - start
       onEvent({ type: 'complete', data: parsed, durationMs, correlationId: cid })

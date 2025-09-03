@@ -1,5 +1,5 @@
-import OpenAI from 'openai'
 import { z } from 'zod'
+import { Agent as OAAgent, Runner, tool as agentTool } from '@openai/agents'
 
 type ToolHandler = (args: any) => Promise<any> | any
 
@@ -10,19 +10,37 @@ export type RegisteredTool = {
   handler: ToolHandler
 }
 
+function messagesToResponsesInput(messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>) {
+  return messages.map((m) => ({
+    role: m.role,
+    content: [{ type: 'input_text', text: m.content }]
+  })) as any[]
+}
+
+function extractResponseText(res: any): string {
+  try {
+    const outputs = (res as any).output || (res as any).outputs || []
+    for (const o of outputs) {
+      const content = o?.content || []
+      for (const part of content) {
+        if ((part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string') {
+          return part.text
+        }
+      }
+    }
+  } catch {}
+  return (res as any)?.output_text || ''
+}
+
 export class AgentRuntime {
-  private client: OpenAI
-  private model = process.env.OPENAI_MODEL || 'gpt-4o'
+  private model = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
   private tools: RegisteredTool[] = []
 
   constructor() {
-    const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) {
-      // Allow constructing in dev; API calls will fail if used
+    if (!process.env.OPENAI_API_KEY) {
       // eslint-disable-next-line no-console
-      console.warn('[AgentRuntime] OPENAI_API_KEY not set; API calls will fail')
+      console.warn('[AgentRuntime] OPENAI_API_KEY not set; SDK calls will fail')
     }
-    this.client = new OpenAI({ apiKey: apiKey || 'unset' })
   }
 
   registerTool(tool: RegisteredTool) {
@@ -30,95 +48,90 @@ export class AgentRuntime {
   }
 
   async runStructured<T>(schema: z.ZodSchema<T>, messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>): Promise<T> {
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
-      messages,
-      response_format: { type: 'json_object' }
-    })
-    const raw = completion.choices[0]?.message?.content
-    if (!raw) throw new Error('No content from model')
-    return schema.parse(JSON.parse(raw))
+    const { agent, prompt } = this.buildAgentAndPrompt(messages)
+    const runner = new Runner({ model: this.model })
+    const result: any = await runner.run(agent, prompt)
+    const out = result?.finalOutput
+    const text = typeof out === 'string' ? out : JSON.stringify(out ?? '')
+    if (!text) throw new Error('No content from model')
+    return schema.parse(JSON.parse(text))
   }
 
   async runWithTools(
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
     onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
   ) {
-    const toolSpecs = this.tools.map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters
-      }
-    }))
+    const { agent, prompt } = this.buildAgentAndPrompt(messages, onEvent)
+    const runner = new Runner({ model: this.model })
+    const started = Date.now()
+    // Stream full events so we can extend later; for now, we focus on final output
+    const stream: any = await runner.run(agent, prompt, { stream: true })
 
-    const convo: any[] = [...messages]
-
-    while (true) {
-      const turnStart = Date.now()
-      const res = await this.client.chat.completions.create({
-        model: this.model,
-        messages: convo as any,
-        tools: toolSpecs,
-        tool_choice: 'auto'
-      })
-
-      const msg = res.choices[0]?.message
-      if (!msg) throw new Error('No message from model')
-
-      const totalTokens = (res as any).usage?.total_tokens
-      if (onEvent && typeof totalTokens === 'number') {
-        onEvent({ type: 'metrics', tokens: totalTokens, durationMs: Date.now() - turnStart })
-      }
-
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return msg
-      }
-
-      // Important: first append the assistant message with tool_calls,
-      // then append each corresponding tool result message.
-      convo.push({ role: 'assistant', tool_calls: msg.tool_calls, content: msg.content || null } as any)
-
-      for (const call of msg.tool_calls) {
-        const tool = this.tools.find((t) => t.name === call.function.name)
-        if (!tool) continue
-        const args = JSON.parse(call.function.arguments || '{}')
-        const started = Date.now()
-        onEvent?.({ type: 'tool_call', name: tool.name, args })
-        let result: any
-        try {
-          result = await tool.handler(args)
-        } catch (err: any) {
-          result = { error: true, message: err?.message || 'Tool handler error' }
-        }
-        convo.push({
-          role: 'tool',
-          tool_call_id: call.id,
-          content: typeof result === 'string' ? result : JSON.stringify(result)
-        } as any)
-        onEvent?.({ type: 'tool_result', name: tool.name, result, durationMs: Date.now() - started })
-      }
-    }
+    // If only text is needed we could do: stream.toTextStream(). But we prefer finalOutput for structured parsing upstream
+    await stream.completed
+    const result: any = await stream.finalResult
+    onEvent?.({ type: 'metrics', durationMs: Date.now() - started })
+    // Return a shape comparable to previous implementation
+    return { content: typeof result?.finalOutput === 'string' ? result.finalOutput : JSON.stringify(result?.finalOutput ?? '') }
   }
 
   async runChatStream(
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
     onDelta: (delta: string) => void
   ): Promise<string> {
-    const stream = await this.client.chat.completions.create({
-      model: this.model,
-      messages,
-      stream: true
-    })
+    const { agent, prompt } = this.buildAgentAndPrompt(messages)
+    const runner = new Runner({ model: this.model })
+    const stream: any = await runner.run(agent, prompt, { stream: true })
     let full = ''
-    for await (const chunk of stream as any) {
-      const d = chunk?.choices?.[0]?.delta?.content || ''
+    // Prefer the text stream transformation for deltas
+    const textStream: any = stream.toTextStream({ compatibleWithNodeStreams: false })
+    for await (const chunk of textStream) {
+      const d = chunk?.toString?.() ?? String(chunk)
       if (d) {
         full += d
         onDelta(d)
       }
     }
+    await stream.completed
+    const result: any = await stream.finalResult
+    if (typeof result?.finalOutput === 'string') full += result.finalOutput
     return full
+  }
+
+  private buildAgentAndPrompt(
+    messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+  ) {
+    const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') || 'You are a helpful assistant.'
+    const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
+
+    const wrappedTools = this.tools.map((t) =>
+      agentTool({
+        name: t.name,
+        description: t.description,
+        // Use permissive schema for now; can convert from JSON Schema later
+        parameters: z.any(),
+        execute: async (input: any) => {
+          const start = Date.now()
+          onEvent?.({ type: 'tool_call', name: t.name, args: input })
+          try {
+            const res = await t.handler(input)
+            onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+            return res
+          } catch (err: any) {
+            const res = { error: true, message: err?.message || 'Tool handler error' }
+            onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+            return res
+          }
+        }
+      })
+    )
+
+    const agent = new OAAgent({
+      name: 'Orchestrator',
+      instructions: systemText,
+      tools: wrappedTools
+    })
+    return { agent, prompt: userText || 'Proceed.' }
   }
 }

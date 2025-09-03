@@ -15,6 +15,7 @@
   "dependencies": {
     "@awesomeposter/db": "file:../db",
     "@awesomeposter/shared": "file:../shared",
+    "@openai/agents": "^0.1.0",
     "dotenv": "^17.2.1",
     "nitropack": "^2.12.4",
     "openai": "^5.12.2",
