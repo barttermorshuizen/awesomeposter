@@ -4,6 +4,7 @@ import { AgentRuntime } from './agent-runtime'
 import { getAgents } from './agents-container'
 import { getDb, assets as assetsTable, eq } from '@awesomeposter/db'
 import { analyzeAssetsLocal } from '../tools/strategy'
+import { Agent as OAAgent, Agent as AgentClass, Runner } from '@openai/agents'
 
 export class OrchestratorAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -46,20 +47,76 @@ export class OrchestratorAgent {
         return { final: { message: full }, metrics: { durationMs } }
       }
 
-      // Applicative mode (structured via tools loop)
+      // Applicative mode (structured via handoffs among specialist agents)
       onEvent({ type: 'phase', phase: 'planning', message: 'Structured run started', correlationId: cid })
-      const finalMsg: any = await this.runtime.runWithTools(messages, (e) => {
-        if (e.type === 'tool_call') {
-          onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
-        } else if (e.type === 'tool_result') {
-          onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
-        } else if (e.type === 'metrics') {
-          onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
+
+      // Build specialist agents and triage agent with handoffs
+      const toolsStrategy = this.runtime.getAgentTools(
+        ['io_get_brief', 'io_list_assets', 'io_get_client_profile', 'strategy_analyze_assets', 'strategy_plan_knobs'],
+        (e) => {
+          if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
+          if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
+          if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
         }
+      ) as any
+      const toolsContent = this.runtime.getAgentTools(
+        ['apply_format_rendering', 'optimize_for_platform'],
+        (e) => {
+          if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
+          if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
+          if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
+        }
+      ) as any
+      const toolsQa = this.runtime.getAgentTools(
+        ['qa_evaluate_content'],
+        (e) => {
+          if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
+          if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
+          if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
+        }
+      ) as any
+
+      const STRATEGY_INSTRUCTIONS = [
+        'You are the Strategy Manager agent. Plan social content strategy using a 4‑knob system (formatType, hookIntensity, expertiseDepth, structure).',
+        'Use available tools to analyze assets and plan knobs. Respect client policy and never invent assets.',
+        'When returning a final answer yourself, output only JSON. Otherwise, perform handoffs as needed.'
+      ].join('\n')
+      const CONTENT_INSTRUCTIONS = [
+        'You are the Content Generator agent. Generate platform‑optimized posts based on the 4‑knob configuration and client language.',
+        'Use tools to apply format rendering and optimize for platforms. Follow platform rules and client policy.',
+        'When returning a final answer yourself, output only JSON.'
+      ].join('\n')
+      const QA_INSTRUCTIONS = [
+        'You are the Quality Assurance agent. Evaluate drafts for readability, clarity, objective fit, brand risk, and compliance.',
+        'Return structured scores and prioritized suggestions as JSON.'
+      ].join('\n')
+
+      const strategyAgent = new OAAgent({ name: 'Strategy Manager', instructions: STRATEGY_INSTRUCTIONS, tools: toolsStrategy })
+      const contentAgent = new OAAgent({ name: 'Content Generator', instructions: CONTENT_INSTRUCTIONS, tools: toolsContent })
+      const qaAgent = new OAAgent({ name: 'Quality Assurance', instructions: QA_INSTRUCTIONS, tools: toolsQa })
+
+      const TRIAGE_INSTRUCTIONS = [
+        'You are the Orchestrator. Decide which specialist (Strategy, Content, QA) should handle each step and perform handoffs as needed.',
+        'When you are ready to return the final result, output only a single JSON object that matches this schema:',
+        '{ "result": <any>, "rationale"?: <string> }',
+        'Do not include any additional commentary outside of the JSON.'
+      ].join('\n')
+
+      const triageAgent = AgentClass.create({
+        name: 'Triage Agent',
+        instructions: TRIAGE_INSTRUCTIONS,
+        handoffs: [strategyAgent, contentAgent, qaAgent]
       })
-      // Try to parse JSON result per AppResultSchema; fallback and synthesize if empty
+
+      // Build the prompt/user input
+      const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+      const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
+      const prompt = [systemText, userText].filter(Boolean).join('\n\n') || 'Proceed.'
+
+      const runner = new Runner({ model: this.runtime.getModel() })
+      const runResult: any = await runner.run(triageAgent as any, prompt)
       let parsed: any
-      let contentStr = finalMsg?.content || ''
+      let contentStr = typeof runResult?.finalOutput === 'string' ? runResult.finalOutput : JSON.stringify(runResult?.finalOutput ?? '')
       try {
         parsed = AppResultSchema.parse(JSON.parse(contentStr || '{}'))
       } catch {

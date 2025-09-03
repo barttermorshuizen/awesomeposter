@@ -48,6 +48,41 @@ export class AgentRuntime {
     this.tools.push(tool)
   }
 
+  getModel() {
+    return this.model
+  }
+
+  // Return wrapped agent tools, optionally filtered by allowlist
+  getAgentTools(
+    allowlist?: string[],
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+  ) {
+    const selected = allowlist && allowlist.length > 0
+      ? this.tools.filter((t) => allowlist.includes(t.name))
+      : this.tools
+    return selected.map((t) => {
+      const paramsSchema = t.parameters instanceof ZodObject ? (t.parameters as z.ZodObject<any>) : z.object({})
+      return agentTool({
+        name: t.name,
+        description: t.description,
+        parameters: paramsSchema,
+        execute: async (input: any) => {
+          const start = Date.now()
+          onEvent?.({ type: 'tool_call', name: t.name, args: input })
+          try {
+            const res = await t.handler(input)
+            onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+            return res
+          } catch (err: any) {
+            const res = { error: true, code: 'TOOL_HANDLER_ERROR', message: err?.message || 'Tool handler error' }
+            onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+            return res
+          }
+        }
+      })
+    })
+  }
+
   async runStructured<T>(schema: z.ZodSchema<T>, messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>): Promise<T> {
     const { agent, prompt } = this.buildAgentAndPrompt(messages)
     const runner = new Runner({ model: this.model })
