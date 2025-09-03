@@ -4,6 +4,8 @@ import { ContentGeneratorAgent } from '../agents/content-generator'
 import { QualityAssuranceAgent } from '../agents/quality-assurance'
 import { registerIOTools } from '../tools/io'
 import { registerStrategyTools } from '../tools/strategy'
+import { registerContentTools } from '../tools/content'
+import { registerQaTools } from '../tools/qa'
 
 type Agents = {
   runtime: AgentRuntime
@@ -20,6 +22,8 @@ export function getAgents(): Agents {
   // Register core IO tools on first initialization
   registerIOTools(runtime)
   registerStrategyTools(runtime)
+  registerContentTools(runtime)
+  registerQaTools(runtime)
   cached = {
     runtime,
     strategy: new StrategyManagerAgent(runtime),
