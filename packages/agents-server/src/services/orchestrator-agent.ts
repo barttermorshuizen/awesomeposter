@@ -80,7 +80,9 @@ export class OrchestratorAgent {
       const triageAgent = AgentClass.create({
         name: 'Triage Agent',
         instructions: TRIAGE_INSTRUCTIONS,
-        handoffs: [strategyAgent, contentAgent, qaAgent]
+        handoffs: [strategyAgent, contentAgent, qaAgent],
+        // Prefer typed/validated final output per Agent SDK best practices
+        outputType: AppResultSchema
       })
 
       // Build the prompt/user input

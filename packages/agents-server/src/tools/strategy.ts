@@ -65,10 +65,11 @@ export function registerStrategyTools(runtime: AgentRuntime) {
     name: 'strategy_analyze_assets',
     description: 'Analyze provided assets to determine feasible formats and a recommendation',
     parameters: z.object({
-      assets: z.array(z.any()).optional(),
-      briefId: z.string().optional()
+      // OpenAI structured outputs: fields must be required; use nullable for optional semantics
+      assets: z.array(z.any()).nullable(),
+      briefId: z.string().nullable()
     }),
-    handler: async ({ assets, briefId }: { assets?: Asset[]; briefId?: string }) => {
+    handler: async ({ assets, briefId }: { assets: Asset[] | null; briefId: string | null }) => {
       let sourceAssets: Asset[] | undefined = assets
       if ((!sourceAssets || !Array.isArray(sourceAssets)) && briefId) {
         const db = getDb()
@@ -97,11 +98,12 @@ export function registerStrategyTools(runtime: AgentRuntime) {
     description: 'Plan 4-knob configuration based on objective and asset analysis',
     parameters: z.object({
       objective: z.string(),
-      assetAnalysis: z.any().optional(),
-      clientPolicy: z.any().optional(),
-      briefId: z.string().optional()
+      // Use nullable to indicate optional semantics while keeping fields required
+      assetAnalysis: z.any().nullable(),
+      clientPolicy: z.any().nullable(),
+      briefId: z.string().nullable()
     }),
-    handler: async ({ objective, assetAnalysis, clientPolicy, briefId }: { objective: string; assetAnalysis?: any; clientPolicy?: any; briefId?: string }) => {
+    handler: async ({ objective, assetAnalysis, clientPolicy, briefId }: { objective: string; assetAnalysis: any | null; clientPolicy: any | null; briefId: string | null }) => {
       let analysis = assetAnalysis
       if (!analysis && briefId) {
         // Compute on the fly from DB assets if analysis not provided

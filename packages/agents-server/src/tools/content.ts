@@ -60,9 +60,10 @@ export function registerContentTools(runtime: AgentRuntime) {
     parameters: z.object({
       content: z.string(),
       platform: PlatformEnum,
-      knobs: z.any().optional()
+      // OpenAI structured outputs: fields must be required; use nullable for optional
+      knobs: z.any().nullable()
     }),
-    handler: ({ content, platform, knobs }: { content: string; platform: z.infer<typeof PlatformEnum>; knobs?: any }) => {
+    handler: ({ content, platform, knobs }: { content: string; platform: z.infer<typeof PlatformEnum>; knobs: any | null }) => {
       let post = content.trim()
       // crude max length guidance (can be refined 
       const maxChars: Record<z.infer<typeof PlatformEnum>, number> = {
@@ -87,4 +88,3 @@ export function registerContentTools(runtime: AgentRuntime) {
     }
   })
 }
-

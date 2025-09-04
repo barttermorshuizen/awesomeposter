@@ -10,10 +10,11 @@ export function registerQaTools(runtime: AgentRuntime) {
     parameters: z.object({
       content: z.string(),
       platform: PlatformEnum,
-      objective: z.string().optional(),
-      clientPolicy: z.any().optional()
+      // Structured outputs limitation: use nullable instead of optional
+      objective: z.string().nullable(),
+      clientPolicy: z.any().nullable()
     }),
-    handler: ({ content, platform, objective, clientPolicy }: { content: string; platform: z.infer<typeof PlatformEnum>; objective?: string; clientPolicy?: any }) => {
+    handler: ({ content, platform, objective, clientPolicy }: { content: string; platform: z.infer<typeof PlatformEnum>; objective: string | null; clientPolicy: any | null }) => {
       // Very basic heuristics; can be replaced with model-assisted checks
       const length = content.trim().length
       const readability = Math.max(0, Math.min(1, 0.9 - Math.max(0, (length - 800)) / 4000))
@@ -43,4 +44,3 @@ export function registerQaTools(runtime: AgentRuntime) {
     }
   })
 }
-
