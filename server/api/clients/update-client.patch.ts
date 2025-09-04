@@ -1,5 +1,25 @@
 import { clients, clientProfiles, assets, getDb, eq } from '@awesomeposter/db'
 import { updateClientSchema } from '@awesomeposter/shared'
+import { defineEventHandler, readBody, createError } from 'h3'
+
+// Normalize legacy tone presets to new 7-option set
+function normalizeTonePreset(tone: Record<string, unknown> | undefined | null): Record<string, unknown> | undefined | null {
+  if (!tone || typeof tone !== 'object') return tone
+  const presetRaw = (tone as Record<string, unknown>)['preset']
+  const preset = typeof presetRaw === 'string' ? presetRaw : undefined
+  let mapped: string | undefined = preset
+  if (preset === 'Professional') mapped = 'Professional & Formal'
+  else if (preset === 'Friendly') mapped = 'Warm & Friendly'
+  else if (preset === 'Bold') mapped = 'Confident & Bold'
+  // If no preset present, try legacy fields
+  if (!mapped) {
+    const legacyStyle = (tone as Record<string, unknown>)['style']
+    if (legacyStyle === 'Professional') mapped = 'Professional & Formal'
+    else if (legacyStyle === 'Friendly') mapped = 'Warm & Friendly'
+    else if (legacyStyle === 'Bold') mapped = 'Confident & Bold'
+  }
+  return { ...(tone as Record<string, unknown>), preset: mapped }
+}
 
 export default defineEventHandler(async (event) => {
   try {
@@ -76,7 +96,7 @@ export default defineEventHandler(async (event) => {
         if (profile.primaryCommunicationLanguage !== undefined) profileUpdateFields.primaryCommunicationLanguage = profile.primaryCommunicationLanguage
         if (profile.objectives !== undefined) profileUpdateFields.objectivesJson = profile.objectives
         if (profile.audiences !== undefined) profileUpdateFields.audiencesJson = profile.audiences
-        if (profile.tone !== undefined) profileUpdateFields.toneJson = profile.tone
+        if (profile.tone !== undefined) profileUpdateFields.toneJson = normalizeTonePreset(profile.tone as Record<string, unknown> | undefined | null) as Record<string, unknown>
         if (profile.specialInstructions !== undefined) profileUpdateFields.specialInstructionsJson = profile.specialInstructions
         if (profile.guardrails !== undefined) profileUpdateFields.guardrailsJson = profile.guardrails
         if (profile.platformPrefs !== undefined) profileUpdateFields.platformPrefsJson = profile.platformPrefs
@@ -96,7 +116,7 @@ export default defineEventHandler(async (event) => {
           primaryCommunicationLanguage: profile.primaryCommunicationLanguage ?? null,
           objectivesJson: profile.objectives ?? {},
           audiencesJson: profile.audiences ?? {},
-          toneJson: profile.tone ?? {},
+          toneJson: normalizeTonePreset(profile.tone as Record<string, unknown> | undefined | null) ?? {},
           specialInstructionsJson: profile.specialInstructions ?? {},
           guardrailsJson: profile.guardrails ?? {},
           platformPrefsJson: profile.platformPrefs ?? {},

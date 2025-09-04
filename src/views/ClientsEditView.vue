@@ -43,9 +43,13 @@ const languageItems = [
 ]
 
 const toneItems = [
-  { title: 'Professional', value: 'Professional' },
-  { title: 'Friendly', value: 'Friendly' },
-  { title: 'Bold', value: 'Bold' },
+  { title: 'Professional & Formal', value: 'Professional & Formal' },
+  { title: 'Clear & Straightforward', value: 'Clear & Straightforward' },
+  { title: 'Warm & Friendly', value: 'Warm & Friendly' },
+  { title: 'Confident & Bold', value: 'Confident & Bold' },
+  { title: 'Inspiring & Visionary', value: 'Inspiring & Visionary' },
+  { title: 'Trusted & Reassuring', value: 'Trusted & Reassuring' },
+  { title: 'Energetic & Dynamic', value: 'Energetic & Dynamic' },
 ]
 
 const platformItems = [

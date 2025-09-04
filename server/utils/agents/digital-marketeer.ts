@@ -730,7 +730,7 @@ Recommended Format: ${assetAnalysis.recommendedFormat}
 - Demographics: ${clientProfile.audiencesJson?.demographics || 'Professionals and decision makers'}
 - Interests: ${Array.isArray(clientProfile.audiencesJson?.interests) && clientProfile.audiencesJson.interests.length > 0 ? clientProfile.audiencesJson.interests.join(', ') : 'Professional development, industry trends'}
 - Pain Points: ${Array.isArray(clientProfile.audiencesJson?.painPoints) && clientProfile.audiencesJson.painPoints.length > 0 ? clientProfile.audiencesJson.painPoints.join(', ') : 'Information overload, time constraints'}
-- Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
+- Tone: ${clientProfile.toneJson?.preset || 'Professional & Formal'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
 ${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
 ${clientProfile.platformPrefsJson?.primary || clientProfile.platformPrefsJson?.secondary ? `- Platform Preferences: ${[clientProfile.platformPrefsJson?.primary, clientProfile.platformPrefsJson?.secondary].filter(Boolean).join(', ')}` : ''}

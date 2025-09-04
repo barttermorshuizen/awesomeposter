@@ -1,5 +1,24 @@
 import { getPool } from '@awesomeposter/db'
 import { generateMinimalClientProfile, validateClientProfileStructure } from '../../../utils/sample-client-profile'
+import { defineEventHandler, getRouterParam, createError } from 'h3'
+
+// Map legacy or old presets to the new 7-option set
+function normalizeTonePreset(tone: Record<string, unknown> | undefined | null): Record<string, unknown> | undefined | null {
+  if (!tone || typeof tone !== 'object') return tone
+  const presetRaw = (tone as Record<string, unknown>)['preset']
+  const preset = typeof presetRaw === 'string' ? presetRaw : undefined
+  let mapped: string | undefined = preset
+  if (preset === 'Professional') mapped = 'Professional & Formal'
+  else if (preset === 'Friendly') mapped = 'Warm & Friendly'
+  else if (preset === 'Bold') mapped = 'Confident & Bold'
+  if (!mapped) {
+    const legacyStyle = (tone as Record<string, unknown>)['style']
+    if (legacyStyle === 'Professional') mapped = 'Professional & Formal'
+    else if (legacyStyle === 'Friendly') mapped = 'Warm & Friendly'
+    else if (legacyStyle === 'Bold') mapped = 'Confident & Bold'
+  }
+  return { ...(tone as Record<string, unknown>), preset: mapped }
+}
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
@@ -42,7 +61,7 @@ export default defineEventHandler(async (event) => {
     primaryLanguage: row.primary_communication_language || 'US English',
     objectives: row.objectives_json || {},
     audiences: row.audiences_json || {},
-    tone: row.tone_json || {},
+    tone: normalizeTonePreset(row.tone_json || {}),
     specialInstructions: row.special_instructions_json || {},
     guardrails: row.guardrails_json || {},
     platformPrefs: row.platform_prefs_json || {},

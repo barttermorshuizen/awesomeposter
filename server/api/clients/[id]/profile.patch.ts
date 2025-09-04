@@ -1,6 +1,25 @@
 import { getPool } from '@awesomeposter/db'
 import { createOrUpdateClientProfileSchema } from '@awesomeposter/shared'
+import { defineEventHandler, getRouterParam, createError, readBody } from 'h3'
 
+// Normalize legacy tone presets to new 7-option set
+function normalizeTonePreset(tone: Record<string, unknown> | undefined | null): Record<string, unknown> | undefined | null {
+  if (!tone || typeof tone !== 'object') return tone
+  const presetRaw = (tone as Record<string, unknown>)?.['preset']
+  const preset = typeof presetRaw === 'string' ? presetRaw : undefined
+  let mapped: string | undefined = preset
+  if (preset === 'Professional') mapped = 'Professional & Formal'
+  else if (preset === 'Friendly') mapped = 'Warm & Friendly'
+  else if (preset === 'Bold') mapped = 'Confident & Bold'
+  // If no preset present, try legacy fields
+  if (!mapped) {
+    const legacyStyle = (tone as Record<string, unknown>)?.['style']
+    if (legacyStyle === 'Professional') mapped = 'Professional & Formal'
+    else if (legacyStyle === 'Friendly') mapped = 'Warm & Friendly'
+    else if (legacyStyle === 'Bold') mapped = 'Confident & Bold'
+  }
+  return { ...(tone as Record<string, unknown>), preset: mapped }
+}
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
   if (!id) {
@@ -34,7 +53,7 @@ export default defineEventHandler(async (event) => {
           parsed.data.primaryCommunicationLanguage || null,
           parsed.data.objectives ?? {},
           parsed.data.audiences ?? {},
-          parsed.data.tone ?? {},
+          normalizeTonePreset(parsed.data.tone),
           parsed.data.specialInstructions ?? {},
           parsed.data.guardrails ?? {},
           parsed.data.platformPrefs ?? {},
@@ -57,7 +76,7 @@ export default defineEventHandler(async (event) => {
         parsed.data.primaryCommunicationLanguage || null,
         parsed.data.objectives ?? {},
         parsed.data.audiences ?? {},
-        parsed.data.tone ?? {},
+        normalizeTonePreset(parsed.data.tone),
         parsed.data.specialInstructions ?? {},
         parsed.data.guardrails ?? {},
         parsed.data.platformPrefs ?? {},

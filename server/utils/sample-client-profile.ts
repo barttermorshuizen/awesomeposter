@@ -15,9 +15,8 @@ export const sampleClientProfile = {
     painPoints: ['Information overload', 'Time constraints', 'Need for practical insights']
   },
   toneJson: {
-    style: 'Professional yet approachable',
-    personality: 'Confident, knowledgeable, helpful',
-    voice: 'Authoritative but not condescending'
+    preset: 'Professional & Formal',
+    guidelines: 'Clear, concise, confident.'
   },
   specialInstructionsJson: {
     instructions: 'Focus on actionable insights and practical tips. Avoid jargon when possible.',
@@ -53,9 +52,7 @@ export function generateMinimalClientProfile(language: 'US English' | 'UK Englis
       painPoints: []
     },
     toneJson: {
-      style: 'Professional',
-      personality: 'Friendly',
-      voice: 'Balanced'
+      preset: 'Professional & Formal'
     },
     specialInstructionsJson: {
       instructions: 'No special instructions provided'
@@ -76,7 +73,7 @@ export function generateMinimalClientProfile(language: 'US English' | 'UK Englis
 /**
  * Validate that a client profile has the expected structure
  */
-export function validateClientProfileStructure(profile: any): { isValid: boolean; missingFields: string[] } {
+export function validateClientProfileStructure(profile: Record<string, unknown>): { isValid: boolean; missingFields: string[] } {
   const requiredFields = [
     'primaryCommunicationLanguage',
     'objectivesJson',

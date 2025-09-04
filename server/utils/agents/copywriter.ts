@@ -676,7 +676,7 @@ ${clientProfile ? `Client Profile:
 - Demographics: ${clientProfile.audiencesJson?.demographics || 'Professionals and decision makers'}
 - Interests: ${Array.isArray(clientProfile.audiencesJson?.interests) && clientProfile.audiencesJson.interests.length > 0 ? clientProfile.audiencesJson.interests.join(', ') : 'Professional development, industry trends'}
 - Pain Points: ${Array.isArray(clientProfile.audiencesJson?.painPoints) && clientProfile.audiencesJson.painPoints.length > 0 ? clientProfile.audiencesJson.painPoints.join(', ') : 'Information overload, time constraints'}
-- Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
+- Tone: ${clientProfile.toneJson?.preset || 'Professional & Formal'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
 ${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
 ${clientProfile.platformPrefsJson?.primary || clientProfile.platformPrefsJson?.secondary ? `- Platform Preferences: ${[clientProfile.platformPrefsJson?.primary, clientProfile.platformPrefsJson?.secondary].filter(Boolean).join(', ')}` : ''}
@@ -733,7 +733,7 @@ ${clientProfile ? `Client Profile Context:
 - Primary Language: ${clientProfile.primaryCommunicationLanguage || 'US English (default)'}
 - Objectives: ${clientProfile.objectivesJson?.primary || 'Increase brand awareness'}, ${clientProfile.objectivesJson?.secondary || 'Drive engagement'}
 - Target Audience: ${clientProfile.audiencesJson?.target || 'General professional audience'}
-- Tone: ${clientProfile.toneJson?.style || 'Professional'}, ${clientProfile.toneJson?.personality || 'Friendly'}
+- Tone: ${clientProfile.toneJson?.preset || 'Professional & Formal'}
 - Voice: ${clientProfile.toneJson?.voice || 'Balanced'}
 ${clientProfile.specialInstructionsJson?.instructions ? `- Special Instructions: ${clientProfile.specialInstructionsJson.instructions}` : ''}
 ${(() => { const banned = Array.isArray(clientProfile.guardrailsJson?.banned) && clientProfile.guardrailsJson.banned.length > 0 ? `Banned topics (${clientProfile.guardrailsJson.banned.join(', ')})` : ''; const sensitive = Array.isArray(clientProfile.guardrailsJson?.sensitive) && clientProfile.guardrailsJson.sensitive.length > 0 ? `Sensitive topics (${clientProfile.guardrailsJson.sensitive.join(', ')})` : ''; const parts = [banned, sensitive].filter(Boolean); return parts.length ? `- Guardrails: ${parts.join(', ')}` : ''; })()}` : 'Client Profile: Not provided'}
