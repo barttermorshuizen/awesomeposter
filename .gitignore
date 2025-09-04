@@ -28,3 +28,27 @@ coverage
 *.sw?
 
 *.tsbuildinfo
+
+
+# Environment files (ignore across repo)
+# Ignore typical env files in root and all subdirectories
+.env
+.env.*
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+.env.*.local
+.envrc
+.envrc.local
+# Keep example env files
+!.env.example
+!**/.env.example
+
+
+# Nitro build output (ignore everywhere)
+.nitro/
+**/.nitro/
