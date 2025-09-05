@@ -7,13 +7,23 @@ export function registerQaTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'qa_evaluate_content',
     description: 'Evaluate content quality and compliance; return structured scores and suggestions',
-    parameters: z.object({
-      content: z.string(),
-      platform: PlatformEnum,
-      // Structured outputs limitation: use nullable instead of optional
-      objective: z.string().nullable(),
-      clientPolicy: z.any().nullable()
-    }),
+    parameters: z
+      .object({
+        content: z.string(),
+        platform: PlatformEnum,
+        // Structured outputs limitation: use nullable instead of optional
+        objective: z.string().nullable(),
+        // Strict object to satisfy validator; include expected field(s)
+        clientPolicy: z
+          .object({
+            bannedClaims: z.array(z.string()).nullable()
+          })
+          .strict()
+          .catchall(z.never())
+          .nullable()
+      })
+      .strict()
+      .catchall(z.never()),
     handler: ({ content, platform, objective, clientPolicy }: { content: string; platform: z.infer<typeof PlatformEnum>; objective: string | null; clientPolicy: any | null }) => {
       // Very basic heuristics; can be replaced with model-assisted checks
       const length = content.trim().length

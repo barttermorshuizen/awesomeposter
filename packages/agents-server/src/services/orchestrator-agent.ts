@@ -39,24 +39,61 @@ export class OrchestratorAgent {
 
     try {
       if (req.mode === 'chat') {
-        onEvent({ type: 'phase', phase: 'analysis', message: 'Entering chat mode', correlationId: cid })
+        const target = (req.options as any)?.targetAgentId || 'orchestrator'
+        onEvent({ type: 'phase', phase: 'analysis', message: `Entering chat mode (${target})`, correlationId: cid })
         let full = ''
-        await this.runtime.runChatStream(messages, (delta) => {
-          full += delta
-          onEvent({ type: 'delta', message: delta, correlationId: cid })
-        }, {
-          toolsAllowlist: req.options?.toolsAllowlist,
-          toolPolicy: req.options?.toolPolicy,
-          temperature: req.options?.temperature,
-          schemaName: req.options?.schemaName,
-          trace: req.options?.trace
-        })
+        if (target === 'orchestrator') {
+          await this.runtime.runChatStream(
+            messages,
+            (delta) => {
+              full += delta
+              onEvent({ type: 'delta', message: delta, correlationId: cid })
+            },
+            {
+              toolsAllowlist: req.options?.toolsAllowlist,
+              toolPolicy: req.options?.toolPolicy,
+              temperature: req.options?.temperature,
+              schemaName: req.options?.schemaName,
+              trace: req.options?.trace
+            }
+          )
+        } else {
+          const onToolEvent = (e: any) => {
+            if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
+            if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
+            if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
+          }
+          const opts = { policy: req.options?.toolPolicy, requestAllowlist: req.options?.toolsAllowlist }
+          let agentInstance: any
+          if (target === 'strategy') agentInstance = createStrategyAgent(this.runtime, onToolEvent, opts)
+          else if (target === 'generator') agentInstance = createContentAgent(this.runtime, onToolEvent, opts)
+          else if (target === 'qa') agentInstance = createQaAgent(this.runtime, onToolEvent, opts)
+          else agentInstance = undefined
+
+          const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+          const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
+          const prompt = [systemText, userText].filter(Boolean).join('\n\n') || 'Proceed.'
+
+          const runner = new Runner({ model: this.runtime.getModel() })
+          const stream: any = await runner.run(agentInstance as any, prompt, { stream: true })
+          const textStream: any = stream.toTextStream({ compatibleWithNodeStreams: false })
+          for await (const chunk of textStream) {
+            const d = (chunk as any)?.toString?.() ?? String(chunk)
+            if (d) {
+              full += d
+              onEvent({ type: 'delta', message: d, correlationId: cid })
+            }
+          }
+          await (stream as any).completed
+          const result: any = await (stream as any).finalResult
+          if (typeof result?.finalOutput === 'string') full += result.finalOutput
+        }
         const durationMs = Date.now() - start
         onEvent({ type: 'message', message: full, correlationId: cid })
         // Final metrics frame for chat mode (tokens may be unavailable)
         onEvent({ type: 'metrics', durationMs, correlationId: cid })
         onEvent({ type: 'complete', data: { message: full }, durationMs, correlationId: cid })
-        log.info('orchestrator_run_complete', { cid, mode: 'chat', durationMs, size: full.length })
+        log.info('orchestrator_run_complete', { cid, mode: 'chat', durationMs, size: full.length, target })
         return { final: { message: full }, metrics: { durationMs } }
       }
 

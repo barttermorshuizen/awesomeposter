@@ -4,6 +4,26 @@ import { z } from 'zod'
 const FormatEnum = z.enum(['text', 'single_image', 'multi_image', 'document_pdf', 'video'])
 const PlatformEnum = z.enum(['linkedin', 'x', 'facebook', 'instagram', 'youtube', 'tiktok'])
 
+// Strict knobs schema required by the Agents SDK JSON Schema validator
+// - All fields required at the schema level; use nullable for optional semantics
+// - additionalProperties must be false (use strict + catchall(z.never()))
+const KnobsParamSchema = z
+  .object({
+    formatType: FormatEnum.nullable(),
+    hookIntensity: z.number().min(0).max(1).nullable(),
+    expertiseDepth: z.number().min(0).max(1).nullable(),
+    structure: z
+      .object({
+        lengthLevel: z.number().min(0).max(1),
+        scanDensity: z.number().min(0).max(1)
+      })
+      .strict()
+      .catchall(z.never())
+      .nullable()
+  })
+  .strict()
+  .catchall(z.never())
+
 export function registerContentTools(runtime: AgentRuntime) {
   // Minimal format rendering tool: apply simple structural transforms
   runtime.registerTool({
@@ -57,12 +77,15 @@ export function registerContentTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'optimize_for_platform',
     description: 'Optimize content for a target platform and knob settings',
-    parameters: z.object({
-      content: z.string(),
-      platform: PlatformEnum,
-      // OpenAI structured outputs: fields must be required; use nullable for optional
-      knobs: z.any().nullable()
-    }),
+    parameters: z
+      .object({
+        content: z.string(),
+        platform: PlatformEnum,
+        // Strict object with known fields; allow null to indicate no knobs provided
+        knobs: KnobsParamSchema.nullable()
+      })
+      .strict()
+      .catchall(z.never()),
     handler: ({ content, platform, knobs }: { content: string; platform: z.infer<typeof PlatformEnum>; knobs: any | null }) => {
       let post = content.trim()
       // crude max length guidance (can be refined 

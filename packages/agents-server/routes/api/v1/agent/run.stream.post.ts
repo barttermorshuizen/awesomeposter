@@ -6,6 +6,19 @@ import { setHeader } from 'h3'
 export default defineEventHandler(async (event) => {
   const body = (event as any).context?.body ?? (await readBody(event))
   const req = AgentRunRequestSchema.parse(body)
+  // Forward-compat: merge original options to preserve unknown future fields (e.g., targetAgentId)
+  const rawOptions = (typeof body === 'object' && body && 'options' in (body as any)) ? (body as any).options : undefined
+  const finalReq: any = { ...req, options: { ...(rawOptions || {}), ...(req.options || {}) } }
+
+  // Route-level CORS for browsers (complements global middleware, ensures SSE responses carry CORS header)
+  try {
+    const origin = getHeader(event, 'origin') || '*'
+    setHeader(event, 'Vary', 'Origin')
+    setHeader(event, 'Access-Control-Allow-Origin', origin)
+    // Allow commonly used headers
+    setHeader(event, 'Access-Control-Allow-Headers', 'content-type,authorization,x-correlation-id')
+    setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  } catch {}
 
   if (req.mode === 'chat') {
     const enabled = process.env.ENABLE_CHAT_SANDBOX === 'true' || process.env.NODE_ENV !== 'production'
@@ -23,7 +36,7 @@ export default defineEventHandler(async (event) => {
       const { getLogger } = await import('../../../../src/services/logger')
       getLogger().warn('sse_backlog_reject', { ...snap, correlationId: cid })
     } catch {}
-    setHeader(event, 'Retry-After', '2')
+    setHeader(event, 'Retry-After', 2)
     setHeader(event, 'Cache-Control', 'no-store')
     setHeader(event, 'X-Backlog-Pending', String(snap.pending))
     setHeader(event, 'X-Backlog-Limit', String(snap.limit))
@@ -42,7 +55,7 @@ export default defineEventHandler(async (event) => {
     await withSseConcurrency(async () => {
       const injected = (event as any).context?.orch
       const orch = injected || (await import('../../../../src/services/orchestrator-agent')).getOrchestrator()
-      await orch.run(req, (e: any) => sse.send(e), cid)
+      await orch.run(finalReq, (e: any) => sse.send(e), cid)
       // Orchestrator emits 'complete'; do not duplicate here
     })
   } catch (error: any) {

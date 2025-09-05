@@ -3,6 +3,9 @@ import { z } from 'zod'
 export const AgentModeEnum = z.enum(['app', 'chat'])
 export type AgentMode = z.infer<typeof AgentModeEnum>
 
+export const TargetAgentIdEnum = z.enum(['orchestrator', 'strategy', 'generator', 'qa'])
+export type TargetAgentId = z.infer<typeof TargetAgentIdEnum>
+
 export const AgentRunOptionsSchema = z.object({
   toolPolicy: z.enum(['auto', 'required', 'off']).default('auto').optional(),
   schemaName: z.string().optional(),
@@ -10,7 +13,9 @@ export const AgentRunOptionsSchema = z.object({
   toolsAllowlist: z.array(z.string()).optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTurns: z.number().int().positive().optional(),
-  trace: z.boolean().optional()
+  trace: z.boolean().optional(),
+  // For chat mode only: choose which agent to converse with
+  targetAgentId: TargetAgentIdEnum.optional()
 }).optional()
 
 export const AgentRunRequestSchema = z.object({

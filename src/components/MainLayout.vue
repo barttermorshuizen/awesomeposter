@@ -16,6 +16,7 @@ const navItems = [
   { title: 'Clients', icon: 'mdi-account-multiple-outline', to: { name: 'clients' } },
   { title: 'Assets', icon: 'mdi-folder-multiple-image', to: { name: 'assets' } },
   { title: 'Analytics', icon: 'mdi-chart-line', to: { name: 'analytics' } },
+  { title: 'Sandbox', icon: 'mdi-flask-outline', to: { name: 'sandbox' } },
   { title: 'Settings', icon: 'mdi-cog-outline', to: { name: 'settings' } },
 ]
 

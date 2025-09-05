@@ -83,6 +83,11 @@ const router = createRouter({
         description: 'Application and client settings.',
       }),
     },
+    {
+      path: '/sandbox',
+      name: 'sandbox',
+      component: () => import('@/views/SandboxView.vue'),
+    },
   ],
 })
 
