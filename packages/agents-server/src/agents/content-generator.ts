@@ -20,8 +20,9 @@ export const CONTENT_INSTRUCTIONS = [
 
 export function createContentAgent(
   runtime: AgentRuntime,
-  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+  opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] }
 ) {
-  const tools = runtime.getAgentTools([...CONTENT_TOOLS], onEvent) as any
+  const tools = runtime.getAgentTools({ allowlist: [...CONTENT_TOOLS], policy: opts?.policy, requestAllowlist: opts?.requestAllowlist }, onEvent) as any
   return new OAAgent({ name: 'Content Generator', instructions: CONTENT_INSTRUCTIONS, tools })
 }

@@ -18,8 +18,9 @@ export const QA_INSTRUCTIONS = [
 
 export function createQaAgent(
   runtime: AgentRuntime,
-  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+  opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] }
 ) {
-  const tools = runtime.getAgentTools([...QA_TOOLS], onEvent) as any
+  const tools = runtime.getAgentTools({ allowlist: [...QA_TOOLS], policy: opts?.policy, requestAllowlist: opts?.requestAllowlist }, onEvent) as any
   return new OAAgent({ name: 'Quality Assurance', instructions: QA_INSTRUCTIONS, tools })
 }

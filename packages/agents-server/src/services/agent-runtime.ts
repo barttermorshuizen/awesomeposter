@@ -53,13 +53,41 @@ export class AgentRuntime {
     return this.model
   }
 
-  // Return wrapped agent tools, optionally filtered by allowlist
+  // Return wrapped agent tools, with support for allowlists and policy
+  // Backward compatible signature: getAgentTools(allowlist?: string[], onEvent?: ...)
+  // New signature: getAgentTools(options?: { allowlist?: string[]; policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] }, onEvent?: ...)
   getAgentTools(
-    allowlist?: string[],
-    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+    allowlistOrOptions?:
+      | string[]
+      | { allowlist?: string[]; policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] },
+    onEvent?: (e: {
+      type: 'tool_call' | 'tool_result' | 'metrics'
+      name?: string
+      args?: any
+      result?: any
+      tokens?: number
+      durationMs?: number
+    }) => void
   ) {
-    const selected = allowlist && allowlist.length > 0
-      ? this.tools.filter((t) => allowlist.includes(t.name))
+    const opts = Array.isArray(allowlistOrOptions)
+      ? { allowlist: allowlistOrOptions as string[] }
+      : (allowlistOrOptions || {})
+
+    const policy = (opts as any).policy as 'auto' | 'required' | 'off' | undefined
+    if (policy === 'off') {
+      return []
+    }
+
+    const listA = (opts as any).allowlist as string[] | undefined
+    const listB = (opts as any).requestAllowlist as string[] | undefined
+    const combineAllowlist = (a?: string[], b?: string[]) => {
+      if (a && a.length && b && b.length) return a.filter((n) => b.includes(n))
+      return (a && a.length ? a : b) || undefined
+    }
+    const finalAllowlist = combineAllowlist(listA, listB)
+
+    const selected = finalAllowlist && finalAllowlist.length > 0
+      ? this.tools.filter((t) => finalAllowlist.includes(t.name))
       : this.tools
     return selected.map((t) => {
       const paramsSchema = t.parameters instanceof ZodObject ? (t.parameters as z.ZodObject<any>) : z.object({})
@@ -84,8 +112,12 @@ export class AgentRuntime {
     })
   }
 
-  async runStructured<T>(schema: z.ZodSchema<T>, messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>): Promise<T> {
-    const { agent, prompt } = this.buildAgentAndPrompt(messages)
+  async runStructured<T>(
+    schema: z.ZodSchema<T>,
+    messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
+    opts?: { toolsAllowlist?: string[]; toolPolicy?: 'auto' | 'required' | 'off'; temperature?: number; schemaName?: string; trace?: boolean }
+  ): Promise<T> {
+    const { agent, prompt } = this.buildAgentAndPrompt(messages, undefined, opts)
     const runner = new Runner({ model: this.model })
     const result: any = await runner.run(agent, prompt)
     const out = result?.finalOutput
@@ -96,9 +128,10 @@ export class AgentRuntime {
 
   async runWithTools(
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
-    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+    opts?: { toolsAllowlist?: string[]; toolPolicy?: 'auto' | 'required' | 'off'; temperature?: number; schemaName?: string; trace?: boolean }
   ) {
-    const { agent, prompt } = this.buildAgentAndPrompt(messages, onEvent)
+    const { agent, prompt } = this.buildAgentAndPrompt(messages, onEvent, opts)
     const runner = new Runner({ model: this.model })
     const started = Date.now()
     // Stream full events so we can extend later; for now, we focus on final output
@@ -117,9 +150,10 @@ export class AgentRuntime {
 
   async runChatStream(
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
-    onDelta: (delta: string) => void
+    onDelta: (delta: string) => void,
+    opts?: { toolsAllowlist?: string[]; toolPolicy?: 'auto' | 'required' | 'off'; temperature?: number; schemaName?: string; trace?: boolean }
   ): Promise<string> {
-    const { agent, prompt } = this.buildAgentAndPrompt(messages)
+    const { agent, prompt } = this.buildAgentAndPrompt(messages, undefined, opts)
     const runner = new Runner({ model: this.model })
     const stream: any = await runner.run(agent, prompt, { stream: true })
     let full = ''
@@ -140,12 +174,22 @@ export class AgentRuntime {
 
   private buildAgentAndPrompt(
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
-    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+    opts?: { toolsAllowlist?: string[]; toolPolicy?: 'auto' | 'required' | 'off' }
   ) {
     const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') || 'You are a helpful assistant.'
     const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
 
-    const wrappedTools = this.tools.map((t) => {
+    // Optionally filter tools based on allowlist and policy for this run
+    const filteredTools = (() => {
+      if (opts?.toolPolicy === 'off') return [] as RegisteredTool[]
+      if (opts?.toolsAllowlist && opts.toolsAllowlist.length > 0) {
+        return this.tools.filter((t) => opts.toolsAllowlist!.includes(t.name))
+      }
+      return this.tools
+    })()
+
+    const wrappedTools = filteredTools.map((t) => {
       // Prefer ZodObject; fallback to an empty object schema for permissive tools
       const paramsSchema = t.parameters instanceof ZodObject ? (t.parameters as z.ZodObject<any>) : z.object({})
       return agentTool({

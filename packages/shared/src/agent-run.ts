@@ -31,6 +31,7 @@ export const AgentEventSchema = z.object({
     'tool_result',
     'message',
     'delta',
+    'handoff',
     'metrics',
     'warning',
     'error',
@@ -52,4 +53,3 @@ export const AppResultSchema = z.object({
   rationale: z.string().nullable()
 })
 export type AppResult = z.infer<typeof AppResultSchema>
-
