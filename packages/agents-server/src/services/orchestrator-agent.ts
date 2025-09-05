@@ -65,8 +65,8 @@ export class OrchestratorAgent {
           }
           const opts = { policy: req.options?.toolPolicy, requestAllowlist: req.options?.toolsAllowlist }
           let agentInstance: any
-          if (target === 'strategy') agentInstance = createStrategyAgent(this.runtime, onToolEvent, opts)
-          else if (target === 'generator') agentInstance = createContentAgent(this.runtime, onToolEvent, opts)
+          if (target === 'strategy') agentInstance = createStrategyAgent(this.runtime, onToolEvent, opts, 'chat')
+          else if (target === 'generator') agentInstance = createContentAgent(this.runtime, onToolEvent, opts, 'chat')
           else if (target === 'qa') agentInstance = createQaAgent(this.runtime, onToolEvent, opts)
           else agentInstance = undefined
 
@@ -88,13 +88,36 @@ export class OrchestratorAgent {
           const result: any = await (stream as any).finalResult
           if (typeof result?.finalOutput === 'string') full += result.finalOutput
         }
+        // Normalize chat output: if the agent returned a JSON object (e.g., { "content": "..." })
+        // or wrapped the answer in code fences, extract the plain text content for chat.
+        const normalizeChatOutput = (input: string) => {
+          let text = (input || '').trim()
+          // Strip code fences if present
+          if (text.startsWith('```')) {
+            const last = text.lastIndexOf('```')
+            if (last > 3) {
+              const firstNl = text.indexOf('\n')
+              const inner = firstNl !== -1 ? text.slice(firstNl + 1, last) : text
+              text = inner.trim()
+            }
+          }
+          // Try parsing JSON to extract a content field
+          try {
+            const j = JSON.parse(text)
+            if (j && typeof j === 'object' && typeof (j as any).content === 'string') {
+              return String((j as any).content)
+            }
+          } catch {}
+          return text
+        }
+        const finalText = normalizeChatOutput(full)
         const durationMs = Date.now() - start
-        onEvent({ type: 'message', message: full, correlationId: cid })
+        onEvent({ type: 'message', message: finalText, correlationId: cid })
         // Final metrics frame for chat mode (tokens may be unavailable)
         onEvent({ type: 'metrics', durationMs, correlationId: cid })
-        onEvent({ type: 'complete', data: { message: full }, durationMs, correlationId: cid })
-        log.info('orchestrator_run_complete', { cid, mode: 'chat', durationMs, size: full.length, target })
-        return { final: { message: full }, metrics: { durationMs } }
+        onEvent({ type: 'complete', data: { message: finalText }, durationMs, correlationId: cid })
+        log.info('orchestrator_run_complete', { cid, mode: 'chat', durationMs, size: finalText.length, target })
+        return { final: { message: finalText }, metrics: { durationMs } }
       }
 
       // Applicative mode (structured via handoffs among specialist agents) with streaming
