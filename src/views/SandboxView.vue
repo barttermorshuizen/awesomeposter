@@ -234,6 +234,33 @@ function copyCid() {
 }
 onMounted(loadAgents)
 onBeforeUnmount(() => abortController?.abort())
+
+// Group frames for the inspector accordion, consolidating all deltas
+const groupedFrames = computed(() => {
+  const items: Array<
+    | { key: string; type: Frame['type']; t: number; data: Frame['data']; message?: string }
+    | { key: string; type: 'delta_group'; t: number; count: number; message: string; frames: Frame[] }
+  > = []
+
+  const deltas: Frame[] = []
+  frames.value.forEach((f, idx) => {
+    if (f.type === 'delta') {
+      deltas.push(f)
+    } else {
+      items.push({ key: `f-${idx}`, type: f.type, t: f.t, data: f.data, message: (f.data as any)?.message })
+    }
+  })
+
+  if (deltas.length > 0) {
+    const firstT = deltas[0].t
+    const combined = deltas.map((d) => (d.data as any)?.message || '').join('')
+    items.push({ key: 'delta-group', type: 'delta_group', t: firstT, count: deltas.length, message: combined, frames: deltas })
+  }
+
+  // Keep chronological order by time
+  items.sort((a, b) => a.t - b.t)
+  return items
+})
 </script>
 
 <template>
@@ -370,8 +397,10 @@ onBeforeUnmount(() => abortController?.abort())
             </v-chip>
           </v-card-title>
           <v-divider />
-          <v-card-text style="min-height: 240px">
-            <pre class="text-body-2" style="white-space: pre-wrap">{{ chatText || '—' }}</pre>
+          <v-card-text>
+            <div class="conversation-box">
+              <pre class="text-body-2" style="white-space: pre-wrap; margin: 0">{{ chatText || '—' }}</pre>
+            </div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -384,25 +413,55 @@ onBeforeUnmount(() => abortController?.abort())
           </v-card-title>
           <v-divider />
           <v-card-text style="max-height: 520px; overflow: auto">
-            <v-timeline density="compact" side="end" align="start">
-              <v-timeline-item
-                v-for="(f, i) in frames"
-                :key="i"
-                :dot-color="dotColor(f.type)"
-                size="small"
-              >
-                <template #opposite>
-                  <div class="text-caption text-medium-emphasis">{{ new Date(f.t).toLocaleTimeString() }}</div>
-                </template>
-                <div class="d-flex align-center">
-                  <v-chip size="x-small" class="me-2" :color="dotColor(f.type)" variant="flat">{{ f.type }}</v-chip>
-                  <span v-if="f.data?.message" class="text-body-2">{{ f.data.message }}</span>
-                </div>
-                <div v-if="showJsonBlock(f.type)" class="mt-2">
-                  <pre class="text-caption" style="white-space: pre-wrap">{{ stringify(f.data) }}</pre>
-                </div>
-              </v-timeline-item>
-            </v-timeline>
+            <v-expansion-panels variant="accordion" density="comfortable">
+              <v-expansion-panel v-for="item in groupedFrames" :key="item.key">
+                <v-expansion-panel-title>
+                  <div class="d-flex align-center w-100">
+                    <v-chip
+                      size="x-small"
+                      class="me-2"
+                      :color="dotColor(item.type === 'delta_group' ? 'delta' : item.type)"
+                      variant="flat"
+                    >
+                      {{ item.type === 'delta_group' ? 'delta' : item.type }}
+                    </v-chip>
+                    <span class="text-body-2 flex-grow-1">
+                      <template v-if="item.type === 'delta_group'">
+                        Delta stream ({{ (item as any).count }} chunks)
+                      </template>
+                      <template v-else-if="(item as any).type === 'metrics'">
+                        <template v-if="(item as any).data && (item as any).data.durationMs !== undefined">
+                          duration: {{ (item as any).data.durationMs }} ms
+                        </template>
+                        <template v-else>
+                          metrics
+                        </template>
+                      </template>
+                      <template v-else-if="(item as any).type === 'complete'">
+                        Run ended
+                      </template>
+                      <template v-else>
+                        {{ (item as any).message || '' }}
+                      </template>
+                    </span>
+                    <span class="text-caption text-medium-emphasis">
+                      {{ new Date(item.t).toLocaleTimeString() }}
+                    </span>
+                  </div>
+                </v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <template v-if="item.type === 'delta_group'">
+                    <div class="mb-2 text-caption text-medium-emphasis">Combined message</div>
+                    <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ (item as any).message }}</pre>
+                    <div class="mt-4 mb-2 text-caption text-medium-emphasis">Raw frames</div>
+                    <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((item as any).frames.map(f => f.data)) }}</pre>
+                  </template>
+                  <template v-else>
+                    <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((item as any).data) }}</pre>
+                  </template>
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
           </v-card-text>
         </v-card>
       </v-col>
@@ -455,4 +514,9 @@ export default {
 </script>
 
 <style scoped>
+.conversation-box {
+  min-height: 200px;
+  max-height: 520px;
+  overflow: auto;
+}
 </style>
