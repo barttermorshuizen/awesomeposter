@@ -1,17 +1,12 @@
 import { WorkflowRequestSchema } from '@awesomeposter/shared'
+import { createSse } from '../../../../src/utils/sse'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   const request = WorkflowRequestSchema.parse(body)
 
-  setHeader(event, 'Content-Type', 'text/event-stream')
-  setHeader(event, 'Cache-Control', 'no-cache')
-  setHeader(event, 'Connection', 'keep-alive')
-
-  const write = (data: any) => {
-    // @ts-ignore
-    event.node.res.write(`data: ${JSON.stringify(data)}\n\n`)
-  }
+  const cid = getHeader(event, 'x-correlation-id') || (event as any).context?.correlationId || undefined
+  const sse = createSse(event, { correlationId: cid, heartbeatMs: 15000 })
 
   try {
     const { getAgents } = await import('../../../../src/services/agents-container')
@@ -21,12 +16,14 @@ export default defineEventHandler(async (event) => {
       generator,
       qa
     )
-    const result = await orchestrator.executeWorkflowWithProgress(request, (progress) => write(progress))
-    write({ type: 'complete', result })
+    const result = await orchestrator.executeWorkflowWithProgress(request, (progress) =>
+      sse.send({ type: 'progress', data: progress })
+    )
+    await sse.send({ type: 'complete', data: result })
   } catch (error: any) {
-    write({ type: 'error', error: error?.message || 'Unknown error' })
+    const message = error?.statusMessage || error?.message || 'Unknown error'
+    await sse.send({ type: 'error', message })
   } finally {
-    // @ts-ignore
-    event.node.res.end()
+    sse.close()
   }
 })

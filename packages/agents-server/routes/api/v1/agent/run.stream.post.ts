@@ -1,4 +1,5 @@
 import { AgentRunRequestSchema } from '@awesomeposter/shared'
+import { createSse } from '../../../../src/utils/sse'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
@@ -11,25 +12,18 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  setHeader(event, 'Content-Type', 'text/event-stream')
-  setHeader(event, 'Cache-Control', 'no-cache')
-  setHeader(event, 'Connection', 'keep-alive')
   const cid = getHeader(event, 'x-correlation-id') || (event as any).context?.correlationId || undefined
-
-  const write = (data: any) => {
-    // @ts-ignore
-    event.node.res.write(`data: ${JSON.stringify({ correlationId: cid, ...data })}\n\n`)
-  }
+  const sse = createSse(event, { correlationId: cid, heartbeatMs: 15000 })
 
   try {
     const { getOrchestrator } = await import('../../../../src/services/orchestrator-agent')
     const orch = getOrchestrator()
-    const result = await orch.run(req, (e) => write(e), cid)
-    write({ type: 'complete', result })
+    await orch.run(req, (e) => sse.send(e), cid)
+    // Orchestrator emits 'complete'; do not duplicate here
   } catch (error: any) {
-    write({ type: 'error', error: error?.message || 'Unknown error' })
+    const message = error?.statusMessage || error?.message || 'Unknown error'
+    await sse.send({ type: 'error', message })
   } finally {
-    // @ts-ignore
-    event.node.res.end()
+    sse.close()
   }
 })

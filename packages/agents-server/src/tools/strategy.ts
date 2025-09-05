@@ -59,18 +59,90 @@ export function analyzeAssetsLocal(assets: Asset[]) {
 
   return { achievableFormats: achievable, recommendedFormat: recommended, assetQuality, formatFeasibility, recommendations }
 }
+// Define a strict asset schema for tool parameters (Agents SDK requires array items to be specified)
+// All fields must be required in JSON Schema terms; use nullable for optional semantics.
+// additionalProperties must be false (catchall never) to satisfy the API validator.
+// Note: metaJson removed from params to satisfy OpenAI JSON Schema validator.
+const AssetParamSchema = z
+  .object({
+    id: z.string().nullable(),
+    filename: z.string().nullable(),
+    originalName: z.string().nullable(),
+    url: z.string().nullable(),
+    type: z.enum(['image', 'document', 'video', 'audio', 'other']).nullable(),
+    mimeType: z.string().nullable(),
+    fileSize: z.number().int().nonnegative().nullable()
+  })
+  .strict()
+  .catchall(z.never())
 
+// Structured analysis schema for tool parameters (required+nullable, additionalProperties=false)
+const FormatTypeEnum = z.enum(['text', 'single_image', 'multi_image', 'document_pdf', 'video'])
+
+const AssetQualityParamSchema = z
+  .object({
+    images: z
+      .object({
+        count: z.number().int().nonnegative(),
+        quality: z.enum(['high', 'medium', 'low'])
+      })
+      .strict(),
+    documents: z
+      .object({
+        count: z.number().int().nonnegative(),
+        hasSlides: z.boolean()
+      })
+      .strict(),
+    videos: z
+      .object({
+        count: z.number().int().nonnegative(),
+        duration: z.number().int().nonnegative().nullable()
+      })
+      .strict()
+  })
+  .strict()
+
+const FormatFeasibilityEntrySchema = z
+  .object({
+    feasible: z.boolean(),
+    reason: z.string(),
+    assetRequirements: z.array(z.string())
+  })
+  .strict()
+
+const FormatFeasibilityParamSchema = z
+  .object({
+    text: FormatFeasibilityEntrySchema,
+    single_image: FormatFeasibilityEntrySchema,
+    multi_image: FormatFeasibilityEntrySchema,
+    document_pdf: FormatFeasibilityEntrySchema,
+    video: FormatFeasibilityEntrySchema
+  })
+  .strict()
+
+const AssetAnalysisParamSchema = z
+  .object({
+    achievableFormats: z.array(FormatTypeEnum),
+    recommendedFormat: FormatTypeEnum,
+    assetQuality: AssetQualityParamSchema,
+    formatFeasibility: FormatFeasibilityParamSchema,
+    recommendations: z.array(z.string())
+  })
+  .strict()
 export function registerStrategyTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'strategy_analyze_assets',
     description: 'Analyze provided assets to determine feasible formats and a recommendation',
-    parameters: z.object({
-      // OpenAI structured outputs: fields must be required; use nullable for optional semantics
-      assets: z.array(z.any()).nullable(),
-      briefId: z.string().nullable()
-    }),
+    parameters: z
+      .object({
+        // OpenAI structured outputs: all fields required; use nullable for optional semantics.
+        // Important: arrays must define item schemas; avoid z.any() for array items.
+        assets: z.array(AssetParamSchema).nullable(),
+        briefId: z.string().nullable()
+      })
+      .strict(),
     handler: async ({ assets, briefId }: { assets: Asset[] | null; briefId: string | null }) => {
-      let sourceAssets: Asset[] | undefined = assets
+      let sourceAssets: Asset[] | undefined = assets as any
       if ((!sourceAssets || !Array.isArray(sourceAssets)) && briefId) {
         const db = getDb()
         const rows = await db.select().from(assetsTable).where(eq(assetsTable.briefId, briefId))
@@ -96,17 +168,26 @@ export function registerStrategyTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'strategy_plan_knobs',
     description: 'Plan 4-knob configuration based on objective and asset analysis',
-    parameters: z.object({
-      objective: z.string(),
-      // Use nullable to indicate optional semantics while keeping fields required
-      assetAnalysis: z.any().nullable(),
-      clientPolicy: z.any().nullable(),
-      briefId: z.string().nullable()
-    }),
-    handler: async ({ objective, assetAnalysis, clientPolicy, briefId }: { objective: string; assetAnalysis: any | null; clientPolicy: any | null; briefId: string | null }) => {
-      let analysis = assetAnalysis
+    parameters: z
+      .object({
+        objective: z.string(),
+        // Add assetAnalysis parameter that the SDK expects
+        assetAnalysis: AssetAnalysisParamSchema.nullable(),
+        // Narrow client policy shape to satisfy JSON Schema requirements
+        clientPolicy: z
+          .object({
+            maxHookIntensity: z.number().nullable()
+          })
+          .strict()
+          .nullable(),
+        briefId: z.string().nullable()
+      })
+      .strict(),
+    handler: async ({ objective, assetAnalysis, clientPolicy, briefId }: { objective: string; assetAnalysis: any | null; clientPolicy: { maxHookIntensity: number | null } | null; briefId: string | null }) => {
+      let analysis: any | undefined = assetAnalysis
+      
+      // If no assetAnalysis provided but briefId is available, compute from DB assets
       if (!analysis && briefId) {
-        // Compute on the fly from DB assets if analysis not provided
         const db = getDb()
         const rows = await db.select().from(assetsTable).where(eq(assetsTable.briefId, briefId))
         const mapped = rows.map((r: any) => ({
@@ -124,7 +205,10 @@ export function registerStrategyTools(runtime: AgentRuntime) {
       const format: FormatType = analysis?.recommendedFormat || 'text'
       // Heuristic defaults
       let hookIntensity = /awareness|launch|new/i.test(objective) ? 0.75 : 0.6
-      if (clientPolicy?.maxHookIntensity != null) hookIntensity = Math.min(hookIntensity, Number(clientPolicy.maxHookIntensity) || hookIntensity)
+      if (clientPolicy?.maxHookIntensity != null) {
+        const cap = Number(clientPolicy.maxHookIntensity)
+        if (Number.isFinite(cap)) hookIntensity = Math.min(hookIntensity, cap)
+      }
       const expertiseDepth = /technical|deep|guide|how\-to/i.test(objective) ? 0.7 : 0.5
       const structure = {
         lengthLevel: format === 'text' ? 0.7 : format === 'document_pdf' ? 0.9 : 0.4,

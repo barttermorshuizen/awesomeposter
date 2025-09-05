@@ -20,6 +20,8 @@ export class OrchestratorAgent {
     const cid = correlationId || `run_${Math.random().toString(36).slice(2)}`
     const log = getLogger()
     const start = Date.now()
+    // Aggregate minimal metrics for P0
+    const metricsAgg = { tokensTotal: 0 }
     onEvent({ type: 'start', correlationId: cid, message: 'Run started' })
     log.info('orchestrator_run_start', { cid, mode: req.mode, hasState: Boolean(req.state), briefId: req.briefId })
 
@@ -45,6 +47,8 @@ export class OrchestratorAgent {
         })
         const durationMs = Date.now() - start
         onEvent({ type: 'message', message: full, correlationId: cid })
+        // Final metrics frame for chat mode (tokens may be unavailable)
+        onEvent({ type: 'metrics', durationMs, correlationId: cid })
         onEvent({ type: 'complete', data: { message: full }, durationMs, correlationId: cid })
         log.info('orchestrator_run_complete', { cid, mode: 'chat', durationMs, size: full.length })
         return { final: { message: full }, metrics: { durationMs } }
@@ -55,16 +59,19 @@ export class OrchestratorAgent {
 
       // Build specialist agents (knowledge lives inside their modules)
       const strategyAgent = createStrategyAgent(this.runtime, (e) => {
+        if (e.type === 'metrics' && typeof e.tokens === 'number') metricsAgg.tokensTotal += e.tokens
         if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
         if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
         if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
       })
       const contentAgent = createContentAgent(this.runtime, (e) => {
+        if (e.type === 'metrics' && typeof e.tokens === 'number') metricsAgg.tokensTotal += e.tokens
         if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
         if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
         if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
       })
       const qaAgent = createQaAgent(this.runtime, (e) => {
+        if (e.type === 'metrics' && typeof e.tokens === 'number') metricsAgg.tokensTotal += e.tokens
         if (e.type === 'tool_call') onEvent({ type: 'tool_call', message: e.name, data: { args: e.args }, correlationId: cid })
         if (e.type === 'tool_result') onEvent({ type: 'tool_result', message: e.name, data: { result: e.result }, correlationId: cid })
         if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
@@ -80,9 +87,7 @@ export class OrchestratorAgent {
       const triageAgent = AgentClass.create({
         name: 'Triage Agent',
         instructions: TRIAGE_INSTRUCTIONS,
-        handoffs: [strategyAgent, contentAgent, qaAgent],
-        // Prefer typed/validated final output per Agent SDK best practices
-        outputType: AppResultSchema
+        handoffs: [strategyAgent, contentAgent, qaAgent]
       })
 
       // Build the prompt/user input
@@ -131,13 +136,21 @@ export class OrchestratorAgent {
         }
       }
       const durationMs = Date.now() - start
+      // Final aggregated metrics frame for the run
+      onEvent({
+        type: 'metrics',
+        tokens: metricsAgg.tokensTotal > 0 ? metricsAgg.tokensTotal : undefined,
+        durationMs,
+        correlationId: cid
+      })
       onEvent({ type: 'complete', data: parsed, durationMs, correlationId: cid })
       log.info('orchestrator_run_complete', { cid, mode: 'app', durationMs })
-      return { final: parsed, metrics: { durationMs } }
+      return { final: parsed, metrics: { durationMs, tokens: metricsAgg.tokensTotal || undefined } }
     } catch (error: any) {
       onEvent({ type: 'error', message: error?.message || 'Unknown error', correlationId: cid })
       log.error('orchestrator_run_error', { cid, err: error?.message })
-      throw error
+      // Swallow after emitting error to avoid duplicate error frames at route layer
+      return { final: null, metrics: undefined }
     }
   }
 

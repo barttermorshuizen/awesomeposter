@@ -2,7 +2,7 @@ import OpenAI from 'openai'
 
 export default defineEventHandler(async () => {
   const apiKey = process.env.OPENAI_API_KEY
-  const model = process.env.OPENAI_MODEL || 'gpt-4o'
+  const model = (process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o').trim()
   if (!apiKey) {
     return { ok: false, configured: false, error: 'OPENAI_API_KEY not set' }
   }

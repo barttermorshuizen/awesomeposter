@@ -46,9 +46,10 @@ export const AgentEventSchema = z.object({
 export type AgentEvent = z.infer<typeof AgentEventSchema>
 
 // Default structured output for app mode
+// For OpenAI structured outputs, all fields must be required; use nullable for optional semantics.
 export const AppResultSchema = z.object({
   result: z.any(),
-  rationale: z.string().optional()
+  rationale: z.string().nullable()
 })
 export type AppResult = z.infer<typeof AppResultSchema>
 

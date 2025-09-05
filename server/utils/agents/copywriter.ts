@@ -1,4 +1,4 @@
-import { getOpenAI } from '../llm'
+import { getOpenAI, getDefaultChatModelName } from '../llm'
 import type { 
   AgentState, 
   Draft, 
@@ -9,6 +9,7 @@ import { platformRules } from '@awesomeposter/shared'
 
 export class CopywriterAgent {
   private openai = getOpenAI()
+  private model = getDefaultChatModelName()
 
   /**
    * Generate multiple post variants based on 4-knob strategy
@@ -95,7 +96,7 @@ export class CopywriterAgent {
     console.log('===== End Copywriter Generation Prompt =====\n')
     
           const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: this.model,
         messages: [
           {
             role: 'system',
@@ -592,7 +593,7 @@ export class CopywriterAgent {
     console.log('===== End Copywriter Revision Prompt =====\n')
     
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.model,
       messages: [
         {
           role: 'system',

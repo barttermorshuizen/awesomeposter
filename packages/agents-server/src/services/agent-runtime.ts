@@ -1,5 +1,6 @@
 import { z, ZodObject } from 'zod'
 import { Agent as OAAgent, Runner, tool as agentTool } from '@openai/agents'
+import { getDefaultModelName } from '../utils/model'
 
 type ToolHandler = (args: any) => Promise<any> | any
 
@@ -34,7 +35,7 @@ function extractResponseText(res: any): string {
 }
 
 export class AgentRuntime {
-  private model = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
+  private model = getDefaultModelName()
   private tools: RegisteredTool[] = []
 
   constructor() {

@@ -1,4 +1,4 @@
-import { getOpenAI } from '../llm'
+import { getOpenAI, getDefaultChatModelName } from '../llm'
 import type { 
   AgentState, 
   Knobs, 
@@ -14,6 +14,7 @@ import { agentThresholds, scoringWeights } from '@awesomeposter/shared'
 
 export class DigitalMarketeerAgent {
   private openai = getOpenAI()
+  private model = getDefaultChatModelName()
 
   /**
    * Analyze available assets and determine achievable formats
@@ -242,7 +243,7 @@ export class DigitalMarketeerAgent {
       const prompt = this.buildStrategyPrompt(state, assetAnalysis)
       
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: this.model,
         messages: [
           {
             role: 'system',
@@ -459,7 +460,7 @@ export class DigitalMarketeerAgent {
       const prompt = this.buildFinalizationPrompt(state)
       
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: this.model,
         messages: [
           {
             role: 'system',
@@ -529,7 +530,7 @@ export class DigitalMarketeerAgent {
     const prompt = this.buildScoringPrompt(state, draft)
     
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.model,
       messages: [
         {
           role: 'system',
