@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_AGENTS_BASE_URL: string
+  readonly VITE_AGENTS_AUTH_BEARER?: string
 }
 
 interface ImportMeta {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import CreatePostPopup from '@/components/CreatePostPopup.vue'
+import AgentResultsPopup from '@/components/AgentResultsPopup.vue'
 
 type Brief = {
   id: string
@@ -229,7 +229,7 @@ function statusColor(status?: string | null): string {
       </v-card-text>
     </v-card>
 
-    <CreatePostPopup
+    <AgentResultsPopup
       v-model="createPostOpen"
       :brief="selectedBrief ? { id: selectedBrief.id, clientId: selectedBrief.clientId, title: selectedBrief.title, objective: selectedBrief.objective, audienceId: selectedBrief.audienceId ?? null } : null"
     />
