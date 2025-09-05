@@ -1,4 +1,5 @@
 import { setHeader } from 'h3';
+import { getLogger } from '../services/logger';
 
 /**
  * SSE writer with:
@@ -45,7 +46,21 @@ export function createSse(
       if (closed) return resolve();
       const ok = res.write(chunk);
       if (ok) return resolve();
-      res.once('drain', () => resolve());
+      const start = Date.now();
+      try {
+        const log = getLogger();
+        log.warn('sse_backpressure', {
+          correlationId,
+          bytes: typeof chunk === 'string' ? Buffer.byteLength(chunk) : 0
+        });
+      } catch {}
+      res.once('drain', () => {
+        try {
+          const log = getLogger();
+          log.info('sse_drain', { correlationId, waitMs: Date.now() - start });
+        } catch {}
+        resolve();
+      });
     });
 
   const sendNamed = async (type: string, data: any) => {
