@@ -1,4 +1,4 @@
-import { AppResultSchema, type AgentRunRequest, type AgentEvent } from '@awesomeposter/shared'
+import { AppResultSchema, agentThresholds, type AgentRunRequest, type AgentEvent } from '@awesomeposter/shared'
 import { getLogger } from './logger'
 import { AgentRuntime } from './agent-runtime'
 import { getAgents } from './agents-container'
@@ -143,13 +143,24 @@ export class OrchestratorAgent {
         if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
       }, { policy: req.options?.toolPolicy, requestAllowlist: req.options?.toolsAllowlist })
 
-      const TRIAGE_INSTRUCTIONS = [
-        'You are the Orchestrator. Decide which specialist (Strategy, Content, QA) should handle each step and perform handoffs as needed.',
-        'When you are ready to return the final result, output only a single JSON object that matches this schema:',
-        '{ "result": <any>, "rationale"?: <string> }',
-        'Do not include any additional commentary outside of the JSON.',
-        req.options?.schemaName ? `Schema name: ${req.options.schemaName}` : ''
-      ].join('\n')
+      const TRIAGE_INSTRUCTIONS = (() => {
+        const minScore = agentThresholds.minCompositeScore
+        const maxRisk = agentThresholds.maxBrandRisk
+        const mrc = (req as any)?.options?.maxRevisionCycles
+        const maxCycles = typeof mrc === 'number' ? mrc : agentThresholds.maxRevisionCycles
+        const lines = [
+          'You are the Orchestrator. Coordinate the Strategy Manager, Content Generator, and Quality Assurance specialists to deliver high‑quality social posts.',
+          'Objectives: return exactly one valid JSON object { "result": <object>, "rationale": <string|null> }. No extra text, no markdown, no code fences.',
+          'Way of Working: Strategize → Generate → QA → Finalize.',
+          'Strategize (Strategy Manager): use tools (io_get_brief, io_get_client_profile, io_list_assets, strategy_analyze_assets). Choose an achievable formatType based on assets; if the brief requests an unachievable format, pick the best achievable alternative and explain the tradeoff in rationale. Produce a concise writer brief including goal, audience insight, angle, 2–3 hooks, CTA, and 4‑knob settings.',
+          'Generate (Content Generator): by default produce 3 variants unless the objective specifies otherwise. Structure each draft as: first line hook, blank line, then body. Use tools (apply_format_rendering, optimize_for_platform). Write only in the client\'s primaryCommunicationLanguage; honor tone/voice, emoji policy, bannedClaims. You MUST delegate draft generation to Content; do not write drafts yourself.',
+          `QA (Quality Assurance): score drafts on 0–1 for readability, clarity, objectiveFit, brandRisk, compliance. If composite < ${minScore} or brandRisk > ${maxRisk} or compliance=false, produce succinct revision instructions and hand back to Content. Iterate until pass or max ${maxCycles} cycles.`,
+          'Constraints: never invent assets or client data; use tools to fetch context. Keep handoffs minimal and purposeful. Honor any tool allowlist and policy. Stop when thresholds are met or max cycles reached. Do not finalize after Strategy alone.',
+          'Final delivery spec: result MUST include { drafts: [ { platform, variantId, post, altText } x3 ], knobs: { ... } } and MAY include schedule and a short qaSummary. Do not emit partial plans as final.',
+          'Output: return a single JSON object only. Do not wrap in code fences. ' + (req.options?.schemaName ? `Conform to schema: ${req.options.schemaName}.` : ''),
+        ]
+        return lines.join('\n')
+      })()
 
       const triageAgent = AgentClass.create({
         name: 'Triage Agent',
@@ -174,13 +185,22 @@ export class OrchestratorAgent {
         return undefined
       }
 
+      // Track specialist involvement + whether we forced a step ourselves
+      let sawContentInvolvement = false
+      let sawQaInvolvement = false
+      // Track current phase to gate raw deltas
+      let currentPhase: 'analysis' | 'planning' | 'generation' | 'qa' | 'finalization' | 'idle' | undefined = 'planning'
+      let forcedContent = false
+      let forcedQa = false
       try {
         for await (const ev of stream as AsyncIterable<any>) {
           // Raw model deltas
           if (ev?.type === 'raw_model_stream_event') {
             const data = ev.data
             if (data?.type === 'output_text_delta' && typeof data.delta === 'string' && data.delta.length > 0) {
-              onEvent({ type: 'delta', message: data.delta, correlationId: cid })
+              if (currentPhase === 'generation' || currentPhase === 'qa') {
+                onEvent({ type: 'delta', message: data.delta, correlationId: cid })
+              }
             }
             continue
           }
@@ -193,7 +213,9 @@ export class OrchestratorAgent {
 
             if (name === 'message_output_created') {
               const text = typeof item?.content === 'string' ? item.content : undefined
-              if (text && text.length > 0) onEvent({ type: 'delta', message: text, correlationId: cid })
+              if (text && text.length > 0 && (currentPhase === 'generation' || currentPhase === 'qa')) {
+                onEvent({ type: 'delta', message: text, correlationId: cid })
+              }
             } else if (name === 'tool_called') {
               const toolName = raw?.name || item?.agent?.name || 'tool'
               let args: any = undefined
@@ -201,10 +223,14 @@ export class OrchestratorAgent {
                 try { args = JSON.parse(raw.arguments) } catch { args = raw.arguments }
               }
               onEvent({ type: 'tool_call', message: toolName, data: { args }, correlationId: cid })
+              if (/apply_format_rendering|optimize_for_platform/i.test(String(toolName))) sawContentInvolvement = true
+              if (/qa_evaluate_content/i.test(String(toolName))) sawQaInvolvement = true
             } else if (name === 'tool_output') {
               const toolName = raw?.name || item?.agent?.name || 'tool'
               const result = (raw?.output && typeof raw.output === 'object') ? raw.output : (item?.output ?? raw?.output ?? null)
               onEvent({ type: 'tool_result', message: toolName, data: { result }, correlationId: cid })
+              if (/apply_format_rendering|optimize_for_platform/i.test(String(toolName))) sawContentInvolvement = true
+              if (/qa_evaluate_content/i.test(String(toolName))) sawQaInvolvement = true
             } else if (name === 'handoff_requested') {
               const from = item?.agent?.name
               onEvent({ type: 'handoff', message: 'requested', data: { from }, correlationId: cid })
@@ -213,7 +239,24 @@ export class OrchestratorAgent {
               const to = item?.targetAgent?.name
               onEvent({ type: 'handoff', message: 'occurred', data: { from, to }, correlationId: cid })
               const phase = phaseForAgent(to)
-              if (phase) onEvent({ type: 'phase', phase, message: `Handed off to ${to}`, correlationId: cid })
+              if (phase) {
+                currentPhase = phase
+                onEvent({ type: 'phase', phase, message: `Handed off to ${to}`, correlationId: cid })
+              }
+              if (/content/i.test(String(to || ''))) sawContentInvolvement = true
+              if (/(quality|qa)/i.test(String(to || ''))) sawQaInvolvement = true
+            } else if (typeof name === 'string' && /handoff/i.test(name)) {
+              // Catch-all for possible SDK variations of handoff event names
+              const from = item?.sourceAgent?.name || item?.agent?.name
+              const to = item?.targetAgent?.name || raw?.targetAgent?.name
+              onEvent({ type: 'handoff', message: name, data: { from, to }, correlationId: cid })
+              const phase = phaseForAgent(to)
+              if (phase) {
+                currentPhase = phase
+                onEvent({ type: 'phase', phase, message: `Handed off to ${to}`, correlationId: cid })
+              }
+              if (/content/i.test(String(to || ''))) sawContentInvolvement = true
+              if (/(quality|qa)/i.test(String(to || ''))) sawQaInvolvement = true
             } else if (name === 'reasoning_item_created') {
               const text = raw?.rawContent?.[0]?.text || raw?.content?.[0]?.text || ''
               if (text) onEvent({ type: 'message', message: text, correlationId: cid })
@@ -227,7 +270,25 @@ export class OrchestratorAgent {
           if (ev?.type === 'agent_updated_stream_event') {
             const agentName = ev?.agent?.name as string | undefined
             const phase = phaseForAgent(agentName)
-            if (phase) onEvent({ type: 'phase', phase, message: `Running ${agentName}`, correlationId: cid })
+            if (phase) {
+              currentPhase = phase
+              onEvent({ type: 'phase', phase, message: `Running ${agentName}`, correlationId: cid })
+            }
+            if (/content/i.test(String(agentName || ''))) sawContentInvolvement = true
+            if (/(quality|qa)/i.test(String(agentName || ''))) sawQaInvolvement = true
+            continue
+          }
+
+          // Generic agent-notification catch-all (SDK may emit other names)
+          if (ev && (ev as any).agent && typeof (ev as any).agent.name === 'string') {
+            const agentName = String((ev as any).agent.name)
+            if (/content/i.test(agentName)) sawContentInvolvement = true
+            if (/(quality|qa)/i.test(agentName)) sawQaInvolvement = true
+            const phase = phaseForAgent(agentName)
+            if (phase) {
+              currentPhase = phase
+              onEvent({ type: 'phase', phase, message: `Running ${agentName}`, correlationId: cid })
+            }
             continue
           }
         }
@@ -238,6 +299,8 @@ export class OrchestratorAgent {
 
       // Finalization after streaming completes
       await stream.completed
+      // Make the control transfer explicit in the UI
+      onEvent({ type: 'phase', phase: 'finalization', message: 'Orchestrator finalizing', correlationId: cid })
 
       // Try to parse final output
       let parsed: any
@@ -282,6 +345,110 @@ export class OrchestratorAgent {
         } catch {}
       }
 
+      // Enforcement: if Content did not appear involved, but we have a writer brief/knobs, delegate generation explicitly
+      try {
+        const r = (parsed?.result || {}) as any
+        const writerBrief = r && (r.goal || r.audienceInsight || r.selectedAngle || r.hookOptions || r.cta)
+          ? { goal: r.goal, audienceInsight: r.audienceInsight, selectedAngle: r.selectedAngle, hookOptions: r.hookOptions, cta: r.cta }
+          : (r.writerBrief || null)
+        const knobs = r?.knobs || r?.finalSettings || null
+        const hasDraftsAlready = Array.isArray(r?.drafts) && r.drafts.length > 0
+        if (!sawContentInvolvement && (writerBrief || knobs) && !hasDraftsAlready) {
+          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Content Generator' }, correlationId: cid })
+          onEvent({ type: 'phase', phase: 'generation', message: 'Generating drafts from writer brief and knobs', correlationId: cid })
+          const contentRunner = new Runner({ model: this.runtime.getModel() })
+          const cPrompt = [
+            systemText,
+            'Use the following writer brief and 4‑knob settings to generate 3 post variants. Return JSON with { drafts: [ { platform, variantId, post, altText } ] }. Do not include any text outside JSON.',
+            `WRITER_BRIEF:\n${JSON.stringify(writerBrief, null, 2)}`,
+            `KNOBS:\n${JSON.stringify(knobs, null, 2)}`,
+            `OBJECTIVE: ${req.objective}`,
+            req.briefId ? `BRIEF_ID: ${req.briefId}` : ''
+          ].filter(Boolean).join('\n\n')
+          const cStream: any = await contentRunner.run(contentAgent as any, cPrompt, { stream: true })
+          await cStream.completed
+          const cRes: any = await cStream.finalResult
+          const cText = typeof cRes?.finalOutput === 'string' ? cRes.finalOutput : JSON.stringify(cRes?.finalOutput ?? '')
+          try {
+            const obj = JSON.parse(cText || '{}')
+            if (obj && Array.isArray(obj.drafts)) {
+              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), drafts: obj.drafts, knobs } }
+              sawContentInvolvement = true
+              forcedContent = true
+            }
+          } catch {}
+        }
+      } catch {}
+
+      // Enforcement 2: if drafts exist but no Content involvement was observed, regenerate via Content agent
+      try {
+        const r = (parsed?.result || {}) as any
+        const drafts = Array.isArray(r?.drafts) ? (r.drafts as any[]) : []
+        const knobs = r?.knobs || r?.finalSettings || null
+        const writerBrief = r && (r.goal || r.audienceInsight || r.selectedAngle || r.hookOptions || r.cta)
+          ? { goal: r.goal, audienceInsight: r.audienceInsight, selectedAngle: r.selectedAngle, hookOptions: r.hookOptions, cta: r.cta }
+          : (r.writerBrief || null)
+        if (drafts.length > 0 && !sawContentInvolvement) {
+          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Content Generator' }, correlationId: cid })
+          onEvent({ type: 'phase', phase: 'generation', message: 'Regenerating drafts via Content agent for provenance', correlationId: cid })
+          const contentRunner = new Runner({ model: this.runtime.getModel() })
+          const cPrompt = [
+            systemText,
+            'Generate 3 post variants as the Content Generator. Use the writer brief/knobs below; you may use the provided sample drafts as inspiration but produce your own output. Return JSON with { drafts: [ { platform, variantId, post, altText } ] } only.',
+            writerBrief ? `WRITER_BRIEF:\n${JSON.stringify(writerBrief, null, 2)}` : '',
+            knobs ? `KNOBS:\n${JSON.stringify(knobs, null, 2)}` : '',
+            drafts.length ? `SAMPLE_DRAFTS:\n${JSON.stringify(drafts.slice(0, 3), null, 2)}` : '',
+            `OBJECTIVE: ${req.objective}`,
+            req.briefId ? `BRIEF_ID: ${req.briefId}` : ''
+          ].filter(Boolean).join('\n\n')
+          const cStream: any = await contentRunner.run(contentAgent as any, cPrompt, { stream: true })
+          await cStream.completed
+          const cRes: any = await cStream.finalResult
+          const cText = typeof cRes?.finalOutput === 'string' ? cRes.finalOutput : JSON.stringify(cRes?.finalOutput ?? '')
+          try {
+            const obj = JSON.parse(cText || '{}')
+            if (obj && Array.isArray(obj.drafts)) {
+              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), drafts: obj.drafts, knobs } }
+              sawContentInvolvement = true
+              forcedContent = true
+            }
+          } catch {}
+        }
+      } catch {}
+
+      // Enforcement: if QA did not appear involved but drafts exist, delegate QA explicitly to compute scores
+      try {
+        const r = (parsed?.result || {}) as any
+        const drafts = Array.isArray(r?.drafts) ? r.drafts as Array<any> : []
+        if (drafts.length > 0 && !sawQaInvolvement) {
+          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Quality Assurance' }, correlationId: cid })
+          onEvent({ type: 'phase', phase: 'qa', message: 'Evaluating drafts quality', correlationId: cid })
+          const qaRunner = new Runner({ model: this.runtime.getModel() })
+          const qaInput = {
+            objective: req.objective,
+            drafts: drafts.map((d: any) => ({ variantId: d.variantId || '', platform: d.platform || 'text', post: d.post || '' }))
+          }
+          const qaPrompt = [
+            systemText,
+            'Evaluate each draft for readability, clarity, objectiveFit, brandRisk, compliance. Return JSON with { qa: { [variantId]: { readability, clarity, objectiveFit, brandRisk, compliance, composite, suggestedChanges: string[] } } } only. No extra text.',
+            `OBJECTIVE: ${req.objective}`,
+            `DRAFTS:\n${JSON.stringify(qaInput.drafts, null, 2)}`
+          ].join('\n\n')
+          const qStream: any = await qaRunner.run(qaAgent as any, qaPrompt, { stream: true })
+          await qStream.completed
+          const qRes: any = await qStream.finalResult
+          const qText = typeof qRes?.finalOutput === 'string' ? qRes.finalOutput : JSON.stringify(qRes?.finalOutput ?? '')
+          try {
+            const obj = JSON.parse(qText || '{}')
+            if (obj && obj.qa) {
+              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), qaSummary: obj.qa } }
+              sawQaInvolvement = true
+              forcedQa = true
+            }
+          } catch {}
+        }
+      } catch {}
+
       // Emit metrics and complete
       const durationMs = Date.now() - start
       // Try aggregate token usage from underlying model responses
@@ -290,6 +457,17 @@ export class OrchestratorAgent {
         const tokens = responses.reduce((acc, r) => acc + (r?.usage?.inputTokens || 0) + (r?.usage?.outputTokens || 0), 0)
         if (tokens > 0) metricsAgg.tokensTotal += tokens
       } catch {}
+      // Emit warnings only if we neither observed nor enforced the relevant specialist involvement
+      try {
+        const hasDrafts = parsed && parsed.result && Array.isArray((parsed.result as any).drafts) && ((parsed.result as any).drafts as any[]).length > 0
+        if (hasDrafts && !sawContentInvolvement && !forcedContent) {
+          onEvent({ type: 'warning', message: 'No Content handoff observed; drafts may have been produced without Content agent involvement.', correlationId: cid })
+        }
+        if (hasDrafts && !sawQaInvolvement && !forcedQa) {
+          onEvent({ type: 'warning', message: 'No QA involvement observed; consider increasing guidance or enabling QA step.', correlationId: cid })
+        }
+      } catch {}
+
       onEvent({ type: 'metrics', tokens: metricsAgg.tokensTotal || undefined, durationMs, correlationId: cid })
       onEvent({ type: 'complete', data: parsed, durationMs, correlationId: cid })
       log.info('orchestrator_run_complete', { cid, mode: 'app', durationMs })
@@ -306,10 +484,19 @@ export class OrchestratorAgent {
     const base = req.options?.systemPromptOverride ||
       'You are the Orchestrator agent for social content creation. Be concise and reliable.'
     if (req.mode === 'app') {
-      return base + '\n' + [
+      const minScore = agentThresholds.minCompositeScore
+      const maxRisk = agentThresholds.maxBrandRisk
+      const mrc = (req as any)?.options?.maxRevisionCycles
+      const maxCycles = typeof mrc === 'number' ? mrc : agentThresholds.maxRevisionCycles
+      return [
+        base,
+        'Follow this flow: Strategize → Generate → QA → Finalize. Use tools; never invent assets or client data.',
+        `Quality thresholds: composite ≥ ${minScore}, brandRisk ≤ ${maxRisk}, compliance=true; iterate up to ${maxCycles} revision cycles if needed.`,
+        'Default to 3 variants; each draft uses: first line as hook, then a blank line, then the body. Apply platform rules and client policy (language, tone/voice, emoji, banned claims). Do not finalize after Strategy alone.',
+        'Final delivery spec: { "result": { "drafts": [ { "platform": "...", "variantId": "1", "post": "...", "altText": "..." } x3 ], "knobs": { ... }, "schedule"?: { ... }, "qaSummary"?: { ... } }, "rationale"?: <string> }',
         'When responding, output only a single JSON object that matches this schema:',
         '{ "result": <any>, "rationale"?: <string> }',
-        'Do not include any additional commentary outside of the JSON.'
+        'Do not include markdown, code fences, or any commentary outside of the JSON.'
       ].join('\n')
     }
     // chat

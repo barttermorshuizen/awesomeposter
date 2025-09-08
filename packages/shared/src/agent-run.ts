@@ -13,6 +13,8 @@ export const AgentRunOptionsSchema = z.object({
   toolsAllowlist: z.array(z.string()).optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTurns: z.number().int().positive().optional(),
+  // Per-run override: how many QA revision cycles to allow before finalizing
+  maxRevisionCycles: z.number().int().min(0).optional(),
   trace: z.boolean().optional(),
   // For chat mode only: choose which agent to converse with
   targetAgentId: TargetAgentIdEnum.optional()
@@ -37,6 +39,7 @@ export const AgentEventSchema = z.object({
     'message',
     'delta',
     'handoff',
+    'prompt_preview',
     'metrics',
     'warning',
     'error',

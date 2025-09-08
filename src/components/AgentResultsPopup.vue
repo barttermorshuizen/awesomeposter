@@ -218,7 +218,8 @@ function dotColor(type: string) {
     case 'start': return 'primary'
     case 'phase': return 'secondary'
     case 'delta':
-    case 'message': return 'info'
+    case 'message':
+    case 'data': return 'info'
     case 'tool_call': return 'warning'
     case 'tool_result': return 'success'
     case 'handoff': return 'purple'
@@ -233,6 +234,41 @@ function dotColor(type: string) {
 function stringify(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
+
+const timelinePanels = computed(() => {
+  const out: Array<{ id?: string; type: AgentEvent['type'] | 'data'; data: AgentEventWithId; t: number }> = []
+  const deltaItems: Array<{ id?: string; type: AgentEvent['type']; data: AgentEventWithId; t: number }> = []
+
+  for (const f of frames.value) {
+    if (f.type === 'delta') {
+      deltaItems.push(f)
+    } else {
+      out.push(f)
+    }
+  }
+
+  if (deltaItems.length) {
+    const first = deltaItems[0]
+    const fullText = deltaItems.map(d => (typeof d.data.message === 'string' ? d.data.message : '')).join('')
+    out.push({
+      id: 'delta-group',
+      type: 'data',
+      t: first.t,
+      data: {
+        type: 'message',
+        // short header label; detailed text goes in panel body
+        message: `stream (${deltaItems.length} chunks)`,
+        data: {
+          fullText,
+          chunks: deltaItems.map(d => d.data),
+        }
+      } as AgentEventWithId
+    })
+  }
+
+  out.sort((a, b) => a.t - b.t)
+  return out
+})
 
 </script>
 
@@ -291,7 +327,7 @@ function stringify(v: unknown) {
               <v-divider />
               <v-card-text style="max-height: 480px; overflow: auto">
                 <v-expansion-panels variant="accordion" density="comfortable">
-                  <v-expansion-panel v-for="(f, idx) in frames" :key="idx">
+                  <v-expansion-panel v-for="(f, idx) in timelinePanels" :key="idx">
                     <v-expansion-panel-title>
                       <div class="d-flex align-center w-100">
                         <v-chip
@@ -305,13 +341,26 @@ function stringify(v: unknown) {
                         <span class="text-body-2 flex-grow-1">
                           {{ f.data.message || '' }}
                         </span>
-                        <span class="text-caption text-medium-emphasis">
+                        <v-chip
+                          v-if="f.type === 'metrics' && typeof f.data?.durationMs === 'number'"
+                          size="x-small"
+                          color="teal"
+                          variant="outlined"
+                          class="ms-2"
+                        >
+                          {{ Math.round(f.data.durationMs) }} ms
+                        </v-chip>
+                        <span class="text-caption text-medium-emphasis ms-auto">
                           {{ new Date(f.t).toLocaleTimeString() }}
                         </span>
                       </div>
                     </v-expansion-panel-title>
                     <v-expansion-panel-text>
-                      <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(f.data) }}</pre>
+                      <div v-if="f.type === 'data'">
+                        <div class="text-caption text-medium-emphasis mb-1">Aggregated stream</div>
+                        <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ f.data?.data?.fullText || '' }}</pre>
+                      </div>
+                      <pre v-else class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(f.data) }}</pre>
                     </v-expansion-panel-text>
                   </v-expansion-panel>
                 </v-expansion-panels>
