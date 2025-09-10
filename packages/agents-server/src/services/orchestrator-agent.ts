@@ -4,10 +4,78 @@ import { AgentRuntime } from './agent-runtime'
 import { getAgents } from './agents-container'
 import { getDb, assets as assetsTable, eq } from '@awesomeposter/db'
 import { analyzeAssetsLocal } from '../tools/strategy'
-import { Agent as AgentClass, Runner } from '@openai/agents'
+import { Agent as AgentClass, Runner, handoff } from '@openai/agents'
+/* Using local fallback for filterHistory since '@openai/agents/extensions' is unavailable in this environment */
 import { createStrategyAgent } from '../agents/strategy-manager'
 import { createContentAgent } from '../agents/content-generator'
 import { createQaAgent } from '../agents/quality-assurance'
+import { ORCH_SYS_START, ORCH_SYS_END, stripSentinelSections, dropOrchestrationArtifacts } from '../utils/prompt-filters.js'
+
+/* Local fallback equivalent of Agents SDK filterHistory */
+const filterHistory = (opts: { maxMessages?: number; filterSystemMessages?: boolean }) => {
+  const { maxMessages = 6, filterSystemMessages = true } = opts || {}
+  return (history: any[]) => {
+    const arr = Array.isArray(history) ? history : []
+    const filtered = filterSystemMessages
+      ? arr.filter((m) => String((m as any)?.role || '').toLowerCase() !== 'system')
+      : arr
+    return maxMessages && maxMessages > 0 ? filtered.slice(-maxMessages) : filtered
+  }
+}
+
+/**
+ * Synchronous composeInputFilter used for handoff input filtering.
+ * Mirrors composeInputFilter but without async to satisfy HandoffInputFilter type.
+ */
+function composeInputFilterSync(baseFilter?: (history: any[]) => any[]) {
+  return (history: any[]) => {
+    const base = baseFilter ? baseFilter(history) : history
+    const mapped = base.map((msg: any) => {
+      const c = (msg as any).content
+      if (typeof c === 'string') {
+        const text = stripSentinelSections(c)
+        return { ...msg, content: text }
+      }
+      if (Array.isArray(c)) {
+        const newParts = c
+          .map((p: any) => {
+            const nextText = typeof p?.text === 'string' ? stripSentinelSections(p.text) : p?.text
+            return { ...p, text: nextText }
+          })
+          // prune empty textual parts
+          .filter((p: any) => (typeof p?.text === 'string' ? p.text.trim().length > 0 : true))
+        return { ...msg, content: newParts }
+      }
+      return msg
+    })
+
+    const filtered = mapped.filter((m: any) => dropOrchestrationArtifacts(m))
+
+    // Remove messages whose content ended up empty arrays after pruning
+    const finalHistory = filtered.filter((m: any) => {
+      const c = (m as any).content
+      if (typeof c === 'string') return c.trim().length > 0
+      if (Array.isArray(c)) return c.length > 0
+      return true
+    })
+
+    return finalHistory
+  }
+}
+
+/**
+ * Adapter: wrap a history-only filter to a HandoffInputFilter signature.
+ * Preserves preHandoffItems and newItems unchanged.
+ */
+function toHandoffInputFilter(historyFilter: (h: any[]) => any[]) {
+  return (data: any) => {
+    const arr = Array.isArray(data?.inputHistory)
+      ? data.inputHistory
+      : (data?.inputHistory ? [data.inputHistory] : [])
+    const filtered = historyFilter(arr)
+    return { ...data, inputHistory: filtered }
+  }
+}
 
 export class OrchestratorAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -33,7 +101,7 @@ export class OrchestratorAgent {
     if (req.briefId) {
       messages.push({
         role: 'user',
-        content: `Context: briefId=${req.briefId}. You may use tools like io_get_brief, io_list_assets, io_get_client_profile if needed.`
+        content: `Context: briefId=${req.briefId}. Specialist agents may use tools like io_get_brief, io_list_assets, io_get_client_profile when they receive a handoff. The Orchestrator must not call tools directly.`
       })
     }
 
@@ -50,8 +118,8 @@ export class OrchestratorAgent {
               onEvent({ type: 'delta', message: delta, correlationId: cid })
             },
             {
-              toolsAllowlist: req.options?.toolsAllowlist,
-              toolPolicy: req.options?.toolPolicy,
+              toolsAllowlist: [],
+              toolPolicy: 'off',
               temperature: req.options?.temperature,
               schemaName: req.options?.schemaName,
               trace: req.options?.trace
@@ -70,9 +138,11 @@ export class OrchestratorAgent {
           else if (target === 'qa') agentInstance = createQaAgent(this.runtime, onToolEvent, opts)
           else agentInstance = undefined
 
-          const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
-          const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
-          const prompt = [systemText, userText].filter(Boolean).join('\n\n') || 'Proceed.'
+          const userText = messages
+            .filter((m) => m.role !== 'system')
+            .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+            .join('\n\n')
+          const prompt = userText || 'Proceed.'
 
           const runner = new Runner({ model: this.runtime.getModel() })
           const stream: any = await runner.run(agentInstance as any, prompt, { stream: true })
@@ -143,6 +213,8 @@ export class OrchestratorAgent {
         if (e.type === 'metrics') onEvent({ type: 'metrics', tokens: e.tokens, durationMs: e.durationMs, correlationId: cid })
       }, { policy: req.options?.toolPolicy, requestAllowlist: req.options?.toolsAllowlist })
 
+      // Provide named factory functions for handoffs to satisfy SDK default tool-name derivation
+
       const TRIAGE_INSTRUCTIONS = (() => {
         const minScore = agentThresholds.minCompositeScore
         const maxRisk = agentThresholds.maxBrandRisk
@@ -155,23 +227,46 @@ export class OrchestratorAgent {
           'Strategize (Strategy Manager): use tools (io_get_brief, io_get_client_profile, io_list_assets, strategy_analyze_assets). Choose an achievable formatType based on assets; if the brief requests an unachievable format, pick the best achievable alternative and explain the tradeoff in rationale. Produce a concise writer brief including goal, audience insight, angle, 2–3 hooks, CTA, and 4‑knob settings.',
           'Generate (Content Generator): by default produce 3 variants unless the objective specifies otherwise. Structure each draft as: first line hook, blank line, then body. Use tools (apply_format_rendering, optimize_for_platform). Write only in the client\'s primaryCommunicationLanguage; honor tone/voice, emoji policy, bannedClaims. You MUST delegate draft generation to Content; do not write drafts yourself.',
           `QA (Quality Assurance): score drafts on 0–1 for readability, clarity, objectiveFit, brandRisk, compliance. If composite < ${minScore} or brandRisk > ${maxRisk} or compliance=false, produce succinct revision instructions and hand back to Content. Iterate until pass or max ${maxCycles} cycles.`,
-          'Constraints: never invent assets or client data; use tools to fetch context. Keep handoffs minimal and purposeful. Honor any tool allowlist and policy. Stop when thresholds are met or max cycles reached. Do not finalize after Strategy alone.',
+          'Constraints: never invent assets or client data; specialist agents use tools to fetch context. The Orchestrator must not call tools. Keep handoffs minimal and purposeful. Honor any tool allowlist and policy. Stop when thresholds are met or max cycles reached. Do not finalize after Strategy alone.',
           'Final delivery spec: result MUST include { drafts: [ { platform, variantId, post, altText } x3 ], knobs: { ... } } and MAY include schedule and a short qaSummary. Do not emit partial plans as final.',
           'Output: return a single JSON object only. Do not wrap in code fences. ' + (req.options?.schemaName ? `Conform to schema: ${req.options.schemaName}.` : ''),
         ]
         return lines.join('\n')
       })()
 
+
       const triageAgent = AgentClass.create({
         name: 'Triage Agent',
         instructions: TRIAGE_INSTRUCTIONS,
-        handoffs: [strategyAgent, contentAgent, qaAgent]
+        // Define handoffs explicitly; use inputFilter adapter and stable tool names
+        handoffs: [
+          handoff(strategyAgent as any, {
+            inputFilter: toHandoffInputFilter(
+              composeInputFilterSync(filterHistory({ maxMessages: 6, filterSystemMessages: true }))
+            ),
+            toolNameOverride: 'transfer_to_strategy_manager',
+          }),
+          handoff(contentAgent as any, {
+            inputFilter: toHandoffInputFilter(
+              composeInputFilterSync(filterHistory({ maxMessages: 6, filterSystemMessages: true }))
+            ),
+            toolNameOverride: 'transfer_to_content_generator',
+          }),
+          handoff(qaAgent as any, {
+            inputFilter: toHandoffInputFilter(
+              composeInputFilterSync(filterHistory({ maxMessages: 6, filterSystemMessages: true }))
+            ),
+            toolNameOverride: 'transfer_to_quality_assurance',
+          }),
+        ],
       })
 
       // Build the prompt/user input
-      const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
-      const userText = messages.filter((m) => m.role !== 'system').map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
-      const prompt = [systemText, userText].filter(Boolean).join('\n\n') || 'Proceed.'
+      const userText = messages
+        .filter((m) => m.role !== 'system')
+        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+        .join('\n\n')
+      const prompt = userText || 'Proceed.'
 
       const runner = new Runner({ model: this.runtime.getModel() })
       const stream: any = await runner.run(triageAgent as any, prompt, { stream: true })
@@ -345,110 +440,6 @@ export class OrchestratorAgent {
         } catch {}
       }
 
-      // Enforcement: if Content did not appear involved, but we have a writer brief/knobs, delegate generation explicitly
-      try {
-        const r = (parsed?.result || {}) as any
-        const writerBrief = r && (r.goal || r.audienceInsight || r.selectedAngle || r.hookOptions || r.cta)
-          ? { goal: r.goal, audienceInsight: r.audienceInsight, selectedAngle: r.selectedAngle, hookOptions: r.hookOptions, cta: r.cta }
-          : (r.writerBrief || null)
-        const knobs = r?.knobs || r?.finalSettings || null
-        const hasDraftsAlready = Array.isArray(r?.drafts) && r.drafts.length > 0
-        if (!sawContentInvolvement && (writerBrief || knobs) && !hasDraftsAlready) {
-          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Content Generator' }, correlationId: cid })
-          onEvent({ type: 'phase', phase: 'generation', message: 'Generating drafts from writer brief and knobs', correlationId: cid })
-          const contentRunner = new Runner({ model: this.runtime.getModel() })
-          const cPrompt = [
-            systemText,
-            'Use the following writer brief and 4‑knob settings to generate 3 post variants. Return JSON with { drafts: [ { platform, variantId, post, altText } ] }. Do not include any text outside JSON.',
-            `WRITER_BRIEF:\n${JSON.stringify(writerBrief, null, 2)}`,
-            `KNOBS:\n${JSON.stringify(knobs, null, 2)}`,
-            `OBJECTIVE: ${req.objective}`,
-            req.briefId ? `BRIEF_ID: ${req.briefId}` : ''
-          ].filter(Boolean).join('\n\n')
-          const cStream: any = await contentRunner.run(contentAgent as any, cPrompt, { stream: true })
-          await cStream.completed
-          const cRes: any = await cStream.finalResult
-          const cText = typeof cRes?.finalOutput === 'string' ? cRes.finalOutput : JSON.stringify(cRes?.finalOutput ?? '')
-          try {
-            const obj = JSON.parse(cText || '{}')
-            if (obj && Array.isArray(obj.drafts)) {
-              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), drafts: obj.drafts, knobs } }
-              sawContentInvolvement = true
-              forcedContent = true
-            }
-          } catch {}
-        }
-      } catch {}
-
-      // Enforcement 2: if drafts exist but no Content involvement was observed, regenerate via Content agent
-      try {
-        const r = (parsed?.result || {}) as any
-        const drafts = Array.isArray(r?.drafts) ? (r.drafts as any[]) : []
-        const knobs = r?.knobs || r?.finalSettings || null
-        const writerBrief = r && (r.goal || r.audienceInsight || r.selectedAngle || r.hookOptions || r.cta)
-          ? { goal: r.goal, audienceInsight: r.audienceInsight, selectedAngle: r.selectedAngle, hookOptions: r.hookOptions, cta: r.cta }
-          : (r.writerBrief || null)
-        if (drafts.length > 0 && !sawContentInvolvement) {
-          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Content Generator' }, correlationId: cid })
-          onEvent({ type: 'phase', phase: 'generation', message: 'Regenerating drafts via Content agent for provenance', correlationId: cid })
-          const contentRunner = new Runner({ model: this.runtime.getModel() })
-          const cPrompt = [
-            systemText,
-            'Generate 3 post variants as the Content Generator. Use the writer brief/knobs below; you may use the provided sample drafts as inspiration but produce your own output. Return JSON with { drafts: [ { platform, variantId, post, altText } ] } only.',
-            writerBrief ? `WRITER_BRIEF:\n${JSON.stringify(writerBrief, null, 2)}` : '',
-            knobs ? `KNOBS:\n${JSON.stringify(knobs, null, 2)}` : '',
-            drafts.length ? `SAMPLE_DRAFTS:\n${JSON.stringify(drafts.slice(0, 3), null, 2)}` : '',
-            `OBJECTIVE: ${req.objective}`,
-            req.briefId ? `BRIEF_ID: ${req.briefId}` : ''
-          ].filter(Boolean).join('\n\n')
-          const cStream: any = await contentRunner.run(contentAgent as any, cPrompt, { stream: true })
-          await cStream.completed
-          const cRes: any = await cStream.finalResult
-          const cText = typeof cRes?.finalOutput === 'string' ? cRes.finalOutput : JSON.stringify(cRes?.finalOutput ?? '')
-          try {
-            const obj = JSON.parse(cText || '{}')
-            if (obj && Array.isArray(obj.drafts)) {
-              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), drafts: obj.drafts, knobs } }
-              sawContentInvolvement = true
-              forcedContent = true
-            }
-          } catch {}
-        }
-      } catch {}
-
-      // Enforcement: if QA did not appear involved but drafts exist, delegate QA explicitly to compute scores
-      try {
-        const r = (parsed?.result || {}) as any
-        const drafts = Array.isArray(r?.drafts) ? r.drafts as Array<any> : []
-        if (drafts.length > 0 && !sawQaInvolvement) {
-          onEvent({ type: 'handoff', message: 'occurred', data: { from: 'Triage Agent', to: 'Quality Assurance' }, correlationId: cid })
-          onEvent({ type: 'phase', phase: 'qa', message: 'Evaluating drafts quality', correlationId: cid })
-          const qaRunner = new Runner({ model: this.runtime.getModel() })
-          const qaInput = {
-            objective: req.objective,
-            drafts: drafts.map((d: any) => ({ variantId: d.variantId || '', platform: d.platform || 'text', post: d.post || '' }))
-          }
-          const qaPrompt = [
-            systemText,
-            'Evaluate each draft for readability, clarity, objectiveFit, brandRisk, compliance. Return JSON with { qa: { [variantId]: { readability, clarity, objectiveFit, brandRisk, compliance, composite, suggestedChanges: string[] } } } only. No extra text.',
-            `OBJECTIVE: ${req.objective}`,
-            `DRAFTS:\n${JSON.stringify(qaInput.drafts, null, 2)}`
-          ].join('\n\n')
-          const qStream: any = await qaRunner.run(qaAgent as any, qaPrompt, { stream: true })
-          await qStream.completed
-          const qRes: any = await qStream.finalResult
-          const qText = typeof qRes?.finalOutput === 'string' ? qRes.finalOutput : JSON.stringify(qRes?.finalOutput ?? '')
-          try {
-            const obj = JSON.parse(qText || '{}')
-            if (obj && obj.qa) {
-              parsed = { ...(parsed || {}), result: { ...(parsed?.result || {}), qaSummary: obj.qa } }
-              sawQaInvolvement = true
-              forcedQa = true
-            }
-          } catch {}
-        }
-      } catch {}
-
       // Emit metrics and complete
       const durationMs = Date.now() - start
       // Try aggregate token usage from underlying model responses
@@ -473,8 +464,10 @@ export class OrchestratorAgent {
       log.info('orchestrator_run_complete', { cid, mode: 'app', durationMs })
       return { final: parsed, metrics: { durationMs, tokens: metricsAgg.tokensTotal || undefined } }
     } catch (error: any) {
-      onEvent({ type: 'error', message: error?.message || 'Unknown error', correlationId: cid })
-      log.error('orchestrator_run_error', { cid, err: error?.message })
+      const errMsg = error?.message || String(error) || 'Unknown error'
+      const errStack = (error && typeof error === 'object' && 'stack' in error) ? (error as any).stack : undefined
+      onEvent({ type: 'error', message: errMsg, data: { stack: errStack }, correlationId: cid })
+      log.error('orchestrator_run_error', { cid, err: errMsg, stack: errStack })
       // Swallow after emitting error to avoid duplicate error frames at route layer
       return { final: null, metrics: undefined }
     }
@@ -488,19 +481,21 @@ export class OrchestratorAgent {
       const maxRisk = agentThresholds.maxBrandRisk
       const mrc = (req as any)?.options?.maxRevisionCycles
       const maxCycles = typeof mrc === 'number' ? mrc : agentThresholds.maxRevisionCycles
-      return [
+      const guidance = [
         base,
-        'Follow this flow: Strategize → Generate → QA → Finalize. Use tools; never invent assets or client data.',
+        'Follow this flow: Strategize → Generate → QA → Finalize. Do not call tools yourself; route work via handoffs to specialist agents who will use tools as needed. Never invent assets or client data.',
         `Quality thresholds: composite ≥ ${minScore}, brandRisk ≤ ${maxRisk}, compliance=true; iterate up to ${maxCycles} revision cycles if needed.`,
-        'Default to 3 variants; each draft uses: first line as hook, then a blank line, then the body. Apply platform rules and client policy (language, tone/voice, emoji, banned claims). Do not finalize after Strategy alone.',
+        'Default to 3 drafts. Do not finalize after Strategy alone.',
         'Final delivery spec: { "result": { "drafts": [ { "platform": "...", "variantId": "1", "post": "...", "altText": "..." } x3 ], "knobs": { ... }, "schedule"?: { ... }, "qaSummary"?: { ... } }, "rationale"?: <string> }',
         'When responding, output only a single JSON object that matches this schema:',
         '{ "result": <any>, "rationale"?: <string> }',
         'Do not include markdown, code fences, or any commentary outside of the JSON.'
       ].join('\n')
+      return [ORCH_SYS_START, guidance, ORCH_SYS_END].join('\n')
     }
     // chat
-    return base + '\nRespond conversationally. Keep answers short when possible.'
+    const chatGuidance = [base, 'Respond conversationally. Keep answers short. Do not use tools; if action is needed, recommend a handoff to the appropriate specialist agent.'].join('\n')
+    return [ORCH_SYS_START, chatGuidance, ORCH_SYS_END].join('\n')
   }
 }
 

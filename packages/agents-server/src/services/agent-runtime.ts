@@ -1,6 +1,7 @@
 import { z, ZodObject } from 'zod'
 import { Agent as OAAgent, Runner, tool as agentTool } from '@openai/agents'
 import { getDefaultModelName } from '../utils/model'
+import { getLogger } from './logger'
 
 type ToolHandler = (args: any) => Promise<any> | any
 
@@ -98,8 +99,28 @@ export class AgentRuntime {
         execute: async (input: any) => {
           const start = Date.now()
           onEvent?.({ type: 'tool_call', name: t.name, args: input })
+          // Centralized argument validation using provided Zod schema (if any)
+          let args = input
+          const schema: any = t.parameters as any
+          if (schema && typeof schema.safeParse === 'function') {
+            const parsed = (schema as z.ZodTypeAny).safeParse(input)
+            if (!parsed.success) {
+              const issues = parsed.error?.issues?.map((i: any) => ({
+                path: i.path,
+                message: i.message,
+                code: i.code
+              }))
+              try {
+                getLogger().warn('tool_invalid_args', { tool: t.name, issues })
+              } catch {}
+              const res = { error: true, code: 'INVALID_ARGUMENT', message: 'Invalid tool arguments', issues }
+              onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+              return res
+            }
+            args = parsed.data
+          }
           try {
-            const res = await t.handler(input)
+            const res = await t.handler(args)
             onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
             return res
           } catch (err: any) {
@@ -199,8 +220,33 @@ export class AgentRuntime {
         execute: async (input: any) => {
           const start = Date.now()
           onEvent?.({ type: 'tool_call', name: t.name, args: input })
+          // Centralized argument validation using provided Zod schema (if any)
+          let args = input
+          const schema: any = t.parameters as any
+          if (schema && typeof schema.safeParse === 'function') {
+            const parsed = (schema as z.ZodTypeAny).safeParse(input)
+            if (!parsed.success) {
+              const issues = parsed.error?.issues?.map((i: any) => ({
+                path: i.path,
+                message: i.message,
+                code: i.code
+              }))
+              try {
+                getLogger().warn('tool_invalid_args', { tool: t.name, issues })
+              } catch {}
+              const res = {
+                error: true,
+                code: 'INVALID_ARGUMENT',
+                message: 'Invalid tool arguments',
+                issues
+              }
+              onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
+              return res
+            }
+            args = parsed.data
+          }
           try {
-            const res = await t.handler(input)
+            const res = await t.handler(args)
             onEvent?.({ type: 'tool_result', name: t.name, result: res, durationMs: Date.now() - start })
             return res
           } catch (err: any) {

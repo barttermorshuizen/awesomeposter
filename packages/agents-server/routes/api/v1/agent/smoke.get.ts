@@ -1,3 +1,4 @@
+import { getQuery } from 'h3'
 export default defineEventHandler(async (event) => {
   // Minimal smoke test to validate Agents SDK orchestration works end-to-end
   const objective = (getQuery(event).objective as string) ||

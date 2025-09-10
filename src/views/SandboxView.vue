@@ -454,7 +454,7 @@ const groupedFrames = computed(() => {
                     <div class="mb-2 text-caption text-medium-emphasis">Combined message</div>
                     <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ (item as any).message }}</pre>
                     <div class="mt-4 mb-2 text-caption text-medium-emphasis">Raw frames</div>
-                    <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((item as any).frames.map(f => f.data)) }}</pre>
+                    <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(((item as any).frames as any[]).map((f: any) => f.data)) }}</pre>
                   </template>
                   <template v-else>
                     <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((item as any).data) }}</pre>

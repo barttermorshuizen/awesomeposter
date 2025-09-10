@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
       const { getLogger } = await import('../../../../src/services/logger')
       getLogger().warn('sse_backlog_reject', { ...snap, correlationId: cid })
     } catch {}
-    setHeader(event, 'Retry-After', '2')
+    setHeader(event, 'Retry-After', 2)
     setHeader(event, 'Cache-Control', 'no-store')
     setHeader(event, 'X-Backlog-Pending', String(snap.pending))
     setHeader(event, 'X-Backlog-Limit', String(snap.limit))

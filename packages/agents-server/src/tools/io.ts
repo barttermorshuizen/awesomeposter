@@ -8,7 +8,7 @@ export function registerIOTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'io_get_brief',
     description: 'Fetch a brief by id',
-    parameters: z.object({ briefId: z.string() }),
+    parameters: z.object({ briefId: z.string().uuid() }),
     handler: async ({ briefId }: { briefId: string }) => {
       const [row] = await db.select().from(briefs).where(eq(briefs.id, briefId)).limit(1)
       if (!row) throw new Error('Brief not found')
@@ -20,7 +20,7 @@ export function registerIOTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'io_list_assets',
     description: 'List assets for a brief',
-    parameters: z.object({ briefId: z.string() }),
+    parameters: z.object({ briefId: z.string().uuid() }),
     handler: async ({ briefId }: { briefId: string }) => {
       const rows = await db.select().from(assets).where(eq(assets.briefId, briefId))
       return rows
@@ -30,7 +30,7 @@ export function registerIOTools(runtime: AgentRuntime) {
   runtime.registerTool({
     name: 'io_get_client_profile',
     description: 'Fetch the client profile for a clientId',
-    parameters: z.object({ clientId: z.string() }),
+    parameters: z.object({ clientId: z.string().uuid() }),
     handler: async ({ clientId }: { clientId: string }) => {
       const profile = await getClientProfileByClientId(clientId)
       if (!profile) return null
