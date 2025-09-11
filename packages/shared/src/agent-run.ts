@@ -34,6 +34,7 @@ export const AgentEventSchema = z.object({
   type: z.enum([
     'start',
     'phase',
+    'plan_update',
     'tool_call',
     'tool_result',
     'message',
@@ -61,3 +62,82 @@ export const AppResultSchema = z.object({
   rationale: z.string().nullable()
 })
 export type AppResult = z.infer<typeof AppResultSchema>
+
+
+// Final bundle schema for App mode ({ result, quality, acceptance-report })
+export const FinalQualitySchema = z.object({
+  score: z.number().min(0).max(1).nullable().optional(),
+  issues: z.array(z.string()).optional(),
+  metrics: z.record(z.any()).optional(),
+  pass: z.boolean().optional()
+})
+export type FinalQuality = z.infer<typeof FinalQualitySchema>
+
+export const AcceptanceCriterionSchema = z.object({
+  criterion: z.string(),
+  passed: z.boolean(),
+  details: z.string().optional()
+})
+export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>
+
+export const AcceptanceReportSchema = z.object({
+  overall: z.boolean(),
+  criteria: z.array(AcceptanceCriterionSchema).default([])
+})
+export type AcceptanceReport = z.infer<typeof AcceptanceReportSchema>
+
+export const FinalBundleSchema = z.object({
+  result: z.any(),
+  quality: FinalQualitySchema,
+  ['acceptance-report']: AcceptanceReportSchema
+})
+export type FinalBundle = z.infer<typeof FinalBundleSchema>
+
+
+// Planning types and schemas for orchestrator-driven plan updates
+
+
+
+export const PlanStepStatusEnum = z.enum(['pending', 'in_progress', 'done', 'skipped'])
+export type PlanStepStatus = z.infer<typeof PlanStepStatusEnum>
+
+// Non-handoff actions reserved for the orchestrator (e.g., finalize)
+export const PlanActionEnum = z.enum(['finalize'])
+export type PlanAction = z.infer<typeof PlanActionEnum>
+
+// Capability-driven plan step schema.
+// Either capabilityId (for a handoff-able step) OR action (for non-handoff steps like finalize).
+export const PlanStepSchema = z.object({
+ id: z.string(),
+ capabilityId: z.string().min(1).optional(),
+ action: PlanActionEnum.optional(),
+ label: z.string().optional(),
+ status: PlanStepStatusEnum,
+ note: z.string().optional()
+})
+export type PlanStep = z.infer<typeof PlanStepSchema>
+
+export const PlanSchema = z.object({
+ version: z.number().int().nonnegative().default(0),
+ steps: z.array(PlanStepSchema)
+})
+export type Plan = z.infer<typeof PlanSchema>
+
+export const PlanStepUpdateSchema = z.object({
+ id: z.string(),
+ status: PlanStepStatusEnum.optional(),
+ note: z.string().optional()
+})
+export type PlanStepUpdate = z.infer<typeof PlanStepUpdateSchema>
+
+// Minimal patch format used by orchestrator LLM outputs to evolve the plan.
+// - stepsAdd: add new steps (id must be unique)
+// - stepsUpdate: update status and/or note of existing steps by id
+// - stepsRemove: remove steps by id
+export const PlanPatchSchema = z.object({
+ stepsAdd: z.array(PlanStepSchema).optional(),
+ stepsUpdate: z.array(PlanStepUpdateSchema).optional(),
+ stepsRemove: z.array(z.string()).optional(),
+ note: z.string().optional()
+})
+export type PlanPatch = z.infer<typeof PlanPatchSchema>
