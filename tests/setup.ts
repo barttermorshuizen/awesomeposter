@@ -7,8 +7,14 @@ class FakeResizeObserver {
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback
   }
-  observe(_target?: Element): void {}
-  unobserve(_target?: Element): void {}
+  observe(_target?: Element): void {
+    // no-op in test environment; mark param as used
+    void _target
+  }
+  unobserve(_target?: Element): void {
+    // no-op in test environment; mark param as used
+    void _target
+  }
   disconnect(): void {}
 }
 

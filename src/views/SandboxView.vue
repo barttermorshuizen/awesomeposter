@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import type { AgentEvent, AgentMode, AgentRunRequest } from '@awesomeposter/shared'
 // Temporary local alias while shared package builds
 type TargetAgentId = 'orchestrator' | 'strategy' | 'generator' | 'qa'
@@ -36,6 +36,20 @@ const canAgentChat = computed(() => {
   return !!a && a.supports.includes('chat')
 })
 
+const filteredAgents = computed(() => {
+  if (mode.value === 'app') {
+    return agents.value.filter((x) => x.id === 'orchestrator')
+  }
+  return agents.value
+})
+
+const agentSelectDisabled = computed(() => running.value || mode.value === 'app')
+
+// Enforce orchestrator selection in App mode
+watch(mode, (m) => {
+  if (m === 'app') selectedAgentId.value = 'orchestrator'
+})
+ 
 function parseAllowlist() {
   return toolsAllowlistInput.value
     .split(',')
@@ -254,13 +268,13 @@ const groupedFrames = computed(() => {
     if (f.type === 'delta') {
       deltas.push(f)
     } else {
-      items.push({ key: `f-${idx}`, type: f.type, t: f.t, data: f.data, message: (f.data as any)?.message })
+      items.push({ key: `f-${idx}`, type: f.type, t: f.t, data: f.data, message: (f.data as AgentEventWithSseId)?.message })
     }
   })
 
   if (deltas.length > 0) {
     const firstT = deltas[0].t
-    const combined = deltas.map((d) => (d.data as any)?.message || '').join('')
+    const combined = deltas.map((d) => ((d.data as AgentEventWithSseId).message ?? '')).join('')
     items.push({ key: 'delta-group', type: 'delta_group', t: firstT, count: deltas.length, message: combined, frames: deltas })
   }
 
@@ -290,16 +304,40 @@ const groupedFrames = computed(() => {
           <v-card-text>
             <v-row dense>
               <v-col cols="12" md="3">
+                <v-tooltip
+                  v-if="mode==='app'"
+                  text="App mode uses the Orchestrator to coordinate specialist agents. Switch to Chat to talk directly to Strategy/Generator/QA."
+                  location="bottom"
+                >
+                  <template #activator="{ props }">
+                    <div v-bind="props">
+                      <v-select
+                        v-model="selectedAgentId"
+                        :items="filteredAgents"
+                        :loading="agentsLoading"
+                        item-title="label"
+                        item-value="id"
+                        label="Agent"
+                        density="comfortable"
+                        prepend-inner-icon="mdi-robot-outline"
+                        :disabled="agentSelectDisabled"
+                        hint="App mode uses Orchestrator"
+                        persistent-hint
+                      />
+                    </div>
+                  </template>
+                </v-tooltip>
                 <v-select
+                  v-else
                   v-model="selectedAgentId"
-                  :items="agents"
+                  :items="filteredAgents"
                   :loading="agentsLoading"
                   item-title="label"
                   item-value="id"
                   label="Agent"
                   density="comfortable"
                   prepend-inner-icon="mdi-robot-outline"
-                  :disabled="running"
+                  :disabled="agentSelectDisabled"
                 />
               </v-col>
 

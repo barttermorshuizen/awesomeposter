@@ -404,6 +404,7 @@ export class OrchestratorAgent {
     try {
       if (req.mode === 'chat') {
         const target = (req.options as any)?.targetAgentId || 'orchestrator'
+        try { log.info('orch_chat_target', { cid, target }) } catch {}
         onEvent({ type: 'phase', phase: 'analysis', message: `Entering chat mode (${target})`, correlationId: cid })
         let full = ''
         if (target === 'orchestrator') {
@@ -487,6 +488,8 @@ export class OrchestratorAgent {
       }
 
       // Applicative mode (structured via handoffs among specialist agents) with streaming
+      const appTarget = (req.options as any)?.targetAgentId || 'orchestrator'
+      try { log.info('orch_app_target', { cid, target: appTarget }) } catch {}
       onEvent({ type: 'phase', phase: 'planning', message: 'Structured run started', correlationId: cid })
 
       // Build specialist agents (knowledge lives inside their modules)
@@ -670,8 +673,8 @@ export class OrchestratorAgent {
       let sawQaInvolvement = false
       // Track current phase to gate raw deltas
       let currentPhase: 'analysis' | 'planning' | 'generation' | 'qa' | 'finalization' | 'idle' | undefined = 'planning'
-      let forcedContent = false
-      let forcedQa = false
+      const forcedContent = false
+      const forcedQa = false
       try {
         for await (const ev of stream as AsyncIterable<any>) {
           // Raw model deltas

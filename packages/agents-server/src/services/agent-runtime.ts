@@ -41,7 +41,7 @@ export class AgentRuntime {
 
   constructor() {
     if (!process.env.OPENAI_API_KEY) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[AgentRuntime] OPENAI_API_KEY not set; SDK calls will fail')
     }
   }
