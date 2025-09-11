@@ -2,6 +2,8 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import type { AgentRunRequest, AgentEvent, AppResult, Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
+import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
+import QualityReportDisplay from './QualityReportDisplay.vue'
 
 type BriefInput = {
   id: string
@@ -492,14 +494,14 @@ const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
                   <v-card v-if="knobSettingsView" variant="tonal" class="mb-3">
                     <v-card-title class="text-subtitle-2">Knob Settings</v-card-title>
                     <v-card-text>
-                      <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(knobSettingsView) }}</pre>
+                      <KnobSettingsDisplay :knobs="knobSettingsView" />
                     </v-card-text>
                   </v-card>
 
                   <v-card v-if="appResult && (appResult as any)['quality-report']" variant="outlined">
                     <v-card-title class="text-subtitle-2">Quality Report</v-card-title>
                     <v-card-text>
-                      <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((appResult as any)['quality-report']) }}</pre>
+                      <QualityReportDisplay :report="(appResult as any)['quality-report']" />
                     </v-card-text>
                   </v-card>
                 </div>

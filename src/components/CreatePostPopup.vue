@@ -3,6 +3,8 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import type { AgentRunRequest } from '@awesomeposter/shared'
 import type { Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
+import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
+import QualityReportDisplay from './QualityReportDisplay.vue'
 import type { AppResult } from '@awesomeposter/shared'
 
 type BriefInput = {
@@ -447,7 +449,7 @@ function downloadResults() {
           <v-card variant="tonal" class="mb-2" v-if="knobsView">
             <v-card-title class="text-subtitle-2">Knob Settings</v-card-title>
             <v-card-text>
-              <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ JSON.stringify(knobsView, null, 2) }}</pre>
+              <KnobSettingsDisplay :knobs="knobsView" />
             </v-card-text>
           </v-card>
 
@@ -455,7 +457,7 @@ function downloadResults() {
           <v-card variant="outlined" class="mb-2" v-if="results?.finalState?.qualityReport">
             <v-card-title class="text-subtitle-2">Quality Report</v-card-title>
             <v-card-text>
-              <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ JSON.stringify(results?.finalState?.qualityReport, null, 2) }}</pre>
+              <QualityReportDisplay :report="results?.finalState?.qualityReport as any" />
             </v-card-text>
           </v-card>
 
