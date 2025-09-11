@@ -15,10 +15,14 @@ export const CONTENT_TOOLS = [
 // the orchestrated workflow where structured output is desired.
 export const CONTENT_INSTRUCTIONS_APP = [
   'You are the Content Generator agent.',
-  'Generate a post from the writer brief',
+  'Generate or revise a post from the writer brief.',
   'A post has the structure: first line is the hook, then a blank line, then the body.',
+  'Payload contract:',
+  '- "writerBrief" and optional "knobs" describe the target content.',
+  '- If "contentRecommendations" (array of strings) is present, this is a revision task: apply the recommendations with minimal necessary edits.',
+  '- If "previousDraft" is provided, use it as the base and only change what is required to follow the recommendations; otherwise, regenerate while deviating only where needed to satisfy them.',
   'Use tools to apply format‑specific rendering and platform optimization while respecting platform rules and client policy.',
-  'Produce just the post content as plain text, no JSON or code fences.'
+  'Output only the final post as plain text (no JSON or code fences).'
 ].join('\n')
 
 // Chat instructions – used when the user is conversing directly with this agent.
@@ -27,7 +31,8 @@ export const CONTENT_INSTRUCTIONS_CHAT = [
   'You are the Content Generator agent speaking directly with a user.',
   'Return plain text only (no JSON/code fences).',
   'Default to one post unless asked for multiple. If multiple, number variants 1–N separated by blank lines.',
-  'Structure each post: first line hook, blank line, then body. ',
+  'Structure each post: first line hook, blank line, then body.',
+  'If the user provides "contentRecommendations" and/or a previous draft, treat it as a revision: keep the copy intact except changes required to follow the recommendations.',
   'Use tools to apply format‑specific rendering and platform optimization while respecting platform rules and client policy.'
 ].join('\n')
 

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import type { AgentState, Asset } from '@awesomeposter/shared'
+import type { AgentRunRequest } from '@awesomeposter/shared'
+import type { Asset } from '@awesomeposter/shared'
+import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
+import { normalizeAppResult, type NormalizedAppResult } from '@/lib/normalize-app-result'
 
 type BriefInput = {
   id: string
@@ -11,9 +14,15 @@ type BriefInput = {
   audienceId?: string | null
 } | null
 
+type UiDraft = { platform: string; variantId?: string; post: string; altText?: string; charCount?: number }
+type UiKnobs = { formatType?: string; hookIntensity?: number; expertiseDepth?: number; structure?: { lengthLevel?: number; scanDensity?: number } }
+type UiSchedule = { windows?: Record<string, string[] | string> }
+type UiStrategy = { platforms?: string[]; structure?: string; themes?: string[]; hashtags?: string[] }
+type UiFinalState = { drafts?: UiDraft[]; rationale?: string | null; knobs?: UiKnobs | undefined; schedule?: UiSchedule | undefined; strategy?: UiStrategy | undefined }
+
 type AgentResults = {
   success: boolean
-  finalState: Partial<AgentState>
+  finalState: UiFinalState
   metrics?: {
     totalDrafts: number
     averageScore: number
@@ -22,6 +31,7 @@ type AgentResults = {
   error?: string
 } | null
 
+// Legacy progress type kept so template remains compatible (we don't use server polling anymore)
 type WorkflowStatus = {
   success: boolean
   workflowId: string
@@ -34,7 +44,7 @@ type WorkflowStatus = {
     details: string
     timestamp: number
   }
-  result?: Partial<AgentState>
+  result?: UiFinalState
   error?: string
   startedAt: number
   updatedAt: number
@@ -57,40 +67,121 @@ const isOpen = computed({
   set: (v: boolean) => emit('update:modelValue', v)
 })
 
+const AGENTS_BASE_URL = import.meta.env.VITE_AGENTS_BASE_URL || 'http://localhost:3002'
+const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
+
+// UI state
 const isLoading = ref(false)
 const loadingStep = ref<string>('')
 const results = ref<AgentResults>(null)
-const workflowId = ref<string | null>(null)
+// Retained for compatibility with template (we won't receive percentage/steps from SSE)
 const progress = ref<WorkflowStatus['progress'] | null>(null)
-let pollTimer: ReturnType<typeof setInterval> | null = null
+
+// Streaming handle
+let streamHandle: { abort: () => void; done: Promise<void> } | null = null
+const correlationId = ref<string | undefined>(undefined)
+const strategyView = computed<UiStrategy | null>(() => (results.value?.finalState?.strategy as UiStrategy | undefined) ?? null)
+const knobsView = computed<UiKnobs | null>(() => (results.value?.finalState?.knobs as UiKnobs | undefined) ?? null)
+const scheduleView = computed<UiSchedule | null>(() => (results.value?.finalState?.schedule as UiSchedule | undefined) ?? null)
 
 watch(isOpen, async (open) => {
   if (open && props.brief?.id) {
-    results.value = null
-    progress.value = null
+    reset()
     await runAgentWorkflow()
   } else if (!open) {
-    cleanupPolling()
+    stopStream()
   }
 })
 
 onBeforeUnmount(() => {
-  cleanupPolling()
+  stopStream()
 })
+
+function reset() {
+  results.value = null
+  progress.value = null
+  isLoading.value = false
+  loadingStep.value = ''
+  correlationId.value = undefined
+}
 
 function close() {
   isOpen.value = false
 }
 
-function cleanupPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-  workflowId.value = null
+function stopStream() {
+  try { streamHandle?.abort() } catch {}
+  streamHandle = null
   isLoading.value = false
   loadingStep.value = ''
-  progress.value = null
+}
+
+function genCid(): string {
+  return 'cid_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+}
+
+function safeJson(v: unknown) {
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+function pickBriefObjective(brief: { objective?: string | null; description?: string | null } | null | undefined) {
+  const obj = (brief?.objective || '').trim()
+  if (obj) return obj
+  const desc = (brief?.description || '').trim()
+  if (desc) return `Create social post variants based on: ${desc}`
+  return 'Create high-quality social post variants.'
+}
+
+/**
+ * Build a full objective for the orchestrator so it needs no knowledge of our data model.
+ * Includes client profile info, brief info, and assets. Also specifies output constraints.
+ */
+function buildCompleteObjective(context: {
+  brief: {
+    id?: string
+    title?: string | null
+    description?: string | null
+    objective?: string | null
+    audienceId?: string | null
+  }
+  clientProfile: Record<string, unknown>
+  assets: Array<Pick<Asset, 'id' | 'filename' | 'originalName' | 'url' | 'type' | 'mimeType' | 'fileSize'>>
+}): string {
+  const goal = pickBriefObjective(context.brief)
+
+  const lines: string[] = []
+  lines.push(
+    goal,
+    '',
+    'Context (domain-agnostic; do not assume any database access):'
+  )
+  lines.push('Client Profile:')
+  lines.push(safeJson(context.clientProfile))
+  lines.push('')
+  lines.push('Brief:')
+  lines.push(safeJson({
+    id: context.brief.id,
+    title: context.brief.title || '',
+    description: context.brief.description || '',
+    objective: context.brief.objective || '',
+    audienceId: context.brief.audienceId || undefined
+  }))
+  lines.push('')
+  lines.push('Assets (use if relevant):')
+  lines.push(safeJson(context.assets))
+  lines.push('')
+  // App result constraints (keep simple and aligned with normalizer)
+  lines.push(
+    'Output requirements:',
+    '- Return a single JSON object only (no code fences, no commentary).',
+    '- Shape: { "result": { "drafts": [ { "platform": "<string>", "variantId": "<string>", "post": "<string>", "altText?": "<string>" } ] }, "rationale"?: "<string>" }',
+    '- Use exactly 3 drafts.',
+    '- The "post" fields must be plain text only (no Markdown, no code fences, no embedded JSON).'
+  )
+  return lines.join('\n')
 }
 
 async function runAgentWorkflow() {
@@ -99,7 +190,7 @@ async function runAgentWorkflow() {
     isLoading.value = true
     loadingStep.value = 'Loading client profile...'
 
-    // 1) Load client profile for the given brief's client
+    // 1) Load client profile
     const profRes = await fetch(`/api/clients/${props.brief.clientId}/profile`, {
       headers: { accept: 'application/json' }
     })
@@ -108,7 +199,7 @@ async function runAgentWorkflow() {
       throw new Error(profData?.statusMessage || profData?.error || 'Failed to load client profile')
     }
 
-    // 2) Load full brief to ensure description/objective/title are present
+    // 2) Load full brief
     loadingStep.value = 'Loading brief details...'
     const briefRes = await fetch(`/api/briefs/${props.brief.id}`, {
       headers: { accept: 'application/json' }
@@ -125,110 +216,158 @@ async function runAgentWorkflow() {
       audienceId?: string | null
     }
 
-    // 3) Build agent state from enriched brief + profile
-    loadingStep.value = 'Starting AI workflow...'
-    const state: AgentState = {
-      objective: (briefFull.objective ?? props.brief.objective) || 'Create high-quality social post variants',
-      inputs: {
-        brief: {
-          id: briefFull.id,
-          title: (briefFull.title ?? props.brief.title) || '',
-          description: (typeof briefFull.description === 'string' && briefFull.description.trim().length > 0)
-            ? briefFull.description
-            : (props.brief.description || ''),
-          objective: (briefFull.objective ?? props.brief.objective) || '',
-          audienceId: (briefFull.audienceId ?? props.brief.audienceId) || undefined
-        },
-        clientProfile: {
-          primaryCommunicationLanguage: profData.profile?.primaryLanguage,
-          objectivesJson: profData.profile?.objectives || {},
-          audiencesJson: profData.profile?.audiences || {},
-          toneJson: profData.profile?.tone || {},
-          specialInstructionsJson: profData.profile?.specialInstructions || {},
-          guardrailsJson: profData.profile?.guardrails || {},
-          platformPrefsJson: profData.profile?.platformPrefs || {}
-        }
-      }
-    }
-
-    // 2.1) Enrich with brief assets so server agents have assets immediately
+    // 3) Load assets (best-effort)
+    loadingStep.value = 'Loading assets...'
+    let briefAssets: Asset[] = []
     try {
       const assetsRes = await fetch(`/api/briefs/${props.brief.id}/assets`, {
         headers: { accept: 'application/json' }
       })
       const assetsData = await assetsRes.json().catch(() => ({}))
       if (assetsRes.ok && Array.isArray(assetsData?.assets)) {
-        const briefAssets = assetsData.assets as Asset[]
-        state.inputs.assets = briefAssets
-        console.log('🧩 Attached assets to agent state', {
-          count: briefAssets.length,
-          sample: briefAssets.slice(0, 2).map((a: Asset) => ({
-            id: a.id, filename: a.filename, type: a.type, mimeType: a.mimeType
-          }))
-        })
-      } else {
-        console.warn('⚠️ Could not load brief assets for enrichment', assetsData)
+        briefAssets = assetsData.assets as Asset[]
       }
-    } catch (err) {
-      console.warn('⚠️ Error loading brief assets for enrichment', err)
+    } catch {
+      // ignore asset load failure
     }
-    // 3) Start progressive workflow
-    const startRes = await fetch('/api/agent/execute-workflow-progress', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ state })
+
+    // 4) Build complete objective (no briefId, no state)
+    loadingStep.value = 'Starting agents...'
+    const objective = buildCompleteObjective({
+      brief: {
+        id: briefFull.id,
+        title: (briefFull.title ?? props.brief.title) || '',
+        description: (typeof briefFull.description === 'string' && briefFull.description.trim().length > 0)
+          ? briefFull.description
+          : (props.brief.description || ''),
+        objective: (briefFull.objective ?? props.brief.objective) || '',
+        audienceId: (briefFull.audienceId ?? props.brief.audienceId) || undefined
+      },
+      clientProfile: {
+        // Keep the structure close to what the orchestrator can reason about
+        primaryCommunicationLanguage: profData.profile?.primaryLanguage,
+        objectives: profData.profile?.objectives || {},
+        audiences: profData.profile?.audiences || {},
+        tone: profData.profile?.tone || {},
+        specialInstructions: profData.profile?.specialInstructions || {},
+        guardrails: profData.profile?.guardrails || {},
+        platformPrefs: profData.profile?.platformPrefs || {}
+      },
+      assets: (briefAssets || []).map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        originalName: a.originalName,
+        url: a.url,
+        type: a.type,
+        mimeType: a.mimeType,
+        fileSize: a.fileSize
+      }))
     })
-    const startData = await startRes.json().catch(() => ({}))
-    if (!startRes.ok || startData?.success !== true || !startData?.workflowId) {
-      throw new Error(startData?.statusMessage || startData?.error || 'Failed to start workflow')
+
+    const cid = genCid()
+    const body: AgentRunRequest = {
+      mode: 'app',
+      objective,
+      // Do not send briefId; provide all context in objective
+      options: {
+        schemaName: 'AppResult'
+      }
     }
 
-    workflowId.value = startData.workflowId
-    loadingStep.value = 'AI agents running...'
+    const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
+    const headers: Record<string, string> = {
+      'x-correlation-id': cid
+    }
+    if (AGENTS_AUTH) headers['authorization'] = `Bearer ${AGENTS_AUTH}`
 
-    // 4) Poll status
-    pollTimer = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/agent/workflow-status?id=${encodeURIComponent(workflowId.value!)}`, {
-          headers: { accept: 'application/json' }
-        })
-        if (!res.ok) {
-          // 404 until orchestrator updates status is possible; ignore brief glitches
-          if (res.status === 404) return
-          throw new Error(`Status HTTP ${res.status}`)
-        }
-        const data = await res.json() as WorkflowStatus
-        progress.value = data.progress
-
-        if (data.status === 'completed') {
-          cleanupPolling()
-          results.value = {
-            success: true,
-            finalState: data.result || {}
+    streamHandle = postEventStream({
+      url,
+      body,
+      headers,
+      onCorrelationId: (cidFromServer) => { correlationId.value = cidFromServer },
+      onBackoff: ({ retryAfter }) => {
+        loadingStep.value = `Server busy. Retrying in ${retryAfter}s...`
+      },
+      onEvent: (evt: AgentEventWithId) => {
+        switch (evt.type) {
+          case 'phase': {
+            const label = evt.phase === 'analysis' ? 'Planning strategy'
+              : evt.phase === 'generation' ? 'Generating content'
+              : evt.phase === 'qa' ? 'Evaluating & revising'
+              : evt.phase === 'finalization' ? 'Finalizing'
+              : 'Running'
+            loadingStep.value = label
+            break
           }
-          isLoading.value = false
-        } else if (data.status === 'failed') {
-          cleanupPolling()
-          results.value = {
-            success: false,
-            finalState: {},
-            error: data.error || 'Workflow failed'
+          case 'warning': {
+            // Non-fatal; keep running
+            break
           }
-          isLoading.value = false
+          case 'error': {
+            // Stop and show error
+            stopStream()
+            results.value = {
+              success: false,
+              finalState: {},
+              error: evt.message || 'Unknown error'
+            }
+            break
+          }
+          case 'complete': {
+            // Finalize and normalize results
+            const data: unknown = evt.data ?? null
+            // Accept either new bundle with {result,quality,...} or legacy AppResult
+            let resultPayload: unknown = data
+            let rationale: string | null = null
+            if (isRecord(data)) {
+              if ('result' in data) {
+                resultPayload = (data as Record<string, unknown>).result
+              }
+              const r = (data as Record<string, unknown>).rationale
+              if (typeof r === 'string') rationale = r
+            }
+            let normalized: NormalizedAppResult
+            try {
+              normalized = normalizeAppResult(resultPayload, rationale)
+            } catch {
+              normalized = { drafts: [
+                { platform: 'generic', variantId: '1', post: '', charCount: 0 },
+                { platform: 'generic', variantId: '2', post: '', charCount: 0 },
+                { platform: 'generic', variantId: '3', post: '', charCount: 0 },
+              ], rationale: null }
+            }
+            results.value = {
+              success: true,
+              finalState: {
+                drafts: normalized.drafts.map(d => ({
+                  platform: d.platform,
+                  variantId: d.variantId,
+                  post: d.post,
+                  altText: d.altText,
+                  charCount: d.charCount
+                })),
+                rationale: normalized.rationale ?? null,
+                knobs: normalized.knobs as UiFinalState['knobs'],
+                schedule: normalized.schedule as UiFinalState['schedule']
+              }
+            }
+            stopStream()
+            break
+          }
         }
-      } catch {
-        // Non-fatal while polling; keep UI responsive
       }
-    }, 1500)
+    })
+
+    await streamHandle.done
   } catch (e: unknown) {
-    cleanupPolling()
+    stopStream()
     results.value = {
       success: false,
       finalState: {},
       error: (e as Error)?.message || 'Unknown error'
     }
   } finally {
-    // Keep loading active while polling is ongoing; it will be cleared on completion/failure
+    // Keep loading active while streaming; stopStream() will clear it on completion/error
   }
 }
 
@@ -320,18 +459,18 @@ function downloadResults() {
 
         <!-- Results -->
         <div v-if="!isLoading && results?.success" class="d-flex flex-column ga-4">
-          <!-- Strategy -->
-          <v-alert type="info" variant="tonal" class="mb-4" v-if="results?.finalState?.strategy">
+          <!-- Strategy (shows if present in normalized payload extras) -->
+          <v-alert type="info" variant="tonal" class="mb-4" v-if="strategyView">
             <div class="text-subtitle-2 mb-2">Content Strategy</div>
             <div class="d-flex flex-wrap ga-2 mb-2">
-              <template v-for="p in (results?.finalState?.strategy?.platforms || [])" :key="p">
+              <template v-for="p in (strategyView?.platforms || [])" :key="p">
                 <v-chip :color="getPlatformColor(p)" size="small" label>{{ p }}</v-chip>
               </template>
             </div>
             <div class="text-body-2">
-              <div><strong>Structure:</strong> {{ results?.finalState?.strategy?.structure }}</div>
-              <div><strong>Themes:</strong> {{ (results?.finalState?.strategy?.themes || []).join(', ') }}</div>
-              <div><strong>Hashtags:</strong> {{ (results?.finalState?.strategy?.hashtags || []).join(', ') }}</div>
+              <div><strong>Structure:</strong> {{ strategyView?.structure }}</div>
+              <div><strong>Themes:</strong> {{ (strategyView?.themes || []).join(', ') }}</div>
+              <div><strong>Hashtags:</strong> {{ (strategyView?.hashtags || []).join(', ') }}</div>
             </div>
           </v-alert>
 
@@ -342,33 +481,33 @@ function downloadResults() {
           </v-alert>
 
           <!-- Knobs -->
-          <v-card variant="tonal" class="mb-4" v-if="results?.finalState?.knobs">
+          <v-card variant="tonal" class="mb-4" v-if="knobsView">
             <v-card-title class="text-subtitle-2">4-Knob Optimization Settings</v-card-title>
             <v-card-text>
-              <div class="text-body-2 mb-2"><strong>Format:</strong> {{ formatTypeLabel(results?.finalState?.knobs?.formatType) }}</div>
+              <div class="text-body-2 mb-2"><strong>Format:</strong> {{ formatTypeLabel(knobsView?.formatType) }}</div>
               <div class="mb-2">
                 <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Hook Intensity</span><span>{{ Math.round((results?.finalState?.knobs?.hookIntensity || 0) * 100) }}%</span>
+                  <span>Hook Intensity</span><span>{{ Math.round((knobsView?.hookIntensity || 0) * 100) }}%</span>
                 </div>
-                <v-progress-linear :model-value="(results?.finalState?.knobs?.hookIntensity || 0) * 100" color="amber" height="8" rounded />
+                <v-progress-linear :model-value="(knobsView?.hookIntensity || 0) * 100" color="amber" height="8" rounded />
               </div>
               <div class="mb-2">
                 <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Expertise Depth</span><span>{{ Math.round((results?.finalState?.knobs?.expertiseDepth || 0) * 100) }}%</span>
+                  <span>Expertise Depth</span><span>{{ Math.round((knobsView?.expertiseDepth || 0) * 100) }}%</span>
                 </div>
-                <v-progress-linear :model-value="(results?.finalState?.knobs?.expertiseDepth || 0) * 100" color="deep-purple" height="8" rounded />
+                <v-progress-linear :model-value="(knobsView?.expertiseDepth || 0) * 100" color="deep-purple" height="8" rounded />
               </div>
-              <div class="mb-2" v-if="results?.finalState?.knobs?.structure">
+              <div class="mb-2" v-if="knobsView?.structure">
                 <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Length Level</span><span>{{ Math.round(((results?.finalState?.knobs?.structure?.lengthLevel ?? 0.6) * 100)) }}%</span>
+                  <span>Length Level</span><span>{{ Math.round(((knobsView?.structure?.lengthLevel ?? 0.6) * 100)) }}%</span>
                 </div>
-                <v-progress-linear :model-value="((results?.finalState?.knobs?.structure?.lengthLevel ?? 0.6) * 100)" color="blue" height="8" rounded />
+                <v-progress-linear :model-value="((knobsView?.structure?.lengthLevel ?? 0.6) * 100)" color="blue" height="8" rounded />
               </div>
-              <div class="mb-2" v-if="results?.finalState?.knobs?.structure">
+              <div class="mb-2" v-if="knobsView?.structure">
                 <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Scan Density</span><span>{{ Math.round(((results?.finalState?.knobs?.structure?.scanDensity ?? 0.8) * 100)) }}%</span>
+                  <span>Scan Density</span><span>{{ Math.round(((knobsView?.structure?.scanDensity ?? 0.8) * 100)) }}%</span>
                 </div>
-                <v-progress-linear :model-value="((results?.finalState?.knobs?.structure?.scanDensity ?? 0.8) * 100)" color="teal" height="8" rounded />
+                <v-progress-linear :model-value="((knobsView?.structure?.scanDensity ?? 0.8) * 100)" color="teal" height="8" rounded />
               </div>
             </v-card-text>
           </v-card>
@@ -397,11 +536,11 @@ function downloadResults() {
             </div>
           </div>
 
-          <!-- Schedule -->
-          <v-card variant="tonal" class="mt-4" v-if="results?.finalState?.schedule">
+          <!-- Schedule (if present in normalized extras) -->
+          <v-card variant="tonal" class="mt-4" v-if="scheduleView">
             <v-card-title class="text-subtitle-2">Publishing Schedule</v-card-title>
             <v-card-text class="d-flex flex-column ga-2">
-              <template v-for="(windows, platform) in (results?.finalState?.schedule?.windows || {})" :key="platform">
+              <template v-for="(windows, platform) in (scheduleView?.windows || {})" :key="platform">
                 <div class="d-flex align-center ga-2">
                   <v-chip :color="getPlatformColor(String(platform))" size="x-small" label>{{ platform }}</v-chip>
                   <span class="text-body-2">{{ Array.isArray(windows) ? windows.join(', ') : String(windows) }}</span>

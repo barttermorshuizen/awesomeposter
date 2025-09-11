@@ -265,6 +265,13 @@ export class OrchestratorAgent {
       steps: []
     }
 
+    // Lightweight cross-step artifact stash to propagate outputs between specialists
+    const artifacts: {
+      strategy?: { rationale?: string; writerBrief?: any; knobs?: any; rawText?: string }
+      generation?: { draftText?: string; rawText?: string }
+      qa?: { result?: any; rawText?: string }
+    } = {}
+
     const emitPlanUpdate = (patch: any) => {
       plan.version += 1
       onEvent({ type: 'plan_update' as any, data: { patch, planVersion: plan.version, plan }, correlationId: cid })
@@ -563,6 +570,10 @@ export class OrchestratorAgent {
           JSON.stringify(examplePlan, null, 2),
           '',
           'Quality: evaluate against configured criteria. Iterate via handoffs until acceptable or max cycles reached.',
+          'Revision policy: If the latest QA result JSON contains a non-empty array field named "contentRecommendations", you MUST extend the plan with a targeted revision loop:',
+          ' - Add a "generation" step (label suggestion: "Revise content with QA recommendations").',
+          ' - Immediately follow it with a "qa" step to re-evaluate the revised draft.',
+          'The revision generation step should rely on the orchestrator-provided payload which includes the original writer brief and the QA contentRecommendations. Do not duplicate the entire plan; emit only a minimal plan_update patch to add these steps.',
           'Constraints: never invent context; specialists may use project-defined tools when handed control. Honor any tool allowlist and policy.',
           'Finalization: When you finalize, output one JSON object that aggregates artifacts produced by specialists:',
           '  {',
@@ -622,6 +633,42 @@ export class OrchestratorAgent {
         return undefined
       }
 
+      // Build a default payload for a target capability using stored artifacts
+      const buildPayloadForCapability = (capabilityId?: string): any => {
+        const sid = resolveSpecialistByCapability(capabilityId)
+        if (!sid) return {}
+        if (sid === 'generation') {
+          // Prefer structured fields if available
+          const br = artifacts.strategy?.writerBrief
+          const knobs = artifacts.strategy?.knobs
+          const rationale = artifacts.strategy?.rationale
+          const qaRecs = (() => {
+            try {
+              const r = artifacts.qa?.result as any
+              const arr = Array.isArray(r?.contentRecommendations) ? r.contentRecommendations : undefined
+              return arr && arr.length > 0 ? arr : undefined
+            } catch { return undefined }
+          })()
+          const prevDraft = artifacts.generation?.draftText || artifacts.generation?.rawText
+          const payload: any = {}
+          if (br) payload.writerBrief = br
+          if (knobs) payload.knobs = knobs
+          if (rationale) payload.rationale = rationale
+          if (qaRecs) payload.contentRecommendations = qaRecs
+          if (prevDraft) payload.previousDraft = prevDraft
+          return payload
+        }
+        if (sid === 'qa') {
+          const draftText = artifacts.generation?.draftText || artifacts.generation?.rawText
+          const br = artifacts.strategy?.writerBrief
+          const payload: any = {}
+          if (draftText) payload.draft = draftText
+          if (br) payload.brief = br
+          return payload
+        }
+        return {}
+      }
+
       // Execute a single specialist step based on capabilityId + payload
       const executeSpecialistStep = async (capabilityId?: string, payload?: any) => {
         const sid = resolveSpecialistByCapability(capabilityId)
@@ -650,7 +697,11 @@ export class OrchestratorAgent {
 
         // Run the specialist with a simple payload prompt
         const runner2 = new Runner({ model: this.runtime.getModel() })
-        const payloadText = (() => { try { return JSON.stringify(payload ?? {}, null, 2) } catch { return String(payload ?? '') } })()
+        // Fallback to auto-built payload if none was provided
+        const effectivePayload = (payload === undefined || payload === null || (typeof payload === 'object' && Object.keys(payload).length === 0))
+          ? buildPayloadForCapability(capabilityId)
+          : payload
+        const payloadText = (() => { try { return JSON.stringify(effectivePayload ?? {}, null, 2) } catch { return String(effectivePayload ?? '') } })()
         const prompt2 = [
           `Objective:\n${req.objective}`,
           `Payload:\n${payloadText}`,
@@ -659,13 +710,57 @@ export class OrchestratorAgent {
 
         const stream2: any = await runner2.run(agentInstance as any, prompt2, { stream: true })
         const textStream2: any = stream2.toTextStream({ compatibleWithNodeStreams: false })
+        let outputBuffer = ''
         for await (const chunk2 of textStream2) {
           const d2 = (chunk2 as any)?.toString?.() ?? String(chunk2)
+          if (d2) outputBuffer += d2
           if (d2 && (phase === 'generation' || phase === 'qa')) {
             onEvent({ type: 'delta', message: d2, correlationId: cid })
           }
         }
         await (stream2 as any).completed
+        // Try to capture final output from the specialist for artifact propagation
+        let finalText2: string | undefined
+        try {
+          const res2: any = await (stream2 as any).finalResult
+          const rawOut = (res2 && typeof res2.finalOutput === 'string') ? res2.finalOutput : undefined
+          finalText2 = (rawOut && rawOut.trim().length > 0) ? rawOut : undefined
+        } catch {}
+        if (!finalText2) {
+          const t = (outputBuffer || '').trim()
+          if (t) finalText2 = t
+        }
+
+        // Store artifacts for downstream steps
+        if (finalText2) {
+          if (sid === 'strategy') {
+            // Strategy returns JSON; parse best‑effort
+            let parsed: any | undefined
+            try {
+              for (const cand of extractJsonCandidates(finalText2)) {
+                try { parsed = JSON.parse(cand); break } catch {}
+              }
+            } catch {}
+            artifacts.strategy = {
+              rawText: finalText2,
+              rationale: typeof parsed?.rationale === 'string' ? parsed.rationale : undefined,
+              writerBrief: parsed?.writerBrief,
+              knobs: parsed?.knobs || parsed?.writerBrief?.knobs
+            }
+          } else if (sid === 'generation') {
+            // Content returns plain text draft
+            artifacts.generation = { rawText: finalText2, draftText: finalText2 }
+          } else if (sid === 'qa') {
+            // QA returns JSON
+            let parsedQa: any | undefined
+            try {
+              for (const cand of extractJsonCandidates(finalText2)) {
+                try { parsedQa = JSON.parse(cand); break } catch {}
+              }
+            } catch {}
+            artifacts.qa = { rawText: finalText2, result: parsedQa ?? finalText2 }
+          }
+        }
         // Mark step done
         if (typeof capabilityId === 'string' && capabilityId.length > 0) {
           setStepStatusByCapability(capabilityId, 'done')
@@ -674,7 +769,8 @@ export class OrchestratorAgent {
             const next = plan.steps.find(s => s && s.status === 'pending' && typeof (s as any).capabilityId === 'string')
             if (next && (next as any).capabilityId) {
               setStepStatusById((next as any).id, 'in_progress')
-              await executeSpecialistStep((next as any).capabilityId as string, undefined)
+              // Build payload automatically for the next capability if none was specified by the model
+              await executeSpecialistStep((next as any).capabilityId as string, buildPayloadForCapability((next as any).capabilityId as string))
             }
           } catch (ex) {
             onEvent({ type: 'error', message: 'plan-driven step chaining failed', data: { error: String(ex) }, correlationId: cid })
@@ -755,7 +851,7 @@ export class OrchestratorAgent {
                               const next = plan.steps.find(s => s && s.status === 'pending' && typeof (s as any).capabilityId === 'string')
                               if (next && (next as any).capabilityId) {
                                 setStepStatusById(next.id, 'in_progress')
-                                await executeSpecialistStep((next as any).capabilityId as string, undefined)
+                                await executeSpecialistStep((next as any).capabilityId as string, buildPayloadForCapability((next as any).capabilityId as string))
                               }
                             } catch (ex) {
                               onEvent({ type: 'error', message: 'plan-driven step execution failed', data: { error: String(ex) }, correlationId: cid })
@@ -770,7 +866,7 @@ export class OrchestratorAgent {
                                 const next = plan.steps.find(s => s && s.status === 'pending' && typeof (s as any).capabilityId === 'string')
                                 if (next && (next as any).capabilityId) {
                                   setStepStatusById(next.id, 'in_progress')
-                                  await executeSpecialistStep((next as any).capabilityId as string, undefined)
+                                  await executeSpecialistStep((next as any).capabilityId as string, buildPayloadForCapability((next as any).capabilityId as string))
                                 }
                               } catch (ex) {
                                 onEvent({ type: 'error', message: 'plan-driven step execution failed', data: { error: String(ex) }, correlationId: cid })
@@ -782,7 +878,11 @@ export class OrchestratorAgent {
                         const capabilityId = (obj as any).capabilityId ?? (obj as any).to ?? (obj as any).step ?? (obj as any).kind
                         const payload = (obj as any).payload
                         try {
-                          await executeSpecialistStep(typeof capabilityId === 'string' ? capabilityId : String(capabilityId || ''), payload)
+                          const cap = typeof capabilityId === 'string' ? capabilityId : String(capabilityId || '')
+                          const effectivePayload = (payload === undefined || payload === null)
+                            ? buildPayloadForCapability(cap)
+                            : payload
+                          await executeSpecialistStep(cap, effectivePayload)
                         } catch (ex) {
                           onEvent({ type: 'error', message: `Specialist execution failed`, data: { capabilityId, error: String(ex) }, correlationId: cid })
                         }
