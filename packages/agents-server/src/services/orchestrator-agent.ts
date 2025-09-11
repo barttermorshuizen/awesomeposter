@@ -520,13 +520,48 @@ export class OrchestratorAgent {
       // Provide named factory functions for handoffs to satisfy SDK default tool-name derivation
 
       const TRIAGE_INSTRUCTIONS = (() => {
+        // Build a dynamic Capabilities Registry section from the in-run registry
+        // Avoid hardcoding; derive capabilityIds from available specialists.
+        const orderPref: SpecialistId[] = ['strategy', 'generation', 'qa']
+        const ids = (Object.keys(registry) as SpecialistId[])
+          .filter((k) => registry[k])
+          .sort((a, b) => orderPref.indexOf(a) - orderPref.indexOf(b))
+
+        // Canonical capabilityIds are the specialist keys themselves (e.g., "strategy", "generation", "qa").
+        const capabilitiesLines: string[] = ['Capabilities Registry (use these capabilityId values in your plan steps; do NOT use tool names):']
+        for (const id of ids) {
+          const agentName = registry[id]?.name || id
+          const hint = id === 'strategy'
+            ? 'Plan strategy and knob configuration; pick feasible format.'
+            : id === 'generation'
+              ? 'Create content drafts from the writer brief and knobs.'
+              : id === 'qa'
+                ? 'Evaluate drafts for clarity, fit, risk, and compliance.'
+                : 'Specialist capability.'
+          capabilitiesLines.push(`- capabilityId: "${id}" — handled by ${agentName}. ${hint}`)
+        }
+
+        // Example initial plan (dynamic from ids) to anchor the model output
+        const exampleSteps: Array<{ capabilityId: string } | { action: 'finalize' }> = ids.map((id) => ({ capabilityId: id }))
+        exampleSteps.push({ action: 'finalize' })
+        const examplePlan = {
+          action: 'plan_update',
+          planPatch: { stepsAdd: exampleSteps }
+        }
+
         const lines = [
           'You are the Orchestrator. Coordinate specialist agents (Strategy, Generation, and Quality Assurance) to achieve the user objective.',
           'Responsibilities: route work via handoffs only; the Orchestrator must not call tools and must not author domain artifacts.',
           'Planning: Propose and evolve a minimal execution plan using Registry capabilities and constraints.',
           'Emit plan updates by outputting a single JSON object when the plan changes: { "action": "plan_update", "planPatch": { "stepsAdd"?: [...], "stepsUpdate"?: [...], "stepsRemove"?: [...], "note"?: <string> } }.',
           'At the start, propose an initial plan via a plan_update with stepsAdd using capabilityId fields from the Registry (e.g., { "capabilityId": "<capability>", "label": "<freeform>" } or { "action": "finalize" }). As you progress, emit plan_update patches with stepsUpdate/status changes or notes.',
-          'To delegate work, use the provided transfer_to_* handoff tools only.',
+          'To delegate work, use handoffs only; never use tool names as capabilityId values. The transfer_to_* names are tools, not capabilityIds.',
+          '',
+          ...capabilitiesLines,
+          '',
+          'Example initial plan (patch JSON):',
+          JSON.stringify(examplePlan, null, 2),
+          '',
           'Quality: evaluate against configured criteria. Iterate via handoffs until acceptable or max cycles reached.',
           'Constraints: never invent context; specialists may use project-defined tools when handed control. Honor any tool allowlist and policy.',
           'Finalization: When you finalize, output one JSON object that aggregates artifacts produced by specialists:',
