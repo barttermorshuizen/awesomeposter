@@ -88,6 +88,13 @@ async function startRun() {
   }
 
   try {
+    // Debug: log outgoing request in Sandbox
+    console.debug('[Sandbox] startRun', {
+      baseUrl: AGENTS_BASE_URL,
+      selectedAgentId: selectedAgentId.value,
+      mode: mode.value,
+      body
+    })
     const res = await fetch(`${AGENTS_BASE_URL}/api/v1/agent/run.stream`, {
       method: 'POST',
       headers: {

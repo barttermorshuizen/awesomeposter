@@ -529,7 +529,7 @@ export class OrchestratorAgent {
           'Finalization: When you finalize, output one JSON object that aggregates artifacts produced by specialists:',
           '  {',
           '    "result": {',
-          '      "rationale": "<strategy manager rationale/notes>",',
+          '      "rationale": "<strategy manager rationale>",',
           '      "drafts": [ { "platform": "<string>", "variantId": "<string>", "post": "<string>", "altText?": "<string>" } ],',
           '      "qa": { "pass": <boolean>, "score": <number>, "issues": [ "<string>" ] }',
           '    },',

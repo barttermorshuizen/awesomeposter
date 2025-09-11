@@ -29,6 +29,18 @@ export default defineEventHandler(async (event) => {
 
   const cid = getHeader(event, 'x-correlation-id') || (event as any).context?.correlationId || undefined
 
+  // Debug: log incoming run request mode and targetAgentId
+  try {
+    const { getLogger } = await import('../../../../src/services/logger')
+    getLogger().info('run_stream_request', {
+      mode: req.mode,
+      targetAgentId: (finalReq?.options as any)?.targetAgentId,
+      toolPolicy: (finalReq?.options as any)?.toolPolicy,
+      trace: (finalReq?.options as any)?.trace,
+      correlationId: cid
+    })
+  } catch {}
+
   // Backlog protection: reject with 503 before opening SSE when queue is large
   if (isBacklogFull()) {
     const snap = backlogSnapshot()

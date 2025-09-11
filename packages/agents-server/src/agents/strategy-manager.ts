@@ -7,9 +7,6 @@ export class StrategyManagerAgent {
 
 // Agents SDK configuration for the Strategy specialist
 export const STRATEGY_TOOLS = [
-  'io_get_brief',
-  'io_list_assets',
-  'io_get_client_profile',
   'strategy_analyze_assets',
   'strategy_plan_knobs'
 ] as const
@@ -18,12 +15,33 @@ export const STRATEGY_TOOLS = [
 export const STRATEGY_INSTRUCTIONS_APP = [
   'You are the Strategy Manager agent for social content.',
   'Plan using the 4‑knob system: formatType, hookIntensity, expertiseDepth, structure.',
-  'Tool‑first: call io_get_brief, io_get_client_profile, io_list_assets, strategy_analyze_assets. Never invent assets or client data.',
+  'Never invent assets or client data.',
   'Choose an achievable formatType based on available assets; if the brief requests an unachievable format, select the best achievable alternative and explain the tradeoff.',
-  'Produce a concise writer brief: goal, audience insight, selected angle, 2–3 hook options, CTA, and final 4‑knob settings.',
-  'Do NOT generate post drafts. Your deliverable is the writer brief and knob settings only.',
+  'Your deliverable in workflow/app mode is strictly one JSON object (no code fences) containing: rationale, writerBrief (including knob settings), and knobs.',
+  'Do NOT generate content drafts. You only produce strategy outputs (rationale + writerBrief + knobs).',
   'Align language, tone/voice, hashtags, and cultural context with the client profile and guardrails.',
-  'When asked for a final result in workflow/app mode, produce strict JSON the caller expects (no code fences).'
+  'Output contract (strict JSON, one object only):',
+  '{',
+  '  "rationale": "<short reasoning for the chosen approach and key strategic choices>",',
+  '  "writerBrief": {',
+  '    "objective": "<what the content must achieve>",',
+  '    "audience": "<who we are targeting>",',
+  '    "platform": "<e.g., linkedin | x>",',
+  '    "language": "<e.g., nl | en>",',
+  '    "tone": "<tone/voice guidance>",',
+  '    "angle": "<selected angle>",',
+  '    "hooks": [ "<hook option 1>", "<hook option 2>" ],',
+  '    "cta": "<clear CTA>",',
+  '    "customInstructions": [ "<string>" ],',
+  '    "constraints": { "maxLength?": <number> },',
+  '    "knobs": { "formatType": "<string>", "hookIntensity": "<low|med|high>", "expertiseDepth": "<low|med|high>", "structure": "<string>" }',
+  '  },',
+  '  "knobs": { "formatType": "<string>", "hookIntensity": "<low|med|high>", "expertiseDepth": "<low|med|high>", "structure": "<string>" }',
+  '}',
+  'Notes:',
+  '- The writerBrief.knobs are identical to the top‑level knobs you output.',
+  '- Keep rationale concise (3–5 sentences max).',
+  '- Return one JSON object only; do NOT include markdown or code fences.'
 ].join('\n')
 
 // Chat instructions – respond in plain language, not JSON
