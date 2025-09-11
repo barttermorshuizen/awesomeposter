@@ -40,6 +40,9 @@ export function registerQaTools(runtime: AgentRuntime) {
       const composite = Math.max(0, Math.min(1, readability * 0.35 + clarity * 0.2 + objectiveFit * 0.35 - brandRisk * 0.2))
       const revisionPriority = composite > 0.8 && compliance ? 'low' : composite > 0.6 ? 'medium' : 'high'
 
+      // Normalize recommendations as strings for orchestrator consumption
+      const contentRecommendations = [...feedback]
+
       return {
         readability,
         clarity,
@@ -48,6 +51,7 @@ export function registerQaTools(runtime: AgentRuntime) {
         compliance,
         feedback: feedback.join(' '),
         suggestedChanges: feedback,
+        contentRecommendations,
         revisionPriority,
         composite
       }

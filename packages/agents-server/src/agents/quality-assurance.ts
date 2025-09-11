@@ -13,7 +13,9 @@ export const QA_TOOLS = [
 export const QA_INSTRUCTIONS = [
   'You are the Quality Assurance agent.',
   'Evaluate drafts for readability, clarity, objective fit, brand risk, and compliance.',
-  'Return structured scores and prioritized suggestions as JSON only.',
+  'Return one JSON object only (no markdown/code fences).',
+  'Normalization: If your analysis or tools produce fields named "suggestedChanges" or "Suggestions", map them to a unified field named "contentRecommendations" as an array of short strings.',
+  'Mapping guidance: for object suggestions, extract the most helpful text (prefer a "suggestion" field; else use "text"). Keep each recommendation concise.',
 ].join('\n')
 
 export function createQaAgent(

@@ -57,9 +57,31 @@ export type AgentEvent = z.infer<typeof AgentEventSchema>
 
 // Default structured output for app mode
 // For OpenAI structured outputs, all fields must be required; use nullable for optional semantics.
+// AppResult for app mode (aligned):
+// - result: the final single post content and its target platform
+// - rationale: short strategy rationale (nullable)
+// - knobSettings: 4‑knob configuration chosen by Strategy (best‑effort, pass‑through)
+// - quality-report: QA agent's evaluation output (pass‑through)
+export const PostResultSchema = z.object({
+  content: z.string(),
+  platform: z.string()
+}).passthrough()
+
+export const KnobSettingsSchema = z.object({
+  formatType: z.string().optional(),
+  hookIntensity: z.union([z.number(), z.string()]).optional(),
+  expertiseDepth: z.union([z.number(), z.string()]).optional(),
+  structure: z.union([
+    z.string(),
+    z.object({ lengthLevel: z.number().optional(), scanDensity: z.number().optional() }).passthrough()
+  ]).optional()
+}).passthrough()
+
 export const AppResultSchema = z.object({
-  result: z.any(),
-  rationale: z.string().nullable()
+  result: PostResultSchema,
+  rationale: z.string().nullable(),
+  knobSettings: KnobSettingsSchema.optional(),
+  ['quality-report']: z.any().optional()
 })
 export type AppResult = z.infer<typeof AppResultSchema>
 

@@ -27,6 +27,16 @@ export default defineEventHandler(async (event) => {
   }
   
   const pool = getPool()
+  // Load client name alongside profile
+  let clientName: string | null = null
+  try {
+    const { rows: crows } = await pool.query(
+      'SELECT name FROM clients WHERE id = $1 LIMIT 1',
+      [id]
+    )
+    clientName = (crows?.[0]?.name as string) || null
+  } catch {}
+
   const { rows } = await pool.query(
     'SELECT * FROM client_profiles WHERE client_id = $1 LIMIT 1',
     [id]
@@ -41,6 +51,7 @@ export default defineEventHandler(async (event) => {
       profile: {
         id: null,
         clientId: id,
+        clientName: clientName,
         primaryLanguage: minimalProfile.primaryCommunicationLanguage,
         objectives: minimalProfile.objectivesJson,
         audiences: minimalProfile.audiencesJson,
@@ -58,6 +69,7 @@ export default defineEventHandler(async (event) => {
   let transformedProfile = {
     id: row.id,
     clientId: row.client_id,
+    clientName: clientName,
     primaryLanguage: row.primary_communication_language || 'US English',
     objectives: row.objectives_json || {},
     audiences: row.audiences_json || {},
@@ -106,5 +118,4 @@ export default defineEventHandler(async (event) => {
   
   return { ok: true, profile: transformedProfile }
 })
-
 

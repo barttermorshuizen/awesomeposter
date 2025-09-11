@@ -401,12 +401,6 @@ export class OrchestratorAgent {
       { role: 'system', content: system },
       { role: 'user', content: req.objective }
     ]
-    if (req.briefId) {
-      messages.push({
-        role: 'user',
-        content: `Context: briefId=${req.briefId}. Specialist agents may call project-defined tools when they receive a handoff. The Orchestrator must not call tools directly.`
-      })
-    }
 
     try {
       if (req.mode === 'chat') {
@@ -570,27 +564,24 @@ export class OrchestratorAgent {
           JSON.stringify(examplePlan, null, 2),
           '',
           'Quality: evaluate against configured criteria. Iterate via handoffs until acceptable or max cycles reached.',
-          'Revision policy: If the latest QA result JSON contains a non-empty array field named "contentRecommendations", you MUST extend the plan with a targeted revision loop:',
+          'Revision policy: After a QA step, inspect the QA specialist\'s final JSON reply (not just tool outputs). If it contains a non-empty array field named "contentRecommendations" OR a suggestions array under "suggestedChanges" or "Suggestions" (case-insensitive), you MUST extend the plan with a targeted revision loop:',
           ' - Add a "generation" step (label suggestion: "Revise content with QA recommendations").',
           ' - Immediately follow it with a "qa" step to re-evaluate the revised draft.',
           'The revision generation step should rely on the orchestrator-provided payload which includes the original writer brief and the QA contentRecommendations. Do not duplicate the entire plan; emit only a minimal plan_update patch to add these steps.',
           'Constraints: never invent context; specialists may use project-defined tools when handed control. Honor any tool allowlist and policy.',
-          'Finalization: When you finalize, output one JSON object that aggregates artifacts produced by specialists:',
+          'Finalization: When you finalize, output one JSON object that aggregates artifacts produced by specialists in the AppResult shape:',
           '  {',
-          '    "result": {',
-          '      "rationale": "<strategy manager rationale>",',
-          '      "drafts": [ { "platform": "<string>", "variantId": "<string>", "post": "<string>", "altText?": "<string>" } ],',
-          '      "qa": { "pass": <boolean>, "score": <number>, "issues": [ "<string>" ] }',
-          '    },',
-          '    "quality": { "pass"?: <boolean>, "score"?: <number>, "issues"?: <string[]>, "metrics"?: <object> },',
-          '    "acceptance-report": { "overall": <boolean>, "criteria": [ { "criterion": "<string>", "passed": <boolean>, "details?": "<string>" } ] }',
+          '    "result": { "content": "<final post text>", "platform": "<e.g., linkedin|x>" },',
+          '    "rationale": "<strategy manager rationale>",',
+          '    "knobSettings"?: { "formatType"?: "<string>", "hookIntensity"?: "<number|low|med|high>", "expertiseDepth"?: "<number|low|med|high>", "structure"?: "<string|object>" },',
+          '    "quality-report"?: <qa agent JSON>',
           '  }',
           'Rules for result aggregation:',
-          ' - "rationale" must summarize the Strategy specialist output (do NOT invent).',
-          ' - "drafts" must contain the Content specialist output (one or more variants).',
-          ' - "qa" must reflect the QA specialist evaluation of the latest drafts.',
-          ' - If an artifact is missing because its step was skipped or failed, include the field with null and add a short explanation to quality.issues.',
-          'Important: Never output a plan_update or handoff object as the final result. The final response must be exactly one JSON object with { "result", "quality", "acceptance-report" }.',
+          ' - Use the Strategy specialist output for "rationale" and "knobSettings" (do NOT invent).',
+          ' - "result.content" must be the latest Content specialist post text (plain text, no JSON/fences).',
+          ' - "result.platform" should reflect the Strategy brief/platform (or the platform optimized for).',
+          ' - "quality-report" must reflect the QA specialist evaluation of the latest draft.',
+          'Important: Never output a plan_update or handoff object as the final result. The final response must be exactly one JSON object with { "result", "rationale"[, "knobSettings"[, "quality-report"]] }.',
           'Output: return a single JSON object only. Do not wrap in code fences.' + (req.options?.schemaName ? ` Conform to schema: ${req.options.schemaName}.` : ''),
         ]
         return lines.join('\n')
@@ -645,8 +636,34 @@ export class OrchestratorAgent {
           const qaRecs = (() => {
             try {
               const r = artifacts.qa?.result as any
-              const arr = Array.isArray(r?.contentRecommendations) ? r.contentRecommendations : undefined
-              return arr && arr.length > 0 ? arr : undefined
+              const pickStrings = (arr: any[]): string[] => {
+                const out: string[] = []
+                for (const it of arr) {
+                  if (typeof it === 'string') out.push(it)
+                  else if (it && typeof it === 'object') {
+                    const s = typeof (it as any).suggestion === 'string' && (it as any).suggestion.trim().length > 0
+                      ? (it as any).suggestion
+                      : (typeof (it as any).text === 'string' ? (it as any).text : undefined)
+                    if (typeof s === 'string' && s.trim().length > 0) out.push(s.trim())
+                  }
+                }
+                return out
+              }
+              // Accept contentRecommendations
+              if (Array.isArray(r?.contentRecommendations) && r.contentRecommendations.length > 0) {
+                return pickStrings(r.contentRecommendations)
+              }
+              // Accept suggestedChanges
+              if (Array.isArray(r?.suggestedChanges) && r.suggestedChanges.length > 0) {
+                const arr = pickStrings(r.suggestedChanges)
+                if (arr.length > 0) return arr
+              }
+              // Accept Suggestions (capitalized)
+              if (Array.isArray((r as any)?.Suggestions) && (r as any).Suggestions.length > 0) {
+                const arr = pickStrings((r as any).Suggestions)
+                if (arr.length > 0) return arr
+              }
+              return undefined
             } catch { return undefined }
           })()
           const prevDraft = artifacts.generation?.draftText || artifacts.generation?.rawText
@@ -832,6 +849,26 @@ export class OrchestratorAgent {
                 if (currentPhase === 'generation' || currentPhase === 'qa') {
                   onEvent({ type: 'delta', message: text, correlationId: cid })
                 }
+                // Opportunistically capture specialist artifacts from messages within the triage-run
+                try {
+                  if (currentPhase === 'generation') {
+                    // Content messages are plain text drafts
+                    artifacts.generation = { rawText: text, draftText: text }
+                    sawContentInvolvement = true
+                  } else if (currentPhase === 'qa') {
+                    // QA messages are expected to be JSON; parse best-effort
+                    let parsedQa: any | undefined
+                    try {
+                      for (const cand of extractJsonCandidates(text)) {
+                        try { parsedQa = JSON.parse(cand); break } catch {}
+                      }
+                    } catch {}
+                    if (parsedQa || text) {
+                      artifacts.qa = { rawText: text, result: parsedQa ?? text }
+                      sawQaInvolvement = true
+                    }
+                  }
+                } catch {}
                 // Attempt to ingest plan updates from LLM-authored JSON
                 try {
                   const candidates = extractJsonCandidates(text)
@@ -979,8 +1016,35 @@ export class OrchestratorAgent {
       // Capability-driven: finalization should be reflected by plan_update patches (e.g., action:"finalize")
       // No hardcoded progression here.
       
-      // Try to parse final output into new bundle shape; fallback to legacy AppResultSchema
-      let finalBundle: any
+      // Try to parse final output into aligned AppResult shape; fallback to legacy forms
+      let appOut: any
+      const pickPlatformAndContent = (v: any): { platform: string; content: string } => {
+        try {
+          if (!v) return { platform: 'generic', content: '' }
+          if (typeof v === 'string') return { platform: 'generic', content: v.trim() }
+          if (Array.isArray(v?.drafts) && v.drafts.length > 0) {
+            const d = v.drafts[0]
+            const post = typeof d?.post === 'string' ? d.post : (typeof d?.content === 'string' ? d.content : '')
+            const platform = typeof d?.platform === 'string' ? d.platform : (typeof d?.channel === 'string' ? d.channel : 'generic')
+            return { platform, content: String(post || '').trim() }
+          }
+          if (Array.isArray(v?.posts) && v.posts.length > 0) {
+            const p0 = v.posts[0]
+            if (typeof p0 === 'string') return { platform: 'generic', content: p0.trim() }
+            if (p0 && typeof p0 === 'object') {
+              const post = typeof (p0 as any).post === 'string' ? (p0 as any).post : (typeof (p0 as any).content === 'string' ? (p0 as any).content : '')
+              const platform = typeof (p0 as any).platform === 'string' ? (p0 as any).platform : (typeof (p0 as any).channel === 'string' ? (p0 as any).channel : 'generic')
+              return { platform, content: String(post || '').trim() }
+            }
+          }
+          if (v && typeof v === 'object') {
+            const post = typeof v.post === 'string' ? v.post : (typeof v.content === 'string' ? v.content : (typeof v.text === 'string' ? v.text : ''))
+            const platform = typeof v.platform === 'string' ? v.platform : (typeof (v as any).channel === 'string' ? (v as any).channel : 'generic')
+            if (post) return { platform, content: String(post || '').trim() }
+          }
+        } catch {}
+        return { platform: 'generic', content: '' }
+      }
       try {
         // StreamedRunResult has finalOutput getter when completed
         const finalOutput: any = (stream as any).finalOutput
@@ -991,56 +1055,74 @@ export class OrchestratorAgent {
           obj = finalOutput
         }
         if (obj && typeof obj === 'object') {
-          const hasNewShape = 'result' in obj && ('quality' in obj || 'acceptance-report' in obj)
-          if (hasNewShape) {
-            finalBundle = {
-              result: (obj as any).result,
-              quality: (obj as any).quality ?? {},
-              ['acceptance-report']: (obj as any)['acceptance-report'] ?? { overall: false, criteria: [] },
-              // Transitional compatibility with legacy AppResult shape
-              rationale: (obj as any).rationale ?? null
+          // Preferred: new AppResult shape
+          if ('result' in obj && typeof (obj as any).result === 'object' && typeof (obj as any).result?.content === 'string') {
+            try {
+              const parsed = AppResultSchema.parse(obj)
+              appOut = parsed
+            } catch {
+              // best-effort coercion
+              const r = (obj as any).rationale ?? artifacts.strategy?.rationale ?? null
+              const ks = (obj as any).knobSettings ?? artifacts.strategy?.knobs
+              const qr = (obj as any)['quality-report'] ?? artifacts.qa?.result
+              appOut = { result: (obj as any).result, rationale: r, knobSettings: ks, ['quality-report']: qr }
             }
           } else {
-            try {
-              const app = AppResultSchema.parse(obj)
-              finalBundle = { result: app.result, quality: {}, ['acceptance-report']: { overall: false, criteria: [] }, rationale: app.rationale ?? null }
-            } catch {
-              // no-op; will fallback below
-            }
+            // Legacy: bundle or legacy AppResult; coerce to new format
+            const legacy = obj as any
+            const legacyResult = 'result' in legacy ? legacy.result : legacy
+            const { platform, content } = pickPlatformAndContent(legacyResult)
+            const rationale = (legacy?.rationale ?? artifacts.strategy?.rationale) ?? null
+            const knobSettings = (artifacts.strategy?.knobs ?? legacyResult?.knobs) || undefined
+            const qualityReport = legacy['quality-report'] ?? legacy.quality ?? legacy['acceptance-report'] ?? artifacts.qa?.result
+            appOut = { result: { platform, content }, rationale, knobSettings, ['quality-report']: qualityReport }
           }
         }
       } catch {
         // ignore, fallback below
       }
 
-      if (!finalBundle) {
-        // Best-effort extraction of last text output to shape a bundle (no synthesis)
+      // Fallback 1: if specialists produced artifacts (e.g., Content draft), synthesize AppResult from them
+      if (!appOut && (artifacts.generation?.draftText || artifacts.generation?.rawText)) {
+        const contentText = (artifacts.generation?.draftText || artifacts.generation?.rawText || '').trim()
+        appOut = {
+          result: { platform: (artifacts.strategy?.writerBrief as any)?.platform || 'generic', content: contentText },
+          rationale: artifacts.strategy?.rationale ?? null,
+          knobSettings: artifacts.strategy?.knobs,
+          ['quality-report']: artifacts.qa?.result
+        }
+      }
+
+      if (!appOut) {
+        // Best-effort extraction of last text output to shape an AppResult (no synthesis)
         const outputs = (stream?.state?._modelResponses?.[stream?.state?._modelResponses?.length - 1]?.output) || []
         const text = outputs
           .map((o: any) => (o?.content || []).filter((p: any) => p?.type === 'output_text').map((p: any) => p.text).join(''))
           .join('')
-        finalBundle = text
-          ? { result: text, quality: {}, ['acceptance-report']: { overall: false, criteria: [] }, rationale: null }
-          : {
-              result: null,
-              quality: { issues: ['empty_or_invalid_final_output'] },
-              ['acceptance-report']: { overall: false, criteria: [] },
-              rationale: 'Final output missing or invalid; no orchestrator synthesis applied.'
-            }
+        appOut = text
+          ? { result: { platform: (artifacts.strategy?.writerBrief as any)?.platform || 'generic', content: text.trim() }, rationale: artifacts.strategy?.rationale ?? null, knobSettings: artifacts.strategy?.knobs, ['quality-report']: artifacts.qa?.result }
+          : { result: { platform: 'generic', content: '' }, rationale: 'Final output missing or invalid; no orchestrator synthesis applied.', knobSettings: artifacts.strategy?.knobs }
       }
 
-      // If empty/invalid final output, warn and finalize without synthesizing artifacts
-      if (!finalBundle?.result || (typeof finalBundle.result === 'string' && finalBundle.result.trim() === '')) {
-        onEvent({ type: 'warning', message: 'Empty or invalid final output; finishing without synthesis', correlationId: cid })
-        const existingIssues = Array.isArray((finalBundle as any)?.quality?.issues) ? (finalBundle as any).quality.issues as any[] : []
-        const nextIssues = existingIssues.includes('empty_or_invalid_final_output')
-          ? existingIssues
-          : [...existingIssues, 'empty_or_invalid_final_output']
-        finalBundle = {
-          result: null,
-          quality: { ...(finalBundle as any)?.quality, issues: nextIssues },
-          ['acceptance-report']: (finalBundle as any)?.['acceptance-report'] ?? { overall: false, criteria: [] },
-          rationale: 'Final output missing or invalid; no orchestrator synthesis applied.'
+      // If empty/invalid final output, attempt to fill from generation artifact; else warn and finalize with empty content
+      if (!appOut?.result || typeof appOut.result?.content !== 'string' || appOut.result.content.trim() === '') {
+        const genText = (artifacts.generation?.draftText || artifacts.generation?.rawText || '').trim()
+        if (genText) {
+          const platform = appOut?.result?.platform || (artifacts.strategy?.writerBrief as any)?.platform || 'generic'
+          appOut = {
+            result: { platform, content: genText },
+            rationale: appOut?.rationale ?? artifacts.strategy?.rationale ?? null,
+            knobSettings: appOut?.knobSettings ?? artifacts.strategy?.knobs,
+            ['quality-report']: appOut?.['quality-report'] ?? artifacts.qa?.result
+          }
+        } else {
+          onEvent({ type: 'warning', message: 'Empty or invalid final output; finishing without synthesis', correlationId: cid })
+          appOut = {
+            result: { platform: (artifacts.strategy?.writerBrief as any)?.platform || 'generic', content: '' },
+            rationale: 'Final output missing or invalid; no orchestrator synthesis applied.',
+            knobSettings: artifacts.strategy?.knobs,
+            ['quality-report']: artifacts.qa?.result
+          }
         }
       }
 
@@ -1054,20 +1136,20 @@ export class OrchestratorAgent {
       } catch {}
       // Emit warnings only if we neither observed nor enforced the relevant specialist involvement
       try {
-        const hasDrafts = finalBundle && finalBundle.result && Array.isArray((finalBundle.result as any).drafts) && ((finalBundle.result as any).drafts as any[]).length > 0
-        if (hasDrafts && !sawContentInvolvement && !forcedContent) {
+        const hasContent = appOut && appOut.result && typeof (appOut.result as any).content === 'string' && (appOut.result as any).content.trim().length > 0
+        if (hasContent && !sawContentInvolvement && !forcedContent) {
           onEvent({ type: 'warning', message: 'No Content handoff observed; drafts may have been produced without Content agent involvement.', correlationId: cid })
         }
-        if (hasDrafts && !sawQaInvolvement && !forcedQa) {
+        if (hasContent && !sawQaInvolvement && !forcedQa) {
           onEvent({ type: 'warning', message: 'No QA involvement observed; consider increasing guidance or enabling QA step.', correlationId: cid })
         }
       } catch {}
 
       onEvent({ type: 'metrics', tokens: metricsAgg.tokensTotal || undefined, durationMs, correlationId: cid })
       // Capability-driven: step status changes should be LLM-driven via plan_update patches
-      onEvent({ type: 'complete', data: finalBundle, durationMs, correlationId: cid })
+      onEvent({ type: 'complete', data: appOut, durationMs, correlationId: cid })
       log.info('orchestrator_run_complete', { cid, mode: 'app', durationMs })
-      return { final: finalBundle, metrics: { durationMs, tokens: metricsAgg.tokensTotal || undefined } }
+      return { final: appOut, metrics: { durationMs, tokens: metricsAgg.tokensTotal || undefined } }
     } catch (error: any) {
       const errMsg = error?.message || String(error) || 'Unknown error'
       const errStack = (error && typeof error === 'object' && 'stack' in error) ? (error as any).stack : undefined
@@ -1091,17 +1173,14 @@ export class OrchestratorAgent {
         'Delegate work via transfer_to_* handoff tools only; specialists author artifacts.',
         'Quality: enforce configured criteria/thresholds; if insufficient and depth allows, iterate via targeted handoffs.',
         'Finalize only when constraints are satisfied or execution depth is reached; do not finalize after planning alone.',
-        'Final bundle spec for this app:',
+        'Final app output spec (AppResult):',
         '{',
-        '  "result": {',
-        '    "rationale": "<strategy manager rationale/notes>",',
-        '    "drafts": [ { "platform": "<string>", "variantId": "<string>", "post": "<string>", "altText?": "<string>" } ],',
-        '    "qa": { "pass": <boolean>, "score": <number>, "issues": [ "<string>" ] }',
-        '  },',
-        '  "quality": { "pass"?: <boolean>, "score"?: <number>, "issues"?: <string[]>, "metrics"?: <object> },',
-        '  "acceptance-report": { "overall": <boolean>, "criteria": [ { "criterion": "<string>", "passed": <boolean>, "details?": "<string>" } ] }',
+        '  "result": { "content": "<final post text>", "platform": "<e.g., linkedin|x>" },',
+        '  "rationale": "<strategy manager rationale>",',
+        '  "knobSettings"?: { "formatType"?: "<string>", "hookIntensity"?: "<number|low|med|high>", "expertiseDepth"?: "<number|low|med|high>", "structure"?: "<string|object>" },',
+        '  "quality-report"?: <qa agent JSON>',
         '}',
-        'When responding with the final bundle, output one JSON object that matches the above schema. Do not include markdown, code fences, or any commentary outside of the JSON.'
+        'When finalizing, return one JSON object matching AppResult. Do not include markdown or code fences.'
       ].join('\n')
       return [ORCH_SYS_START, guidance, ORCH_SYS_END].join('\n')
     }

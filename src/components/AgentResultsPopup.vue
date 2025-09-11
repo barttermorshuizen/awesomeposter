@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import type { AgentRunRequest, AgentEvent, AppResult } from '@awesomeposter/shared'
+import type { AgentRunRequest, AgentEvent, AppResult, Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
-import { normalizeAppResult, type NormalizedAppResult } from '@/lib/normalize-app-result'
 
 type BriefInput = {
   id: string
@@ -44,9 +43,8 @@ const backlog = ref<{ busy: boolean; retryAfter: number; pending: number; limit:
 // Streaming handle
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 
-// Final normalized result
-const normalized = ref<NormalizedAppResult | null>(null)
-const rawComplete = ref<AppResult | null>(null)
+// AppResult payload from orchestrator
+const appResult = ref<AppResult | null>(null)
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
@@ -66,8 +64,7 @@ function reset() {
   correlationId.value = undefined
   errorMsg.value = null
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
-  normalized.value = null
-  rawComplete.value = null
+  appResult.value = null
 }
 
 function close() {
@@ -85,47 +82,146 @@ function genCid(): string {
   return 'cid_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
 }
 
-function buildObjective(): string {
-  const base = (props.brief?.objective || '').trim() || 'Create high-quality social post variants.'
-  const constraint = [
-    'Return a single JSON object with shape:',
-    '{ "result": { "drafts": [',
-    '{ "platform": "text", "variantId": "1", "post": "<plain text>" },',
-    '{ "platform": "text", "variantId": "2", "post": "<plain text>" },',
-    '{ "platform": "text", "variantId": "3", "post": "<plain text>" }',
-    '] }, "rationale"?: "<string>" }.',
-    'Use exactly 3 drafts.',
-    'The post fields must be plain text only (no Markdown, no code fences, no JSON or objects inside strings).',
-    'Do not include any commentary or wrapping outside the JSON.'
-  ].join(' ')
-  const already = /exactly\s+3\s+distinct|Return a single JSON object with shape/i.test(base)
-  return already ? base : `${base} ${constraint}`
+function safeJson(v: unknown) {
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+function pickBriefObjective(brief: { objective?: string | null; description?: string | null } | null | undefined) {
+  const obj = (brief?.objective || '').trim()
+  if (obj) return obj
+  const desc = (brief?.description || '').trim()
+  if (desc) return `Create high-quality social post variants based on: ${desc}`
+  return 'Create high-quality social post variants.'
+}
+function buildCompleteObjective(context: {
+  brief: {
+    id?: string
+    title?: string | null
+    description?: string | null
+    objective?: string | null
+    audienceId?: string | null
+  }
+  clientProfile: Record<string, unknown>
+  assets: Array<Pick<Asset, 'id' | 'filename' | 'originalName' | 'url' | 'type' | 'mimeType' | 'fileSize'>>
+}): string {
+  const goal = pickBriefObjective(context.brief)
+
+  const lines: string[] = []
+  lines.push(
+    goal,
+    '',
+    'Context (domain-agnostic; do not assume any database access):'
+  )
+  lines.push('Client Profile:')
+  lines.push(safeJson(context.clientProfile))
+  lines.push('')
+  lines.push('Brief:')
+  lines.push(safeJson({
+    id: context.brief.id,
+    title: context.brief.title || '',
+    description: context.brief.description || '',
+    objective: context.brief.objective || '',
+    audienceId: context.brief.audienceId || undefined
+  }))
+  lines.push('')
+  lines.push('Assets (use if relevant):')
+  lines.push(safeJson(context.assets))
+  return lines.join('\n')
 }
 
 async function startRun() {
-  if (!props.brief?.id) {
+  if (!props.brief?.id || !props.brief?.clientId) {
     errorMsg.value = 'No brief selected'
     return
   }
   running.value = true
   const cid = genCid()
 
-  const body: AgentRunRequest = {
-    mode: 'app',
-    objective: buildObjective(),
-    briefId: props.brief.id,
-    options: {
-      schemaName: 'AppResult'
-    }
-  }
-
-  const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
-  const headers: Record<string, string> = {
-    'x-correlation-id': cid
-  }
-  if (AGENTS_AUTH) headers['authorization'] = `Bearer ${AGENTS_AUTH}`
-
   try {
+    // 1) Load client profile
+    const profRes = await fetch(`/api/clients/${props.brief.clientId}/profile`, {
+      headers: { accept: 'application/json' }
+    })
+    const profData = await profRes.json().catch(() => ({}))
+    if (!profRes.ok || profData?.ok !== true) {
+      throw new Error(profData?.statusMessage || profData?.error || 'Failed to load client profile')
+    }
+
+    // 2) Load full brief
+    const briefRes = await fetch(`/api/briefs/${props.brief.id}`, {
+      headers: { accept: 'application/json' }
+    })
+    const briefData = await briefRes.json().catch(() => ({}))
+    if (!briefRes.ok || briefData?.ok !== true || !briefData?.brief) {
+      throw new Error(briefData?.statusMessage || briefData?.error || 'Failed to load brief details')
+    }
+    const briefFull = briefData.brief as {
+      id: string
+      title?: string | null
+      description?: string | null
+      objective?: string | null
+      audienceId?: string | null
+    }
+
+    // 3) Load assets (best-effort)
+    let briefAssets: Asset[] = []
+    try {
+      const assetsRes = await fetch(`/api/briefs/${props.brief.id}/assets`, {
+        headers: { accept: 'application/json' }
+      })
+      const assetsData = await assetsRes.json().catch(() => ({}))
+      if (assetsRes.ok && Array.isArray(assetsData?.assets)) {
+        briefAssets = assetsData.assets as Asset[]
+      }
+    } catch {
+      // ignore asset load failure
+    }
+
+    // 4) Build complete objective (no briefId)
+    const objective = buildCompleteObjective({
+      brief: {
+        id: briefFull.id,
+        title: (briefFull.title ?? props.brief.title) || '',
+        description: (typeof briefFull.description === 'string' && briefFull.description.trim().length > 0)
+          ? briefFull.description
+          : (props.brief.description || ''),
+        objective: (briefFull.objective ?? props.brief.objective) || '',
+        audienceId: (briefFull.audienceId ?? props.brief.audienceId) || undefined
+      },
+      clientProfile: {
+        clientName: profData.profile?.clientName,
+        primaryCommunicationLanguage: profData.profile?.primaryLanguage,
+        objectives: profData.profile?.objectives || {},
+        audiences: profData.profile?.audiences || {},
+        tone: profData.profile?.tone || {},
+        specialInstructions: profData.profile?.specialInstructions || {},
+        guardrails: profData.profile?.guardrails || {},
+        platformPrefs: profData.profile?.platformPrefs || {}
+      },
+      assets: (briefAssets || []).map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        originalName: a.originalName,
+        url: a.url,
+        type: a.type,
+        mimeType: a.mimeType,
+        fileSize: a.fileSize
+      }))
+    })
+
+    const body: AgentRunRequest = {
+      mode: 'app',
+      objective,
+      options: {
+        schemaName: 'AppResult'
+      }
+    }
+
+    const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
+    const headers: Record<string, string> = {
+      'x-correlation-id': cid
+    }
+    if (AGENTS_AUTH) headers['authorization'] = `Bearer ${AGENTS_AUTH}`
+
     streamHandle = postEventStream({
       url,
       body,
@@ -154,15 +250,7 @@ async function startRun() {
           case 'complete': {
             running.value = false
             const data = (evt.data ?? null) as unknown as AppResult
-            rawComplete.value = data
-            // App mode expected: { result, rationale? }
-            try {
-              const result = data?.result
-              const rationale = data?.rationale ?? null
-              normalized.value = normalizeAppResult(result, rationale)
-            } catch {
-              normalized.value = { drafts: [{ platform: 'generic', variantId: '1', post: '', charCount: 0 }, { platform: 'generic', variantId: '2', post: '', charCount: 0 }, { platform: 'generic', variantId: '3', post: '', charCount: 0 }], rationale: null }
-            }
+            appResult.value = data
             break
           }
         }
@@ -180,8 +268,7 @@ async function startRun() {
 function retry() {
   if (running.value) return
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
-  normalized.value = null
-  rawComplete.value = null
+  appResult.value = null
   startRun()
 }
 
@@ -189,8 +276,7 @@ function downloadJson() {
   const payload = {
     correlationId: correlationId.value,
     frames: frames.value.map(f => f.data),
-    complete: rawComplete.value,
-    normalized: normalized.value
+    appResult: appResult.value
   }
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -202,16 +288,6 @@ function downloadJson() {
   URL.revokeObjectURL(url)
 }
 
-function draftColor(platform: string): string {
-  switch ((platform || '').toLowerCase()) {
-    case 'linkedin': return 'primary'
-    case 'x':
-    case 'twitter': return 'grey'
-    case 'instagram': return 'pink'
-    case 'facebook': return 'blue'
-    default: return 'secondary'
-  }
-}
 
 function dotColor(type: string) {
   switch (type) {
@@ -234,6 +310,8 @@ function dotColor(type: string) {
 function stringify(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
+
+//
 
 const timelinePanels = computed(() => {
   const out: Array<{ id?: string; type: AgentEvent['type'] | 'data'; data: AgentEventWithId; t: number }> = []
@@ -269,6 +347,9 @@ const timelinePanels = computed(() => {
   out.sort((a, b) => a.t - b.t)
   return out
 })
+
+// Derived views for template safety
+const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
 
 </script>
 
@@ -372,44 +453,53 @@ const timelinePanels = computed(() => {
             <v-card>
               <v-card-title class="d-flex align-center">
                 <v-icon icon="mdi-post-outline" class="me-2" />
-                Generated Variants
+                App Result
               </v-card-title>
               <v-divider />
               <v-card-text>
-                <div v-if="!normalized">
+                <div v-if="!appResult">
                   <div class="d-flex flex-column align-center py-6">
                     <v-progress-circular indeterminate color="primary" size="32" class="mb-2" v-if="running" />
-                    <div class="text-medium-emphasis">{{ running ? 'Generating...' : 'No result yet' }}</div>
+                    <div class="text-medium-emphasis">{{ running ? 'Streaming...' : 'No result yet' }}</div>
                   </div>
                 </div>
 
                 <div v-else class="d-flex flex-column ga-3">
+                  <v-card variant="outlined" class="mb-3">
+                    <v-card-title class="d-flex align-center text-subtitle-2">
+                      <v-icon icon="mdi-post-outline" class="me-2" />
+                      Result
+                      <v-spacer />
+                      <v-chip v-if="appResult?.result?.platform" size="x-small" color="secondary" variant="flat">{{ appResult?.result?.platform }}</v-chip>
+                    </v-card-title>
+                    <v-card-text>
+                      <div class="pa-3 rounded" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06)">
+                        <pre class="text-body-2" style="white-space: pre-wrap; margin: 0">{{ appResult?.result?.content || '' }}</pre>
+                      </div>
+                    </v-card-text>
+                  </v-card>
+
                   <v-alert
-                    v-if="normalized?.rationale"
+                    v-if="appResult?.rationale"
                     type="info"
                     variant="outlined"
-                    class="mb-2"
+                    class="mb-3"
                   >
                     <div class="text-subtitle-2 mb-1">Rationale</div>
-                    <div class="text-body-2">{{ normalized?.rationale }}</div>
+                    <div class="text-body-2">{{ appResult?.rationale }}</div>
                   </v-alert>
 
-                  <v-card
-                    v-for="d in normalized.drafts"
-                    :key="d.variantId + '_' + d.platform"
-                    variant="outlined"
-                  >
+                  <v-card v-if="knobSettingsView" variant="tonal" class="mb-3">
+                    <v-card-title class="text-subtitle-2">Knob Settings</v-card-title>
                     <v-card-text>
-                      <div class="d-flex justify-space-between align-center mb-2">
-                        <div class="d-flex align-center ga-2">
-                          <v-chip :color="draftColor(d.platform)" size="small" label>{{ d.platform }}</v-chip>
-                          <span class="text-caption text-medium-emphasis">Variant {{ d.variantId }}</span>
-                        </div>
-                        <div class="text-caption text-medium-emphasis">{{ d.charCount }} chars</div>
-                      </div>
-                      <div class="pa-3 rounded" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06)">
-                        <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;" class="text-body-2">{{ d.post }}</pre>
-                      </div>
+                      <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(knobSettingsView) }}</pre>
+                    </v-card-text>
+                  </v-card>
+
+                  <v-card v-if="appResult && (appResult as any)['quality-report']" variant="outlined">
+                    <v-card-title class="text-subtitle-2">Quality Report</v-card-title>
+                    <v-card-text>
+                      <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify((appResult as any)['quality-report']) }}</pre>
                     </v-card-text>
                   </v-card>
                 </div>
@@ -430,7 +520,7 @@ const timelinePanels = computed(() => {
         <v-btn color="primary" @click="retry" :disabled="running">
           <v-icon icon="mdi-reload" class="me-1" /> Retry
         </v-btn>
-        <v-btn color="default" variant="tonal" @click="downloadJson" :disabled="!normalized">
+        <v-btn color="default" variant="tonal" @click="downloadJson" :disabled="!appResult">
           <v-icon icon="mdi-tray-arrow-down" class="me-1" /> Download JSON
         </v-btn>
       </v-card-actions>

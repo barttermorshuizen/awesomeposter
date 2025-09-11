@@ -24,6 +24,7 @@ export const STRATEGY_INSTRUCTIONS_APP = [
   '{',
   '  "rationale": "<short reasoning for the chosen approach and key strategic choices>",',
   '  "writerBrief": {',
+  '    "clientName": "<exact client/company name>",',
   '    "objective": "<what the content must achieve>",',
   '    "audience": "<who we are targeting>",',
   '    "platform": "<e.g., linkedin | x>",',
@@ -39,6 +40,7 @@ export const STRATEGY_INSTRUCTIONS_APP = [
   '  "knobs": { "formatType": "<string>", "hookIntensity": "<low|med|high>", "expertiseDepth": "<low|med|high>", "structure": "<string>" }',
   '}',
   'Notes:',
+  '- Use the client/company name from the provided Client Profile (do not invent or translate it).',
   '- The writerBrief.knobs are identical to the top‑level knobs you output.',
   '- Keep rationale concise (3–5 sentences max).',
   '- Return one JSON object only; do NOT include markdown or code fences.'

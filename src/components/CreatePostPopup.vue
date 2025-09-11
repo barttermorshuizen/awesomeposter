@@ -3,7 +3,7 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import type { AgentRunRequest } from '@awesomeposter/shared'
 import type { Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
-import { normalizeAppResult, type NormalizedAppResult } from '@/lib/normalize-app-result'
+import type { AppResult } from '@awesomeposter/shared'
 
 type BriefInput = {
   id: string
@@ -14,11 +14,8 @@ type BriefInput = {
   audienceId?: string | null
 } | null
 
-type UiDraft = { platform: string; variantId?: string; post: string; altText?: string; charCount?: number }
-type UiKnobs = { formatType?: string; hookIntensity?: number; expertiseDepth?: number; structure?: { lengthLevel?: number; scanDensity?: number } }
-type UiSchedule = { windows?: Record<string, string[] | string> }
-type UiStrategy = { platforms?: string[]; structure?: string; themes?: string[]; hashtags?: string[] }
-type UiFinalState = { drafts?: UiDraft[]; rationale?: string | null; knobs?: UiKnobs | undefined; schedule?: UiSchedule | undefined; strategy?: UiStrategy | undefined }
+type UiKnobs = { [k: string]: unknown }
+type UiFinalState = { content?: string; platform?: string; rationale?: string | null; knobSettings?: UiKnobs; qualityReport?: unknown }
 
 type AgentResults = {
   success: boolean
@@ -80,9 +77,7 @@ const progress = ref<WorkflowStatus['progress'] | null>(null)
 // Streaming handle
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 const correlationId = ref<string | undefined>(undefined)
-const strategyView = computed<UiStrategy | null>(() => (results.value?.finalState?.strategy as UiStrategy | undefined) ?? null)
-const knobsView = computed<UiKnobs | null>(() => (results.value?.finalState?.knobs as UiKnobs | undefined) ?? null)
-const scheduleView = computed<UiSchedule | null>(() => (results.value?.finalState?.schedule as UiSchedule | undefined) ?? null)
+const knobsView = computed<UiKnobs | null>(() => (results.value?.finalState?.knobSettings as UiKnobs | undefined) ?? null)
 
 watch(isOpen, async (open) => {
   if (open && props.brief?.id) {
@@ -123,9 +118,7 @@ function genCid(): string {
 function safeJson(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v)
-}
+//
 
 function pickBriefObjective(brief: { objective?: string | null; description?: string | null } | null | undefined) {
   const obj = (brief?.objective || '').trim()
@@ -173,13 +166,12 @@ function buildCompleteObjective(context: {
   lines.push('Assets (use if relevant):')
   lines.push(safeJson(context.assets))
   lines.push('')
-  // App result constraints (keep simple and aligned with normalizer)
+  // App result constraints (aligned with AppResult)
   lines.push(
     'Output requirements:',
     '- Return a single JSON object only (no code fences, no commentary).',
-    '- Shape: { "result": { "drafts": [ { "platform": "<string>", "variantId": "<string>", "post": "<string>", "altText?": "<string>" } ] }, "rationale"?: "<string>" }',
-    '- Use exactly 3 drafts.',
-    '- The "post" fields must be plain text only (no Markdown, no code fences, no embedded JSON).'
+    '- Shape: { "result": { "content": "<string>", "platform": "<string>" }, "rationale"?: "<string>", "knobSettings"?: { ... }, "quality-report"?: { ... } }',
+    '- The "result.content" must be plain text only (no Markdown, no code fences, no embedded JSON).'
   )
   return lines.join('\n')
 }
@@ -244,6 +236,7 @@ async function runAgentWorkflow() {
         audienceId: (briefFull.audienceId ?? props.brief.audienceId) || undefined
       },
       clientProfile: {
+        clientName: profData.profile?.clientName,
         // Keep the structure close to what the orchestrator can reason about
         primaryCommunicationLanguage: profData.profile?.primaryLanguage,
         objectives: profData.profile?.objectives || {},
@@ -314,49 +307,26 @@ async function runAgentWorkflow() {
             break
           }
           case 'complete': {
-            // Finalize and normalize results
-            const data: unknown = evt.data ?? null
-            // Accept either new bundle with {result,quality,...} or legacy AppResult
-            let resultPayload: unknown = data
-            let rationale: string | null = null
-            if (isRecord(data)) {
-              if ('result' in data) {
-                resultPayload = (data as Record<string, unknown>).result
-              }
-              const r = (data as Record<string, unknown>).rationale
-              if (typeof r === 'string') rationale = r
+            // Finalize and map to simplified UI state
+            const data = (evt.data as AppResult)
+            const fs: UiFinalState = {
+              content: data.result.content,
+              platform: data.result.platform,
+              rationale: data.rationale ?? null
             }
-            let normalized: NormalizedAppResult
-            try {
-              normalized = normalizeAppResult(resultPayload, rationale)
-            } catch {
-              normalized = { drafts: [
-                { platform: 'generic', variantId: '1', post: '', charCount: 0 },
-                { platform: 'generic', variantId: '2', post: '', charCount: 0 },
-                { platform: 'generic', variantId: '3', post: '', charCount: 0 },
-              ], rationale: null }
+            const ks = (data as unknown as { knobSettings?: unknown }).knobSettings
+            if (ks != null) {
+              fs.knobSettings = ks as UiKnobs
             }
-            results.value = {
-              success: true,
-              finalState: {
-                drafts: normalized.drafts.map(d => ({
-                  platform: d.platform,
-                  variantId: d.variantId,
-                  post: d.post,
-                  altText: d.altText,
-                  charCount: d.charCount
-                })),
-                rationale: normalized.rationale ?? null,
-                knobs: normalized.knobs as UiFinalState['knobs'],
-                schedule: normalized.schedule as UiFinalState['schedule']
-              }
-            }
+            const qr = (data as unknown as { ['quality-report']?: unknown })['quality-report']
+            if (qr != null) fs.qualityReport = qr
+            results.value = { success: true, finalState: fs }
             stopStream()
             break
           }
         }
       }
-    })
+    });
 
     await streamHandle.done
   } catch (e: unknown) {
@@ -379,16 +349,7 @@ function getPlatformColor(platform: string): string {
   }
 }
 
-function formatTypeLabel(type?: string) {
-  switch (type) {
-    case 'text': return 'Text'
-    case 'single_image': return 'Single image'
-    case 'multi_image': return 'Carousel'
-    case 'document_pdf': return 'Document'
-    case 'video': return 'Video'
-    default: return type || '—'
-  }
-}
+//
 
 function downloadResults() {
   if (!results.value) return
@@ -459,93 +420,42 @@ function downloadResults() {
 
         <!-- Results -->
         <div v-if="!isLoading && results?.success" class="d-flex flex-column ga-4">
-          <!-- Strategy (shows if present in normalized payload extras) -->
-          <v-alert type="info" variant="tonal" class="mb-4" v-if="strategyView">
-            <div class="text-subtitle-2 mb-2">Content Strategy</div>
-            <div class="d-flex flex-wrap ga-2 mb-2">
-              <template v-for="p in (strategyView?.platforms || [])" :key="p">
-                <v-chip :color="getPlatformColor(p)" size="small" label>{{ p }}</v-chip>
-              </template>
-            </div>
-            <div class="text-body-2">
-              <div><strong>Structure:</strong> {{ strategyView?.structure }}</div>
-              <div><strong>Themes:</strong> {{ (strategyView?.themes || []).join(', ') }}</div>
-              <div><strong>Hashtags:</strong> {{ (strategyView?.hashtags || []).join(', ') }}</div>
-            </div>
-          </v-alert>
-
-          <!-- Rationale -->
-          <v-alert type="info" variant="outlined" class="mb-4" v-if="results?.finalState?.rationale">
-            <div class="text-subtitle-2 mb-1">Strategic Rationale</div>
-            <div class="text-body-2">{{ results?.finalState?.rationale }}</div>
-          </v-alert>
-
-          <!-- Knobs -->
-          <v-card variant="tonal" class="mb-4" v-if="knobsView">
-            <v-card-title class="text-subtitle-2">4-Knob Optimization Settings</v-card-title>
+          <!-- Generated Post -->
+          <v-card variant="outlined" v-if="results?.finalState?.content">
+            <v-card-title class="d-flex align-center text-subtitle-2">
+              <v-icon icon="mdi-post-outline" class="me-2" />
+              Generated Post
+              <v-spacer />
+              <v-chip v-if="results?.finalState?.platform" :color="getPlatformColor(String(results?.finalState?.platform))" size="x-small" variant="flat">
+                {{ results?.finalState?.platform }}
+              </v-chip>
+            </v-card-title>
             <v-card-text>
-              <div class="text-body-2 mb-2"><strong>Format:</strong> {{ formatTypeLabel(knobsView?.formatType) }}</div>
-              <div class="mb-2">
-                <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Hook Intensity</span><span>{{ Math.round((knobsView?.hookIntensity || 0) * 100) }}%</span>
-                </div>
-                <v-progress-linear :model-value="(knobsView?.hookIntensity || 0) * 100" color="amber" height="8" rounded />
-              </div>
-              <div class="mb-2">
-                <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Expertise Depth</span><span>{{ Math.round((knobsView?.expertiseDepth || 0) * 100) }}%</span>
-                </div>
-                <v-progress-linear :model-value="(knobsView?.expertiseDepth || 0) * 100" color="deep-purple" height="8" rounded />
-              </div>
-              <div class="mb-2" v-if="knobsView?.structure">
-                <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Length Level</span><span>{{ Math.round(((knobsView?.structure?.lengthLevel ?? 0.6) * 100)) }}%</span>
-                </div>
-                <v-progress-linear :model-value="((knobsView?.structure?.lengthLevel ?? 0.6) * 100)" color="blue" height="8" rounded />
-              </div>
-              <div class="mb-2" v-if="knobsView?.structure">
-                <div class="d-flex justify-space-between text-caption mb-1">
-                  <span>Scan Density</span><span>{{ Math.round(((knobsView?.structure?.scanDensity ?? 0.8) * 100)) }}%</span>
-                </div>
-                <v-progress-linear :model-value="((knobsView?.structure?.scanDensity ?? 0.8) * 100)" color="teal" height="8" rounded />
+              <div class="pa-3 rounded" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06)">
+                <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;" class="text-body-2">{{ results?.finalState?.content }}</pre>
               </div>
             </v-card-text>
           </v-card>
 
-          <!-- Drafts -->
-          <div v-if="results?.finalState?.drafts?.length">
-            <div class="text-subtitle-2 mb-2">Generated Content</div>
-            <div class="d-flex flex-column ga-3">
-              <v-card v-for="draft in results?.finalState?.drafts" :key="draft.variantId || draft.platform" variant="outlined">
-                <v-card-text>
-                  <div class="d-flex justify-space-between align-center mb-2">
-                    <div class="d-flex align-center ga-2">
-                      <v-chip :color="getPlatformColor(draft.platform)" size="small" label>{{ draft.platform }}</v-chip>
-                      <span class="text-caption text-medium-emphasis">{{ draft.variantId }}</span>
-                    </div>
-                    <div class="text-caption text-medium-emphasis">
-                      {{ draft.charCount || (draft.post?.length || 0) }} chars
-                    </div>
-                  </div>
-                  <div class="pa-3 rounded" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06)">
-                    <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;" class="text-body-2">{{ draft.post }}</pre>
-                  </div>
-                  <div v-if="draft.altText" class="text-caption text-medium-emphasis mt-2"><strong>Alt Text:</strong> {{ draft.altText }}</div>
-                </v-card-text>
-              </v-card>
-            </div>
-          </div>
+          <!-- Rationale -->
+          <v-alert type="info" variant="outlined" class="mb-2" v-if="results?.finalState?.rationale">
+            <div class="text-subtitle-2 mb-1">Strategic Rationale</div>
+            <div class="text-body-2">{{ results?.finalState?.rationale }}</div>
+          </v-alert>
 
-          <!-- Schedule (if present in normalized extras) -->
-          <v-card variant="tonal" class="mt-4" v-if="scheduleView">
-            <v-card-title class="text-subtitle-2">Publishing Schedule</v-card-title>
-            <v-card-text class="d-flex flex-column ga-2">
-              <template v-for="(windows, platform) in (scheduleView?.windows || {})" :key="platform">
-                <div class="d-flex align-center ga-2">
-                  <v-chip :color="getPlatformColor(String(platform))" size="x-small" label>{{ platform }}</v-chip>
-                  <span class="text-body-2">{{ Array.isArray(windows) ? windows.join(', ') : String(windows) }}</span>
-                </div>
-              </template>
+          <!-- Knob Settings -->
+          <v-card variant="tonal" class="mb-2" v-if="knobsView">
+            <v-card-title class="text-subtitle-2">Knob Settings</v-card-title>
+            <v-card-text>
+              <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ JSON.stringify(knobsView, null, 2) }}</pre>
+            </v-card-text>
+          </v-card>
+
+          <!-- Quality Report -->
+          <v-card variant="outlined" class="mb-2" v-if="results?.finalState?.qualityReport">
+            <v-card-title class="text-subtitle-2">Quality Report</v-card-title>
+            <v-card-text>
+              <pre class="text-caption" style="white-space: pre-wrap; margin: 0">{{ JSON.stringify(results?.finalState?.qualityReport, null, 2) }}</pre>
             </v-card-text>
           </v-card>
 
