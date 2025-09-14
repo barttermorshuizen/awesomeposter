@@ -1,4 +1,11 @@
-import { AppResultSchema, type AgentRunRequest, type AgentEvent } from '@awesomeposter/shared'
+import {
+  AppResultSchema,
+  type AgentRunRequest,
+  type AgentEvent,
+  type Plan,
+  type PlanStepStatus,
+  PlanPatchSchema
+} from '@awesomeposter/shared'
 import { z } from 'zod'
 import { getLogger } from './logger'
 import { AgentRuntime } from './agent-runtime'
@@ -84,43 +91,9 @@ function toHandoffInputFilter(historyFilter: (h: any[]) => any[]) {
   }
 }
 
-// Local plan types for in-run planning (capability-driven; avoid hardcoded step names)
-type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'skipped'
-type PlanStep = {
-  id: string
-  capabilityId?: string
-  action?: 'finalize'
-  label?: string
-  status: PlanStepStatus
-  note?: string
-}
-type Plan = { version: number; steps: PlanStep[] }
-
+// In-memory plan persistence for resumable runs
 type SpecialistId = 'strategy' | 'generation' | 'qa'
 const RESUME_STORE = new Map<string, { plan: Plan; history: any[]; updatedAt: number }>()
-
-// Local PlanPatch schema (capability-driven; no hardcoded step kinds)
-const PlanActionEnum = z.enum(['finalize'])
-const PlanStepStatusEnum = z.enum(['pending', 'in_progress', 'done', 'skipped'])
-const PlanStepSchemaLocal = z.object({
-  id: z.string(),
-  capabilityId: z.string().min(1).optional(),
-  action: PlanActionEnum.optional(),
-  label: z.string().optional(),
-  status: PlanStepStatusEnum,
-  note: z.string().optional()
-})
-const PlanStepUpdateSchemaLocal = z.object({
-  id: z.string(),
-  status: PlanStepStatusEnum.optional(),
-  note: z.string().optional()
-})
-const PlanPatchSchema = z.object({
-  stepsAdd: z.array(PlanStepSchemaLocal).optional(),
-  stepsUpdate: z.array(PlanStepUpdateSchemaLocal).optional(),
-  stepsRemove: z.array(z.string()).optional(),
-  note: z.string().optional()
-})
 
 // Helper mappers: normalize LLM-authored plan patches into capability-driven internal schema
 function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' } | undefined {

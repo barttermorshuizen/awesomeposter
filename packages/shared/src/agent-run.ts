@@ -157,9 +157,29 @@ export type PlanStepUpdate = z.infer<typeof PlanStepUpdateSchema>
 // - stepsUpdate: update status and/or note of existing steps by id
 // - stepsRemove: remove steps by id
 export const PlanPatchSchema = z.object({
- stepsAdd: z.array(PlanStepSchema).optional(),
- stepsUpdate: z.array(PlanStepUpdateSchema).optional(),
- stepsRemove: z.array(z.string()).optional(),
- note: z.string().optional()
+  stepsAdd: z.array(PlanStepSchema).optional(),
+  stepsUpdate: z.array(PlanStepUpdateSchema).optional(),
+  stepsRemove: z.array(z.string()).optional(),
+  note: z.string().optional()
 })
 export type PlanPatch = z.infer<typeof PlanPatchSchema>
+
+// Shared step result schema used by orchestrator and specialists.
+// - stepId: identifier of the plan step this result corresponds to
+// - output: arbitrary structured data produced by the step
+// - error: optional error message if the step failed
+// - metrics: optional structured metrics (token usage, timings, etc.)
+export const StepResultSchema = z.object({
+  stepId: z.string(),
+  output: z.any().optional(),
+  error: z.string().optional(),
+  metrics: z.record(z.any()).optional(),
+})
+export type StepResult = z.infer<typeof StepResultSchema>
+
+// Aggregate run report consisting of step results and optional summary data.
+export const RunReportSchema = z.object({
+  steps: z.array(StepResultSchema),
+  summary: z.any().optional(),
+})
+export type RunReport = z.infer<typeof RunReportSchema>
