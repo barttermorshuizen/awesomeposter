@@ -1,6 +1,6 @@
 # Orchestrator-as-Code Refactoring Plan
 
-This plan updates the existing orchestrator implementation to the code-first architecture described in `docs/orchestrator_requirements.md`. Instead of starting from scratch, it builds on the current `OrchestratorAgent` and related agents in `packages/agents-server`.
+This plan updates the existing orchestrator implementation to the code-first architecture described in [`orchestrator_requirements.md`](./orchestrator_requirements.md). Instead of starting from scratch, it builds on the current `OrchestratorAgent` and related agents in `packages/agents-server`.
 
 ## 1. Consolidate Data Models
 - Move the ad-hoc `Plan` and `PlanStep` types from `packages/agents-server/src/services/orchestrator-agent.ts` into `packages/shared`.
@@ -41,3 +41,13 @@ This plan updates the existing orchestrator implementation to the code-first arc
 ## 7. Deployment Notes
 - Deploy orchestrator and specialists via the existing agents server package.
 - Document required environment variables for the Agents SDK, persistence, and feature flags.
+
+## Implementation Checklist
+
+Progress on this refactor is tracked in [`orchestrator_todo.md`](./orchestrator_todo.md). Key tasks include:
+
+- Move `Plan` and `PlanStep` types into `packages/shared` and introduce shared `StepResult`/`RunReport` definitions.
+- Refactor `OrchestratorAgent.run` into an explicit state machine that emits `plan_update` patches and persists `RunReport` data.
+- Trim specialist agents to the minimal tool set and ensure they return structured `StepResult` objects without replanning.
+- Align SSE emissions (`plan_update`, `handoff`, `delta`, `final`) with the contract in `orchestrator_requirements.md`.
+- Add integration tests that exercise a full run using mock agents and extend telemetry tests for token and runtime budgets.
