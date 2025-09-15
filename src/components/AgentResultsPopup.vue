@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import type { AgentRunRequest, AgentEvent, Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
@@ -42,6 +42,11 @@ const correlationId = ref<string | undefined>(undefined)
 const errorMsg = ref<string | null>(null)
 const backlog = ref<{ busy: boolean; retryAfter: number; pending: number; limit: number }>({ busy: false, retryAfter: 0, pending: 0, limit: 0 })
 
+// Plan state (from plan_update frames)
+type PlanStep = { id: string; capabilityId?: string; action?: string; label?: string; status: 'pending'|'in_progress'|'done'|'skipped'; note?: string }
+type PlanState = { version: number; steps: PlanStep[] }
+const plan = ref<PlanState | null>(null)
+
 // Streaming handle
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 
@@ -72,6 +77,7 @@ function reset() {
   errorMsg.value = null
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
   appResult.value = null
+  plan.value = null
 }
 
 function close() {
@@ -247,6 +253,16 @@ async function startRun() {
           case 'phase':
             phase.value = evt.phase
             break
+          case 'plan_update': {
+            try {
+              const d = (evt.data as any) || {}
+              const p = d.plan
+              if (p && typeof p === 'object' && Array.isArray(p.steps)) {
+                plan.value = { version: Number(p.version || 0), steps: p.steps as PlanStep[] }
+              }
+            } catch {}
+            break
+          }
           case 'warning':
             // keep running
             break
@@ -392,6 +408,24 @@ const timelinePanels = computed(() => {
 // Derived views for template safety
 const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
 
+// Auto-scroll timeline to tail on updates
+const timelineScroll = ref<HTMLElement | null>(null)
+watch(frames, () => {
+  nextTick(() => {
+    const el = timelineScroll.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}, { deep: true })
+
+// Auto-scroll plan view to tail on updates
+const planScroll = ref<HTMLElement | null>(null)
+watch(plan, () => {
+  nextTick(() => {
+    const el = planScroll.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}, { deep: true })
+
 </script>
 
 <template>
@@ -434,9 +468,50 @@ const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
           {{ errorMsg }}
         </v-alert>
 
-        <!-- Live timeline and result two-column layout -->
+        <!-- Live plan, timeline and result two-column layout -->
         <v-row align="stretch" dense>
           <v-col cols="12" md="6">
+            <!-- Planning view (mirrors Sandbox plan table) -->
+            <v-card class="mb-3">
+              <v-card-title class="d-flex align-center">
+                <v-icon icon="mdi-clipboard-text-outline" class="me-2" />
+                Plan
+                <v-spacer />
+                <v-chip v-if="plan?.version !== undefined" size="x-small" variant="tonal">v{{ plan?.version ?? 0 }}</v-chip>
+              </v-card-title>
+              <v-divider />
+              <v-card-text>
+                <div v-if="!plan" class="text-caption text-medium-emphasis">No plan yet</div>
+                <div v-else ref="planScroll" style="height: 240px; overflow: auto">
+                <v-table density="compact">
+                  <thead>
+                    <tr>
+                      <th class="text-caption text-medium-emphasis">ID</th>
+                      <th class="text-caption text-medium-emphasis">Step</th>
+                      <th class="text-caption text-medium-emphasis">Status</th>
+                      <th class="text-caption text-medium-emphasis">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="s in plan.steps" :key="s.id">
+                      <td class="text-caption">{{ s.id }}</td>
+                      <td class="text-caption">
+                        <span v-if="s.action">{{ s.action }}</span>
+                        <span v-else>{{ s.capabilityId || 'step' }}</span>
+                      </td>
+                      <td>
+                        <v-chip size="x-small" :color="s.status === 'done' ? 'success' : s.status === 'in_progress' ? 'info' : s.status === 'skipped' ? 'warning' : 'default'" variant="flat">
+                          {{ s.status }}
+                        </v-chip>
+                      </td>
+                      <td class="text-caption">{{ s.note || '' }}</td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                </div>
+              </v-card-text>
+            </v-card>
+
             <v-card variant="tonal">
               <v-card-title class="d-flex align-center">
                 <v-icon icon="mdi-timeline-text-outline" class="me-2" />
@@ -447,12 +522,13 @@ const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
                 </v-chip>
               </v-card-title>
               <v-divider />
-              <v-card-text style="max-height: 480px; overflow: auto">
-                <v-expansion-panels variant="accordion" density="comfortable">
-                  <v-expansion-panel v-for="(f, idx) in timelinePanels" :key="idx">
-                    <v-expansion-panel-title>
-                      <div class="d-flex align-center w-100">
-                        <v-chip
+              <v-card-text>
+                <div ref="timelineScroll" style="height: 144px; overflow: auto">
+                  <v-expansion-panels variant="accordion" density="comfortable">
+                    <v-expansion-panel v-for="(f, idx) in timelinePanels" :key="idx">
+                      <v-expansion-panel-title>
+                        <div class="d-flex align-center w-100">
+                          <v-chip
                           size="x-small"
                           class="me-2"
                           :color="dotColor(f.type)"
@@ -485,7 +561,8 @@ const knobSettingsView = computed(() => appResult.value?.knobSettings ?? null)
                       <pre v-else class="text-caption" style="white-space: pre-wrap; margin: 0">{{ stringify(f.data) }}</pre>
                     </v-expansion-panel-text>
                   </v-expansion-panel>
-                </v-expansion-panels>
+                 </v-expansion-panels>
+                </div>
               </v-card-text>
             </v-card>
           </v-col>
