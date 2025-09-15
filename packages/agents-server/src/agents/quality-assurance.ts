@@ -14,6 +14,7 @@ export const QA_INSTRUCTIONS = [
   'You are the Quality Assurance agent.',
   'Evaluate drafts for readability, clarity, objective fit, brand risk, and compliance.',
   'Return one JSON object only (no markdown/code fences).',
+  'Schema (QAReport): { composite?: number(0..1), compliance?: boolean, readability?: number(0..1), clarity?: number(0..1), objectiveFit?: number(0..1), brandRisk?: number(0..1), contentRecommendations?: string[] }',
   'Normalization: If your analysis or tools produce fields named "suggestedChanges" or "Suggestions", map them to a unified field named "contentRecommendations" as an array of short strings.',
   'Mapping guidance: for object suggestions, extract the most helpful text (prefer a "suggestion" field; else use "text"). Keep each recommendation concise.',
 ].join('\n')

@@ -261,18 +261,33 @@ async function startRun() {
             if (d && typeof d === 'object' && 'result' in d && 'quality' in d) {
               const r = (d as any).result || {}
               const quality = (d as any).quality || null
+              try { console.groupCollapsed('[AgentResultsPopup] complete frame'); console.log('quality:', quality); console.log('quality.metrics:', (quality as any)?.metrics); console.groupEnd(); } catch {}
               const mapped: any = {
                 result: { content: String(r.content || ''), platform: String(r.platform || 'generic') },
                 rationale: typeof r.rationale === 'string' ? r.rationale : null,
                 knobSettings: r.knobSettings
               }
               if (quality && typeof quality === 'object') {
+                const qm: any = (quality as any).metrics || {}
                 mapped['quality-report'] = {
-                  composite: typeof quality.score === 'number' ? quality.score : null,
-                  compliance: typeof quality.pass === 'boolean' ? quality.pass : undefined
+                  composite: typeof (quality as any).score === 'number' ? (quality as any).score : null,
+                  compliance: typeof (quality as any).pass === 'boolean' ? (quality as any).pass : undefined,
+                  // Flattened metrics for the display component
+                  readability: typeof qm.readability === 'number' ? qm.readability : undefined,
+                  clarity: typeof qm.clarity === 'number' ? qm.clarity : undefined,
+                  objectiveFit: typeof qm.objectiveFit === 'number' ? qm.objectiveFit : undefined,
+                  brandRisk: typeof qm.brandRisk === 'number' ? qm.brandRisk : undefined,
+                  // Also keep nested metrics for resilience
+                  metrics: {
+                    readability: typeof qm.readability === 'number' ? qm.readability : undefined,
+                    clarity: typeof qm.clarity === 'number' ? qm.clarity : undefined,
+                    objectiveFit: typeof qm.objectiveFit === 'number' ? qm.objectiveFit : undefined,
+                    brandRisk: typeof qm.brandRisk === 'number' ? qm.brandRisk : undefined,
+                  }
                 }
               }
               appResult.value = mapped
+              try { console.log('[AgentResultsPopup] mapped quality-report:', mapped['quality-report']) } catch {}
             } else {
               // Fallback: assume legacy AppResult shape
               appResult.value = (evt.data as any) ?? null

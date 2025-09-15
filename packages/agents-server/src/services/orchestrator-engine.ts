@@ -392,7 +392,10 @@ export async function runOrchestratorEngine(
       artifacts.generation = { rawText: text, draftText: text };
     } else if (sid === 'qa') {
       artifacts.qa = { rawText: text };
-      try { artifacts.qa = { rawText: text, result: JSON.parse(text) }; } catch {}
+      try {
+        const parsed: any = JSON.parse(text);
+        artifacts.qa = { rawText: text, result: normalizeQaReport(parsed) };
+      } catch {}
     }
 
     // Record step result best-effort
@@ -621,7 +624,9 @@ export async function runOrchestratorEngine(
   const overall = criteria.every((c) => c.passed);
   const acceptanceReport = { overall, criteria };
 
-  const finalBundle = { result: resultObj, quality, ['acceptance-report']: acceptanceReport };
+  const finalBundle: any = { result: resultObj, quality, ['acceptance-report']: acceptanceReport };
+  // Optional pass-through for UIs that expect the raw QA report under 'quality-report'
+  if (hasQa) (finalBundle as any)['quality-report'] = qa;
 
   // Mark finalize step done, if present
   if (finalizeStepId) {
@@ -651,3 +656,24 @@ export async function runOrchestratorEngine(
 }
 
 export { RESUME_STORE };
+// Local normalization to avoid cross-package type dependency issues at dev time.
+// Accepts any object and returns a sanitized QA report-like object.
+function normalizeQaReport(input: any): any {
+  const out: any = typeof input === 'object' && input ? { ...input } : {};
+  // Map aliases to canonical field
+  if (!Array.isArray(out.contentRecommendations)) {
+    if (Array.isArray(out.suggestedChanges)) out.contentRecommendations = out.suggestedChanges;
+    else if (Array.isArray(out.Suggestions)) out.contentRecommendations = out.Suggestions;
+  }
+  // Clamp numeric metrics to 0..1 when present
+  const clamp01 = (n: any) => {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : undefined;
+  };
+  if ('readability' in out) out.readability = clamp01(out.readability);
+  if ('clarity' in out) out.clarity = clamp01(out.clarity);
+  if ('objectiveFit' in out) out.objectiveFit = clamp01(out.objectiveFit);
+  if ('brandRisk' in out) out.brandRisk = clamp01(out.brandRisk);
+  if ('composite' in out) out.composite = clamp01(out.composite);
+  return out;
+}

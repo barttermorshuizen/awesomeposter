@@ -1,4 +1,6 @@
 <script setup lang="ts">
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import type { AgentRunRequest } from '@awesomeposter/shared'
 import type { Asset } from '@awesomeposter/shared'
@@ -19,7 +21,7 @@ type BriefInput = {
 } | null
 
 type UiKnobs = { [k: string]: unknown }
-type UiFinalState = { content?: string; platform?: string; rationale?: string | null; knobSettings?: UiKnobs; qualityReport?: unknown }
+type UiFinalState = { content?: string; platform?: string; rationale?: string | null; knobSettings?: UiKnobs; qualityReport?: Record<string, unknown> | null }
 
 type AgentResults = {
   success: boolean
@@ -71,6 +73,9 @@ const isOpen = computed({
 const AGENTS_BASE_URL = import.meta.env.VITE_AGENTS_BASE_URL || 'http://localhost:3002'
 const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
 
+// Debug flag (development or explicit override)
+//const DEBUG_Q = (import.meta as any).env?.DEV || ((import.meta as any).env?.VITE_DEBUG_QUALITY === '1')
+
 // UI state
 const isLoading = ref(false)
 const loadingStep = ref<string>('')
@@ -88,6 +93,7 @@ const qualityThreshold = ref<number | null>(null)
 const maxRevisionCycles = ref<number | null>(null)
 
 watch(isOpen, async (open) => {
+  try { console.log('[CreatePostPopup] isOpen changed:', open, 'briefId=', props.brief?.id) } catch {}
   if (open && props.brief?.id) {
     reset()
     await runAgentWorkflow()
@@ -187,6 +193,7 @@ function buildCompleteObjective(context: {
 async function runAgentWorkflow() {
   if (!props.brief?.id || !props.brief.clientId) return
   try {
+    try { console.log('[CreatePostPopup] runAgentWorkflow start', { briefId: props.brief.id, clientId: props.brief.clientId }) } catch {}
     isLoading.value = true
     loadingStep.value = 'Loading client profile...'
 
@@ -266,6 +273,8 @@ async function runAgentWorkflow() {
     })
 
     const cid = genCid()
+    const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
+    try { console.log('[CreatePostPopup] preparing SSE', { url, cid }) } catch {}
     const body: AgentRunRequest = {
       mode: 'app',
       objective,
@@ -277,7 +286,7 @@ async function runAgentWorkflow() {
       }
     }
 
-    const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
+    // url defined above for early debug log
     const headers: Record<string, string> = {
       'x-correlation-id': cid
     }
@@ -287,11 +296,14 @@ async function runAgentWorkflow() {
       url,
       body,
       headers,
-      onCorrelationId: (cidFromServer) => { correlationId.value = cidFromServer },
+      onCorrelationId: (cidFromServer) => { correlationId.value = cidFromServer; try { console.log('[CreatePostPopup] stream correlationId', cidFromServer) } catch {} },
       onBackoff: ({ retryAfter }) => {
         loadingStep.value = `Server busy. Retrying in ${retryAfter}s...`
+        try { console.log('[CreatePostPopup] backoff', { retryAfter }) } catch {}
       },
       onEvent: (evt: AgentEventWithId) => {
+        // Minimal trace to ensure event frames are seen in console
+        try { console.log('[CreatePostPopup] event:', evt.type, evt.phase || '', evt.message || '') } catch {}
         switch (evt.type) {
           case 'phase': {
             const label = evt.phase === 'analysis' ? 'Planning strategy'
@@ -321,6 +333,15 @@ async function runAgentWorkflow() {
             const data = (evt.data as any)
             const result = (data && typeof data === 'object') ? (data as any).result : undefined
             const quality = (data && typeof data === 'object') ? (data as any).quality : undefined
+            try {
+              console.groupCollapsed('[CreatePostPopup] complete frame', evt.correlationId || '')
+              console.log('raw data:', data)
+              console.log('result:', result)
+              console.log('quality:', quality)
+              console.log('quality.metrics:', (quality as any)?.metrics)
+              console.log('legacy quality-report:', (data as any)?.['quality-report'])
+              console.groupEnd()
+            } catch {}
 
             const fs: UiFinalState = {
               content: String(result?.content || ''),
@@ -333,22 +354,48 @@ async function runAgentWorkflow() {
             // Build a display-ready quality report from FinalBundle.quality, with fallback to legacy field
             const legacyQr = (data as any)?.['quality-report']
             if (quality && typeof quality === 'object') {
-              fs.qualityReport = {
-                composite: typeof quality.score === 'number' ? quality.score : null,
-                compliance: typeof quality.pass === 'boolean' ? quality.pass : undefined,
-                // Pass-through sub-metrics when available
-                ...(quality.metrics && typeof quality.metrics === 'object' ? {
-                  readability: (quality.metrics as any).readability,
-                  clarity: (quality.metrics as any).clarity,
-                  objectiveFit: (quality.metrics as any).objectiveFit,
-                  brandRisk: (quality.metrics as any).brandRisk,
-                } : {})
+              const q: any = quality
+              const qm: any = (q && typeof q.metrics === 'object') ? q.metrics : {}
+              const qr: Record<string, unknown> = {
+                composite: typeof q.score === 'number' ? q.score : (typeof q.composite === 'number' ? q.composite : null),
+                compliance: typeof q.pass === 'boolean' ? q.pass : (typeof q.compliance === 'boolean' ? q.compliance : undefined),
+                readability: typeof q.readability === 'number' ? q.readability : (typeof qm.readability === 'number' ? qm.readability : undefined),
+                clarity: typeof q.clarity === 'number' ? q.clarity : (typeof qm.clarity === 'number' ? qm.clarity : undefined),
+                objectiveFit: typeof q.objectiveFit === 'number' ? q.objectiveFit : (typeof qm.objectiveFit === 'number' ? qm.objectiveFit : undefined),
+                brandRisk: typeof q.brandRisk === 'number' ? q.brandRisk : (typeof qm.brandRisk === 'number' ? qm.brandRisk : undefined),
+                metrics: {
+                  readability: typeof qm.readability === 'number' ? qm.readability : (typeof q.readability === 'number' ? q.readability : undefined),
+                  clarity: typeof qm.clarity === 'number' ? qm.clarity : (typeof q.clarity === 'number' ? q.clarity : undefined),
+                  objectiveFit: typeof qm.objectiveFit === 'number' ? qm.objectiveFit : (typeof q.objectiveFit === 'number' ? q.objectiveFit : undefined),
+                  brandRisk: typeof qm.brandRisk === 'number' ? qm.brandRisk : (typeof q.brandRisk === 'number' ? q.brandRisk : undefined),
+                }
               }
+              //TODO: REMOVE NEXT LINE
+              try { console.log('[CreatePostPopup] qr pre-legacy overlay:', qr) } catch {}
+              // Overlay legacy raw report if needed
+              if (legacyQr && typeof legacyQr === 'object') {
+                const lr: any = legacyQr
+                const ensure = (key: 'readability'|'clarity'|'objectiveFit'|'brandRisk') => {
+                  if (typeof (qr as any)[key] !== 'number') {
+                    const v = typeof lr[key] === 'number' ? lr[key] : (typeof lr.metrics?.[key] === 'number' ? lr.metrics[key] : undefined)
+                    if (typeof v === 'number') {
+                      (qr as any)[key] = v
+                      ;(qr as any).metrics = { ...(qr as any).metrics as any, [key]: v }
+                    }
+                  }
+                }
+                if (typeof (qr as any).composite !== 'number') (qr as any).composite = (typeof lr.composite === 'number' ? lr.composite : (typeof lr.score === 'number' ? lr.score : null))
+                if (typeof (qr as any).compliance !== 'boolean') (qr as any).compliance = (typeof lr.compliance === 'boolean' ? lr.compliance : (typeof lr.pass === 'boolean' ? lr.pass : undefined))
+                ensure('readability'); ensure('clarity'); ensure('objectiveFit'); ensure('brandRisk')
+              }
+              fs.qualityReport = qr
+              try { console.log('[CreatePostPopup] mapped qualityReport:', fs.qualityReport) } catch {}
             } else if (legacyQr != null) {
               fs.qualityReport = legacyQr
             }
 
             results.value = { success: true, finalState: fs }
+            try { console.log('[CreatePostPopup] finalState:', fs) } catch {}
             stopStream()
             break
           }

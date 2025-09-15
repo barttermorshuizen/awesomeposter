@@ -57,6 +57,26 @@ export const AgentEventSchema = z.object({
 })
 export type AgentEvent = z.infer<typeof AgentEventSchema>
 
+// QA report schema: canonical structure produced by the QA agent/tool.
+// This is used by both server (validation/normalization) and UI (rendering).
+export const QAReportSchema = z
+  .object({
+    // Primary, normalized fields
+    composite: z.number().min(0).max(1).optional(),
+    compliance: z.boolean().optional(),
+    readability: z.number().min(0).max(1).optional(),
+    clarity: z.number().min(0).max(1).optional(),
+    objectiveFit: z.number().min(0).max(1).optional(),
+    brandRisk: z.number().min(0).max(1).optional(),
+    // Recommendations: canonical field is contentRecommendations (strings)
+    contentRecommendations: z.array(z.string()).optional(),
+    // Back-compat aliases (accepted but not preferred)
+    suggestedChanges: z.array(z.string()).optional(),
+    Suggestions: z.array(z.string()).optional()
+  })
+  .passthrough()
+export type QAReport = z.infer<typeof QAReportSchema>
+
 // Default structured output for app mode
 // For OpenAI structured outputs, all fields must be required; use nullable for optional semantics.
 // AppResult for app mode (aligned):
@@ -92,7 +112,19 @@ export type AppResult = z.infer<typeof AppResultSchema>
 export const FinalQualitySchema = z.object({
   score: z.number().min(0).max(1).nullable().optional(),
   issues: z.array(z.string()).optional(),
-  metrics: z.record(z.any()).optional(),
+  // metrics are explicit to improve UI reliability, but we allow passthrough for
+  // future dimensions. The known keys are typed for 0..1 numeric values.
+  metrics: z
+    .object({
+      readability: z.number().min(0).max(1).optional(),
+      clarity: z.number().min(0).max(1).optional(),
+      objectiveFit: z.number().min(0).max(1).optional(),
+      brandRisk: z.number().min(0).max(1).optional(),
+      compliance: z.boolean().optional(),
+      composite: z.number().min(0).max(1).optional()
+    })
+    .passthrough()
+    .optional(),
   pass: z.boolean().optional()
 })
 export type FinalQuality = z.infer<typeof FinalQualitySchema>

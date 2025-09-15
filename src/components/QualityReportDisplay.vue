@@ -1,18 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
+import type { QAReport } from '@awesomeposter/shared'
 
-type QualityReport = {
-  readability?: number
-  clarity?: number
-  objectiveFit?: number
-  brandRisk?: number
-  compliance?: boolean
-  composite?: number
-} | Record<string, unknown> | null | undefined
-
-interface Props {
-  report: QualityReport
-}
+interface Props { report: QAReport | Record<string, unknown> | null | undefined }
 
 const props = defineProps<Props>()
 
@@ -22,27 +12,44 @@ function num01(v: unknown): number | null {
   return Math.max(0, Math.min(1, n))
 }
 
+function firstNum01(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    const n = num01(v)
+    if (n != null) return n
+  }
+  return null
+}
+
 const vals = computed(() => {
-  const r = (props.report || {}) as Record<string, unknown>
-  const m = (r.metrics && typeof r.metrics === 'object') ? (r.metrics as Record<string, unknown>) : {}
-  const composite = num01((r as any).composite ?? (r as any).score ?? (m as any).composite)
+  const r = (props.report || {}) as Record<string, any>
+  const m = (r.metrics && typeof r.metrics === 'object') ? (r.metrics as Record<string, any>) : {}
+  const composite = firstNum01(r.composite, r.score, m.composite)
   const compliance = ((): boolean => {
-    const a = (r as any).compliance
-    if (typeof a === 'boolean') return a
-    const b = (r as any).pass
-    if (typeof b === 'boolean') return b
-    const c = (m as any).compliance
-    return Boolean(c)
+    if (typeof r.compliance === 'boolean') return r.compliance
+    if (typeof r.pass === 'boolean') return r.pass
+    if (typeof m.compliance === 'boolean') return m.compliance
+    return false
   })()
   return {
-    readability: num01(r.readability ?? m.readability),
-    clarity: num01(r.clarity ?? m.clarity),
-    objectiveFit: num01(r.objectiveFit ?? m.objectiveFit),
-    brandRisk: num01(r.brandRisk ?? m.brandRisk),
+    readability: firstNum01(r.readability, m.readability),
+    clarity: firstNum01(r.clarity, m.clarity),
+    objectiveFit: firstNum01(r.objectiveFit, m.objectiveFit),
+    brandRisk: firstNum01(r.brandRisk, m.brandRisk),
     compliance,
     composite
   }
 })
+
+// Debug logging (dev or when VITE_DEBUG_QUALITY=1)
+const DEBUG_Q = (import.meta as any).env?.DEV || ((import.meta as any).env?.VITE_DEBUG_QUALITY === '1')
+if (DEBUG_Q) {
+  watch(() => props.report, (r) => {
+    try { console.groupCollapsed('[QualityReportDisplay] incoming report'); console.log(r); console.groupEnd(); } catch {}
+  }, { deep: true, immediate: true })
+  watch(vals, (v) => {
+    try { console.groupCollapsed('[QualityReportDisplay] computed vals'); console.log(v); console.groupEnd(); } catch {}
+  }, { immediate: true })
+}
 
 const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
 </script>
