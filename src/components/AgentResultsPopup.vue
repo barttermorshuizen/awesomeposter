@@ -426,6 +426,29 @@ watch(plan, () => {
   })
 }, { deep: true })
 
+function planStatusColor(status: PlanStep['status']) {
+  switch (status) {
+    case 'done':
+      return 'var(--v-theme-success)'
+    case 'in_progress':
+      return 'var(--v-theme-info)'
+    case 'skipped':
+      return 'var(--v-theme-warning)'
+    default:
+      return 'rgba(var(--v-theme-on-surface), 0.38)'
+  }
+}
+
+function planStepNote(step: PlanStep) {
+  const note = typeof step.note === 'string' ? step.note.trim() : ''
+  if (note) return note
+  if (step.action === 'finalize') return 'Final review'
+  if (step.capabilityId === 'strategy') return 'Strategy plan'
+  if (step.capabilityId === 'generation') return 'Draft content'
+  if (step.capabilityId === 'qa') return 'QA review'
+  return 'No note'
+}
+
 </script>
 
 <template>
@@ -482,32 +505,11 @@ watch(plan, () => {
               <v-divider />
               <v-card-text>
                 <div v-if="!plan" class="text-caption text-medium-emphasis">No plan yet</div>
-                <div v-else ref="planScroll" style="height: 240px; overflow: auto">
-                <v-table density="compact">
-                  <thead>
-                    <tr>
-                      <th class="text-caption text-medium-emphasis">ID</th>
-                      <th class="text-caption text-medium-emphasis">Step</th>
-                      <th class="text-caption text-medium-emphasis">Status</th>
-                      <th class="text-caption text-medium-emphasis">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="s in plan.steps" :key="s.id">
-                      <td class="text-caption">{{ s.id }}</td>
-                      <td class="text-caption">
-                        <span v-if="s.action">{{ s.action }}</span>
-                        <span v-else>{{ s.capabilityId || 'step' }}</span>
-                      </td>
-                      <td>
-                        <v-chip size="x-small" :color="s.status === 'done' ? 'success' : s.status === 'in_progress' ? 'info' : s.status === 'skipped' ? 'warning' : 'default'" variant="flat">
-                          {{ s.status }}
-                        </v-chip>
-                      </td>
-                      <td class="text-caption">{{ s.note || '' }}</td>
-                    </tr>
-                  </tbody>
-                </v-table>
+                <div v-else ref="planScroll" class="plan-steps-scroll">
+                  <div v-for="s in plan.steps" :key="s.id" class="plan-step-row">
+                    <span class="plan-status-dot" :style="{ backgroundColor: planStatusColor(s.status) }" />
+                    <span class="text-caption">{{ planStepNote(s) }}</span>
+                  </div>
                 </div>
               </v-card-text>
             </v-card>
@@ -649,4 +651,26 @@ watch(plan, () => {
 <style scoped>
 .ga-2 { gap: 8px; }
 .ga-3 { gap: 12px; }
+.plan-steps-scroll {
+  height: 240px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.plan-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+.plan-step-row:last-of-type {
+  border-bottom: none;
+}
+.plan-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
 </style>
