@@ -1,4 +1,5 @@
 # Orchestrator Requirements & Implementation Architecture
+See also: migration notes in docs/migration_notes.md for recent changes and resumption.
 
 *(OpenAI Agents SDK — JavaScript)*
 

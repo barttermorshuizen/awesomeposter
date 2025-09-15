@@ -9,6 +9,13 @@ export default defineEventHandler(async (event) => {
   // Forward-compat: merge original options to preserve unknown future fields (e.g., targetAgentId)
   const rawOptions = (typeof body === 'object' && body && 'options' in (body as any)) ? (body as any).options : undefined
   const finalReq: any = { ...req, options: { ...(rawOptions || {}), ...(req.options || {}) } }
+  // Ensure threadId for resumability
+  try {
+    if (!finalReq.threadId) {
+      const { genCorrelationId } = await import('../../../../src/services/logger')
+      finalReq.threadId = genCorrelationId()
+    }
+  } catch {}
 
   // Route-level CORS for browsers (complements global middleware, ensures SSE responses carry CORS header)
   try {

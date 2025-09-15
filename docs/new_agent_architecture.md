@@ -1,5 +1,5 @@
 
-# New Agent Architecture Implementation Plan
+# [Historical]New Agent Architecture Implementation Plan
 
 > Plan Update — 2025-09-03
 >

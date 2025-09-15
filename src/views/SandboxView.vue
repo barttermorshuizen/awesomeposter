@@ -7,6 +7,15 @@ type TargetAgentId = 'orchestrator' | 'strategy' | 'generator' | 'qa'
 type AgentInfo = { id: TargetAgentId; label: string; supports: ('app' | 'chat')[] }
 
 const AGENTS_BASE_URL = import.meta.env.VITE_AGENTS_BASE_URL || 'http://localhost:3002'
+const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
+
+// Safe fallback list so the Sandbox remains usable even if the server is down
+const DEFAULT_AGENTS: AgentInfo[] = [
+  { id: 'orchestrator', label: 'Orchestrator', supports: ['app', 'chat'] },
+  { id: 'strategy', label: 'Strategy Manager', supports: ['chat'] },
+  { id: 'generator', label: 'Content Generator', supports: ['chat'] },
+  { id: 'qa', label: 'Quality Assurance', supports: ['chat'] },
+]
 
 // Controls
 const agents = ref<AgentInfo[]>([])
@@ -17,6 +26,9 @@ const objective = ref('Say hello and explain what you can do for AwesomePoster.'
 const toolPolicy = ref<'auto' | 'required' | 'off'>('auto')
 const toolsAllowlistInput = ref('')
 const trace = ref(false)
+// Optional orchestrator constraints
+const qualityThreshold = ref<number | null>(null)
+const maxRevisionCycles = ref<number | null>(null)
 
 // Run state
 const running = ref(false)
@@ -27,6 +39,11 @@ const frames = ref<Frame[]>([])
 const correlationId = ref<string | undefined>(undefined)
 const phase = ref<string | undefined>(undefined)
 const errorMsg = ref<string | null>(null)
+
+// Live plan state from plan_update frames
+type PlanStep = { id: string; capabilityId?: string; action?: string; label?: string; status: 'pending'|'in_progress'|'done'|'skipped'; note?: string }
+type PlanState = { version: number; steps: PlanStep[] }
+const plan = ref<PlanState | null>(null)
 
 const backlog = reactive({ busy: false, retryAfter: 0, pending: 0, limit: 0 })
 let abortController: AbortController | null = null
@@ -60,13 +77,16 @@ function parseAllowlist() {
 async function loadAgents() {
   agentsLoading.value = true
   try {
-    const res = await fetch(`${AGENTS_BASE_URL}/api/v1/agent/agents`, {
-      headers: { Accept: 'application/json' },
-    })
-    const json = await res.json()
-    agents.value = (json?.agents || []) as AgentInfo[]
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (AGENTS_AUTH) headers['authorization'] = `Bearer ${AGENTS_AUTH}`
+    const res = await fetch(`${AGENTS_BASE_URL}/api/v1/agent/agents`, { headers })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json().catch(() => ({}))
+    const list = Array.isArray(json?.agents) ? (json.agents as AgentInfo[]) : DEFAULT_AGENTS
+    agents.value = list
   } catch (e) {
     errorMsg.value = `Failed to load agents: ${String(e)}`
+    agents.value = DEFAULT_AGENTS
   } finally {
     agentsLoading.value = false
   }
@@ -82,6 +102,7 @@ function resetRun() {
   backlog.pending = 0
   backlog.limit = 0
   errorMsg.value = null
+  plan.value = null
 }
 
 async function startRun() {
@@ -90,15 +111,19 @@ async function startRun() {
   running.value = true
   abortController = new AbortController()
 
+  const options: any = {
+    toolPolicy: toolPolicy.value,
+    toolsAllowlist: parseAllowlist(),
+    trace: trace.value,
+    ...(mode.value === 'chat' ? { targetAgentId: selectedAgentId.value } : {}),
+  }
+  if (qualityThreshold.value != null) options.qualityThreshold = qualityThreshold.value
+  if (maxRevisionCycles.value != null) options.maxRevisionCycles = Math.max(0, Math.floor(Number(maxRevisionCycles.value)))
+
   const body: AgentRunRequest = {
     mode: mode.value,
     objective: objective.value,
-    options: {
-      toolPolicy: toolPolicy.value,
-      toolsAllowlist: parseAllowlist(),
-      trace: trace.value,
-      ...(mode.value === 'chat' ? { targetAgentId: selectedAgentId.value } : {}),
-    },
+    options,
   }
 
   try {
@@ -109,12 +134,14 @@ async function startRun() {
       mode: mode.value,
       body
     })
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    }
+    if (AGENTS_AUTH) headers['authorization'] = `Bearer ${AGENTS_AUTH}`
     const res = await fetch(`${AGENTS_BASE_URL}/api/v1/agent/run.stream`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: abortController.signal,
     })
@@ -160,6 +187,16 @@ async function startRun() {
         case 'phase':
           phase.value = evt.phase
           break
+        case 'plan_update': {
+          try {
+            const d = (evt.data as any) || {}
+            const p = d.plan
+            if (p && typeof p === 'object' && Array.isArray(p.steps)) {
+              plan.value = { version: Number(p.version || 0), steps: p.steps as PlanStep[] }
+            }
+          } catch {}
+          break
+        }
         case 'error':
           running.value = false
           break
@@ -365,6 +402,37 @@ const groupedFrames = computed(() => {
 
               <v-col cols="12" md="3">
                 <v-text-field
+                  v-model.number="qualityThreshold"
+                  type="number"
+                  label="qualityThreshold (0..1)"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  density="comfortable"
+                  prepend-inner-icon="mdi-gauge"
+                  :disabled="running || mode==='chat'"
+                  hint="Optional: default 0.7 if unset"
+                  persistent-hint
+                />
+              </v-col>
+
+              <v-col cols="12" md="3">
+                <v-text-field
+                  v-model.number="maxRevisionCycles"
+                  type="number"
+                  label="maxRevisionCycles"
+                  step="1"
+                  min="0"
+                  density="comfortable"
+                  prepend-inner-icon="mdi-reload"
+                  :disabled="running || mode==='chat'"
+                  hint="Optional: default 1 if unset"
+                  persistent-hint
+                />
+              </v-col>
+
+              <v-col cols="12" md="3">
+                <v-text-field
                   v-model="toolsAllowlistInput"
                   label="Tools allowlist (comma-separated)"
                   density="comfortable"
@@ -430,7 +498,7 @@ const groupedFrames = computed(() => {
       </v-col>
     </v-row>
 
-    <v-row class="mt-3" align="stretch">
+  <v-row class="mt-3" align="stretch">
       <v-col cols="12" md="6">
         <v-card>
           <v-card-title class="d-flex align-center">
@@ -507,6 +575,48 @@ const groupedFrames = computed(() => {
                 </v-expansion-panel-text>
               </v-expansion-panel>
             </v-expansion-panels>
+          </v-card-text>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-row class="mt-3">
+      <v-col cols="12">
+        <v-card>
+          <v-card-title class="d-flex align-center">
+            <v-icon icon="mdi-clipboard-text-outline" class="me-2" />
+            Plan
+            <v-spacer />
+            <v-chip v-if="plan?.version !== undefined" size="x-small" variant="tonal">v{{ plan?.version ?? 0 }}</v-chip>
+          </v-card-title>
+          <v-divider />
+          <v-card-text>
+            <div v-if="!plan" class="text-caption text-medium-emphasis">No plan yet</div>
+            <v-table v-else density="compact">
+              <thead>
+                <tr>
+                  <th class="text-caption text-medium-emphasis">ID</th>
+                  <th class="text-caption text-medium-emphasis">Step</th>
+                  <th class="text-caption text-medium-emphasis">Status</th>
+                  <th class="text-caption text-medium-emphasis">Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in plan.steps" :key="s.id">
+                  <td class="text-caption">{{ s.id }}</td>
+                  <td class="text-caption">
+                    <span v-if="s.action">{{ s.action }}</span>
+                    <span v-else>{{ s.capabilityId || 'step' }}</span>
+                  </td>
+                  <td>
+                    <v-chip size="x-small" :color="s.status === 'done' ? 'success' : s.status === 'in_progress' ? 'info' : s.status === 'skipped' ? 'warning' : 'default'" variant="flat">
+                      {{ s.status }}
+                    </v-chip>
+                  </td>
+                  <td class="text-caption">{{ s.note || '' }}</td>
+                </tr>
+              </tbody>
+            </v-table>
           </v-card-text>
         </v-card>
       </v-col>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import type { AgentRunRequest, AgentEvent, AppResult, Asset } from '@awesomeposter/shared'
+import type { AgentRunRequest, AgentEvent, Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
@@ -45,8 +45,13 @@ const backlog = ref<{ busy: boolean; retryAfter: number; pending: number; limit:
 // Streaming handle
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 
-// AppResult payload from orchestrator
-const appResult = ref<AppResult | null>(null)
+// Final result payload (FinalBundle mapped to legacy AppResult-like shape for this view)
+const appResult = ref<{
+  result: { content: string; platform: string }
+  rationale?: string | null
+  knobSettings?: unknown
+  ['quality-report']?: unknown
+} | null>(null)
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
@@ -251,8 +256,27 @@ async function startRun() {
             break
           case 'complete': {
             running.value = false
-            const data = (evt.data ?? null) as unknown as AppResult
-            appResult.value = data
+            const d: any = evt.data
+            // If FinalBundle, map to AppResult-like shape for this UI
+            if (d && typeof d === 'object' && 'result' in d && 'quality' in d) {
+              const r = (d as any).result || {}
+              const quality = (d as any).quality || null
+              const mapped: any = {
+                result: { content: String(r.content || ''), platform: String(r.platform || 'generic') },
+                rationale: typeof r.rationale === 'string' ? r.rationale : null,
+                knobSettings: r.knobSettings
+              }
+              if (quality && typeof quality === 'object') {
+                mapped['quality-report'] = {
+                  composite: typeof quality.score === 'number' ? quality.score : null,
+                  compliance: typeof quality.pass === 'boolean' ? quality.pass : undefined
+                }
+              }
+              appResult.value = mapped
+            } else {
+              // Fallback: assume legacy AppResult shape
+              appResult.value = (evt.data as any) ?? null
+            }
             break
           }
         }

@@ -6,6 +6,9 @@ import { registerIOTools } from '../tools/io'
 import { registerStrategyTools } from '../tools/strategy'
 import { registerContentTools } from '../tools/content'
 import { registerQaTools } from '../tools/qa'
+import { createStrategyAgent } from '../agents/strategy-manager'
+import { createContentAgent } from '../agents/content-generator'
+import { createQaAgent } from '../agents/quality-assurance'
 
 type Agents = {
   runtime: AgentRuntime
@@ -31,4 +34,36 @@ export function getAgents(): Agents {
     qa: new QualityAssuranceAgent(runtime)
   }
   return cached
+}
+
+// Capability-driven registry (app-level)
+export type CapabilityId = 'strategy' | 'generation' | 'qa'
+export type CapabilityEntry = {
+  id: CapabilityId
+  name: string
+  description: string
+  create: typeof createStrategyAgent | typeof createContentAgent | typeof createQaAgent
+}
+
+export function getCapabilityRegistry(): CapabilityEntry[] {
+  return [
+    {
+      id: 'strategy',
+      name: 'Strategy Manager',
+      description: 'Plans rationale and writer brief using client profile and assets.',
+      create: createStrategyAgent
+    },
+    {
+      id: 'generation',
+      name: 'Content Generator',
+      description: 'Generates or revises content drafts from a writer brief.',
+      create: createContentAgent
+    },
+    {
+      id: 'qa',
+      name: 'Quality Assurance',
+      description: 'Evaluates drafts for readability, clarity, fit, and compliance.',
+      create: createQaAgent
+    }
+  ]
 }

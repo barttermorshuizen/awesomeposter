@@ -5,7 +5,9 @@ import type { Asset } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
-import type { AppResult } from '@awesomeposter/shared'
+// We consume the FinalBundle shape: { result, quality, acceptance-report }
+// Import types loosely to avoid tight coupling during migration
+// type FinalBundle = import('@awesomeposter/shared').FinalBundle
 
 type BriefInput = {
   id: string
@@ -80,6 +82,10 @@ const progress = ref<WorkflowStatus['progress'] | null>(null)
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 const correlationId = ref<string | undefined>(undefined)
 const knobsView = computed<UiKnobs | null>(() => (results.value?.finalState?.knobSettings as UiKnobs | undefined) ?? null)
+
+// Optional orchestrator constraints
+const qualityThreshold = ref<number | null>(null)
+const maxRevisionCycles = ref<number | null>(null)
 
 watch(isOpen, async (open) => {
   if (open && props.brief?.id) {
@@ -265,7 +271,9 @@ async function runAgentWorkflow() {
       objective,
       // Do not send briefId; provide all context in objective
       options: {
-        schemaName: 'AppResult'
+        schemaName: 'AppResult',
+        ...(qualityThreshold.value != null ? { qualityThreshold: qualityThreshold.value } : {}),
+        ...(maxRevisionCycles.value != null ? { maxRevisionCycles: Math.max(0, Math.floor(Number(maxRevisionCycles.value))) } : {}),
       }
     }
 
@@ -309,19 +317,37 @@ async function runAgentWorkflow() {
             break
           }
           case 'complete': {
-            // Finalize and map to simplified UI state
-            const data = (evt.data as AppResult)
+            // Finalize and map to simplified UI state from FinalBundle
+            const data = (evt.data as any)
+            const result = (data && typeof data === 'object') ? (data as any).result : undefined
+            const quality = (data && typeof data === 'object') ? (data as any).quality : undefined
+
             const fs: UiFinalState = {
-              content: data.result.content,
-              platform: data.result.platform,
-              rationale: data.rationale ?? null
+              content: String(result?.content || ''),
+              platform: String(result?.platform || 'generic'),
+              rationale: (typeof result?.rationale === 'string') ? result.rationale : null
             }
-            const ks = (data as unknown as { knobSettings?: unknown }).knobSettings
-            if (ks != null) {
-              fs.knobSettings = ks as UiKnobs
+            const ks = (result && typeof result === 'object') ? (result as any).knobSettings : undefined
+            if (ks != null) fs.knobSettings = ks as UiKnobs
+
+            // Build a display-ready quality report from FinalBundle.quality, with fallback to legacy field
+            const legacyQr = (data as any)?.['quality-report']
+            if (quality && typeof quality === 'object') {
+              fs.qualityReport = {
+                composite: typeof quality.score === 'number' ? quality.score : null,
+                compliance: typeof quality.pass === 'boolean' ? quality.pass : undefined,
+                // Pass-through sub-metrics when available
+                ...(quality.metrics && typeof quality.metrics === 'object' ? {
+                  readability: (quality.metrics as any).readability,
+                  clarity: (quality.metrics as any).clarity,
+                  objectiveFit: (quality.metrics as any).objectiveFit,
+                  brandRisk: (quality.metrics as any).brandRisk,
+                } : {})
+              }
+            } else if (legacyQr != null) {
+              fs.qualityReport = legacyQr
             }
-            const qr = (data as unknown as { ['quality-report']?: unknown })['quality-report']
-            if (qr != null) fs.qualityReport = qr
+
             results.value = { success: true, finalState: fs }
             stopStream()
             break
@@ -384,6 +410,38 @@ function downloadResults() {
       <v-divider />
 
       <v-card-text style="max-height: 70vh;">
+        <!-- Run options -->
+        <v-row class="mb-4" dense>
+          <v-col cols="12" md="6">
+            <v-text-field
+              v-model.number="qualityThreshold"
+              type="number"
+              label="qualityThreshold (0..1)"
+              step="0.05"
+              min="0"
+              max="1"
+              density="comfortable"
+              prepend-inner-icon="mdi-gauge"
+              :disabled="isLoading"
+              hint="Optional: default 0.7 if unset"
+              persistent-hint
+            />
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-text-field
+              v-model.number="maxRevisionCycles"
+              type="number"
+              label="maxRevisionCycles"
+              step="1"
+              min="0"
+              density="comfortable"
+              prepend-inner-icon="mdi-reload"
+              :disabled="isLoading"
+              hint="Optional: default 1 if unset"
+              persistent-hint
+            />
+          </v-col>
+        </v-row>
         <!-- Loading / Progress -->
         <div v-if="isLoading" class="py-6 d-flex flex-column align-center">
           <v-progress-circular indeterminate color="primary" size="36" class="mb-4" />

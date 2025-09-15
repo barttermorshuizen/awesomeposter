@@ -15,6 +15,7 @@ export const AgentRunOptionsSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
   // Per-run override: how many QA revision cycles to allow before finalizing
   maxRevisionCycles: z.number().int().min(0).optional(),
+  qualityThreshold: z.number().min(0).max(1).optional(),
   trace: z.boolean().optional(),
   // For chat mode only: choose which agent to converse with
   targetAgentId: TargetAgentIdEnum.optional()
@@ -23,6 +24,7 @@ export const AgentRunOptionsSchema = z.object({
 export const AgentRunRequestSchema = z.object({
   mode: AgentModeEnum,
   objective: z.string().min(1),
+  threadId: z.string().optional(),
   briefId: z.string().optional(),
   state: z.any().optional(),
   options: AgentRunOptionsSchema

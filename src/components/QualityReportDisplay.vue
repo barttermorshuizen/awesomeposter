@@ -24,13 +24,23 @@ function num01(v: unknown): number | null {
 
 const vals = computed(() => {
   const r = (props.report || {}) as Record<string, unknown>
+  const m = (r.metrics && typeof r.metrics === 'object') ? (r.metrics as Record<string, unknown>) : {}
+  const composite = num01((r as any).composite ?? (r as any).score ?? (m as any).composite)
+  const compliance = ((): boolean => {
+    const a = (r as any).compliance
+    if (typeof a === 'boolean') return a
+    const b = (r as any).pass
+    if (typeof b === 'boolean') return b
+    const c = (m as any).compliance
+    return Boolean(c)
+  })()
   return {
-    readability: num01(r.readability),
-    clarity: num01(r.clarity),
-    objectiveFit: num01(r.objectiveFit),
-    brandRisk: num01(r.brandRisk),
-    compliance: Boolean(r.compliance),
-    composite: num01(r.composite)
+    readability: num01(r.readability ?? m.readability),
+    clarity: num01(r.clarity ?? m.clarity),
+    objectiveFit: num01(r.objectiveFit ?? m.objectiveFit),
+    brandRisk: num01(r.brandRisk ?? m.brandRisk),
+    compliance,
+    composite
   }
 })
 
@@ -57,7 +67,6 @@ const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
       <div class="dial">
         <v-progress-circular
           :model-value="pct(vals.readability) ?? 0"
-          :indeterminate="vals.readability == null"
           size="72"
           width="8"
           color="teal"
@@ -70,7 +79,6 @@ const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
       <div class="dial">
         <v-progress-circular
           :model-value="pct(vals.clarity) ?? 0"
-          :indeterminate="vals.clarity == null"
           size="72"
           width="8"
           color="cyan"
@@ -83,7 +91,6 @@ const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
       <div class="dial">
         <v-progress-circular
           :model-value="pct(vals.objectiveFit) ?? 0"
-          :indeterminate="vals.objectiveFit == null"
           size="72"
           width="8"
           color="indigo"
@@ -96,7 +103,6 @@ const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
       <div class="dial">
         <v-progress-circular
           :model-value="pct(vals.brandRisk) ?? 0"
-          :indeterminate="vals.brandRisk == null"
           size="72"
           width="8"
           color="red"
@@ -120,4 +126,3 @@ const pct = (n: number | null) => (n == null ? null : Math.round(n * 100))
 .ga-3 { gap: 12px; }
 .ga-4 { gap: 16px; }
 </style>
-

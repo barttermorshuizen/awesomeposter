@@ -40,7 +40,8 @@ This plan updates the existing orchestrator implementation to the code-first arc
 
 ## 7. Deployment Notes
 - Deploy orchestrator and specialists via the existing agents server package.
-- Document required environment variables for the Agents SDK, persistence, and feature flags.
+- Environment: see README “Agents Server Environment” for required/optional variables (OPENAI_API_KEY, API_KEY, LOG_LEVEL, ENABLE_CHAT_SANDBOX, SSE_*; and client env VITE_*).
+- Resumption: provide a stable `threadId` in requests to resume plan/history across runs; omit to start fresh.
 
 ## Implementation Checklist
 

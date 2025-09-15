@@ -1,4 +1,4 @@
-# Agents Server Hardening Guide
+# [Historical]Agents Server Hardening Guide
 
 Status: Draft
 Last updated: 2025-09-04

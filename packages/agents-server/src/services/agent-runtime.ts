@@ -155,18 +155,26 @@ export class AgentRuntime {
     const { agent, prompt } = this.buildAgentAndPrompt(messages, onEvent, opts)
     const runner = new Runner({ model: this.model })
     const started = Date.now()
-    // Stream full events so we can extend later; for now, we focus on final output
-    const stream: any = await runner.run(agent, prompt, { stream: true })
-
-    // If only text is needed we could do: stream.toTextStream(). But we prefer finalOutput for structured parsing upstream
-    await stream.completed
-    const result: any = await stream.finalResult
+    // Non-streaming run for reliable finalOutput extraction
+    const result: any = await runner.run(agent, prompt)
     const durationMs = Date.now() - started
-    // Try to surface token usage if provided by the SDK
+    // Surface token usage if available
     const tokens = (result?.usage?.inputTokens || 0) + (result?.usage?.outputTokens || 0)
     onEvent?.({ type: 'metrics', durationMs, tokens: Number.isFinite(tokens) && tokens > 0 ? tokens : undefined })
-    // Return a shape comparable to previous implementation
-    return { content: typeof result?.finalOutput === 'string' ? result.finalOutput : JSON.stringify(result?.finalOutput ?? '') }
+    // Prefer finalOutput; fallback to content extraction; last resort JSON stringify
+    const content = typeof result?.finalOutput === 'string'
+      ? result.finalOutput
+      : (extractResponseText(result) || JSON.stringify(result?.finalOutput ?? ''))
+    return { content }
+  }
+
+  // Backward-compatible convenience: non-streaming chat that may use tools per policy
+  async runChat(
+    messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
+    onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+    opts?: { toolsAllowlist?: string[]; toolPolicy?: 'auto' | 'required' | 'off'; temperature?: number; schemaName?: string; trace?: boolean }
+  ) {
+    return this.runWithTools(messages, onEvent, opts)
   }
 
   async runChatStream(
