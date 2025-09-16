@@ -24,7 +24,7 @@ See the orchestration design in `docs/orchestrator_requirements.md` and the refa
 ## Agents Server Environment
 
 - OPENAI_API_KEY: required in production; in dev the server will warn if missing
-- OPENAI_DEFAULT_MODEL or OPENAI_MODEL: optional model override (defaults to a sensible fallback)
+- OPENAI_DEFAULT_MODEL or OPENAI_MODEL: optional model override (defaults to a sensible fallback). Set to `gpt-5` to switch agents to GPT‑5.
 - API_KEY: optional bearer token required in production (enforced by `packages/agents-server/server/middleware/auth.ts`)
 - LOG_LEVEL: optional log level (default `info`)
 - ENABLE_CHAT_SANDBOX: set to `true` to allow chat mode in production (chat is allowed by default in dev)
