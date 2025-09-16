@@ -205,7 +205,7 @@ export const scoringWeights = {
   readability: 0.35,
   objectiveFit: 0.35,
   clarity: 0.20,
-  brandRisk: -0.20  // negative weight - higher risk = lower score
+  brandRisk: -0.20  // magnitude used in composite; brand risk is applied inversely (brandSafety = 1 - brandRisk) with an offset to preserve scale
 } as const;
 
 // Thresholds for agent decisions
@@ -253,5 +253,4 @@ export const knobConstraints = {
   maxSlides: 8,
   maxHashtags: 5
 } as const;
-
 

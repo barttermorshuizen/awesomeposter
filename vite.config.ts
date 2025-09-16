@@ -20,6 +20,14 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // Surface proxy errors in the Vite console to aid debugging when the API is down
+        configure: (proxy: any) => {
+          proxy.on('error', (err: any, req: any) => {
+            try {
+              console.error('[vite-proxy] /api error:', err?.message || err)
+            } catch {}
+          })
+        },
       },
     },
   },

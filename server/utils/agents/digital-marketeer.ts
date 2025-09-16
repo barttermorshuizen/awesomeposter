@@ -10,7 +10,7 @@ import type {
   Asset,
   FormatType
 } from '@awesomeposter/shared'
-import { agentThresholds, scoringWeights } from '@awesomeposter/shared'
+import { agentThresholds, computeCompositeScore } from '@awesomeposter/shared'
 
 export class DigitalMarketeerAgent {
   private openai = getOpenAI()
@@ -564,15 +564,8 @@ export class DigitalMarketeerAgent {
    * Calculate composite score using weighted formula with knob effectiveness
    */
   private calculateCompositeScore(scores: Scores, knobs?: Knobs): number {
-    const { readability, objectiveFit, clarity, brandRisk } = scores
-    const weights = scoringWeights
-    
-    let baseScore = (
-      weights.readability * readability +
-      weights.objectiveFit * objectiveFit +
-      weights.clarity * clarity +
-      weights.brandRisk * brandRisk
-    )
+    // Base composite via shared function (brand risk inversely applied)
+    let baseScore = computeCompositeScore(scores)
     
     // Apply knob effectiveness adjustments if knobs are available
     if (knobs) {

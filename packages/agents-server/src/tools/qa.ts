@@ -1,4 +1,5 @@
 import { AgentRuntime } from '../services/agent-runtime'
+import { computeCompositeScore } from '@awesomeposter/shared'
 import { z } from 'zod'
 
 const PlatformEnum = z.enum(['linkedin', 'x', 'facebook', 'instagram', 'youtube', 'tiktok'])
@@ -37,7 +38,8 @@ export function registerQaTools(runtime: AgentRuntime) {
       if (length > 1200) feedback.push('Content may be too long; tighten for scannability.')
       if (brandRisk >= 0.5) feedback.push('Remove claims that conflict with client policy.')
 
-      const composite = Math.max(0, Math.min(1, readability * 0.35 + clarity * 0.2 + objectiveFit * 0.35 - brandRisk * 0.2))
+      // Centralized composite quality calculation (brand risk inversely applied)
+      const composite = computeCompositeScore({ readability, clarity, objectiveFit, brandRisk })
       const revisionPriority = composite > 0.8 && compliance ? 'low' : composite > 0.6 ? 'medium' : 'high'
 
       // Normalize recommendations as strings for orchestrator consumption
