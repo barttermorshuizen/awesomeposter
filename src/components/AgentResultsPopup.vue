@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import type { AgentRunRequest, AgentEvent, Asset } from '@awesomeposter/shared'
+import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
@@ -50,12 +50,13 @@ const plan = ref<PlanState | null>(null)
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 
 // Final result payload (FinalBundle mapped to legacy AppResult-like shape for this view)
-const appResult = ref<{
+type AppResultView = {
   result: { content: string; platform: string }
   rationale?: string | null
   knobSettings?: unknown
   ['quality-report']?: unknown
-} | null>(null)
+}
+const appResult = ref<AppResultView | null>(null)
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
@@ -95,6 +96,12 @@ function genCid(): string {
 
 function safeJson(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object'
+}
+function isFinalBundle(v: unknown): v is FinalBundle {
+  return isRecord(v) && 'result' in v && 'quality' in v
 }
 function pickBriefObjective(brief: { objective?: string | null; description?: string | null } | null | undefined) {
   const obj = (brief?.objective || '').trim()
@@ -250,10 +257,17 @@ async function startRun() {
         switch (evt.type) {
           case 'plan_update': {
             try {
-              const d = (evt.data as any) || {}
-              const p = d.plan
-              if (p && typeof p === 'object' && Array.isArray(p.steps)) {
-                plan.value = { version: Number(p.version || 0), steps: p.steps as PlanStep[] }
+              const d = evt.data as unknown
+              if (isRecord(d)) {
+                const p = d['plan']
+                if (isRecord(p)) {
+                  const steps = p['steps']
+                  if (Array.isArray(steps)) {
+                    const versionRaw = p['version']
+                    const version = typeof versionRaw === 'number' ? versionRaw : Number(versionRaw || 0)
+                    plan.value = { version, steps: steps as PlanStep[] }
+                  }
+                }
               }
             } catch {}
             break
@@ -267,33 +281,45 @@ async function startRun() {
             break
           case 'complete': {
             running.value = false
-            const d: any = evt.data
+            const dUnknown = evt.data as unknown
             // If FinalBundle, map to AppResult-like shape for this UI
-            if (d && typeof d === 'object' && 'result' in d && 'quality' in d) {
-              const r = (d as any).result || {}
-              const quality = (d as any).quality || null
-              try { console.groupCollapsed('[AgentResultsPopup] complete frame'); console.log('quality:', quality); console.log('quality.metrics:', (quality as any)?.metrics); console.groupEnd(); } catch {}
-              const mapped: any = {
-                result: { content: String(r.content || ''), platform: String(r.platform || 'generic') },
-                rationale: typeof r.rationale === 'string' ? r.rationale : null,
-                knobSettings: r.knobSettings
+            if (isFinalBundle(dUnknown)) {
+              const rRaw = dUnknown.result as unknown
+              const quality: FinalQuality | null = (dUnknown as FinalBundle).quality ?? null
+              try { console.groupCollapsed('[AgentResultsPopup] complete frame'); console.log('quality:', quality); console.log('quality.metrics:', quality?.metrics); console.groupEnd(); } catch {}
+
+              let content = ''
+              let platform = 'generic'
+              let rationale: string | null = null
+              let knobSettings: unknown
+              if (isRecord(rRaw)) {
+                if (typeof rRaw.content === 'string') content = rRaw.content
+                if (typeof rRaw.platform === 'string') platform = rRaw.platform
+                if (typeof rRaw.rationale === 'string') rationale = rRaw.rationale
+                if ('knobSettings' in rRaw) knobSettings = (rRaw as Record<string, unknown>)['knobSettings']
+              }
+
+              const mapped: AppResultView = {
+                result: { content, platform },
+                rationale,
+                knobSettings
               }
               if (quality && typeof quality === 'object') {
-                const qm: any = (quality as any).metrics || {}
+                const qm = (quality.metrics ?? {}) as Record<string, unknown>
                 mapped['quality-report'] = {
-                  composite: typeof (quality as any).score === 'number' ? (quality as any).score : null,
-                  compliance: typeof (quality as any).pass === 'boolean' ? (quality as any).pass : undefined,
+                  composite: typeof quality.score === 'number' ? quality.score : null,
+                  compliance: typeof quality.pass === 'boolean' ? quality.pass : undefined,
                   // Flattened metrics for the display component
-                  readability: typeof qm.readability === 'number' ? qm.readability : undefined,
-                  clarity: typeof qm.clarity === 'number' ? qm.clarity : undefined,
-                  objectiveFit: typeof qm.objectiveFit === 'number' ? qm.objectiveFit : undefined,
-                  brandRisk: typeof qm.brandRisk === 'number' ? qm.brandRisk : undefined,
+                  readability: typeof qm.readability === 'number' ? (qm.readability as number) : undefined,
+                  clarity: typeof qm.clarity === 'number' ? (qm.clarity as number) : undefined,
+                  objectiveFit: typeof qm.objectiveFit === 'number' ? (qm.objectiveFit as number) : undefined,
+                  brandRisk: typeof qm.brandRisk === 'number' ? (qm.brandRisk as number) : undefined,
                   // Also keep nested metrics for resilience
                   metrics: {
-                    readability: typeof qm.readability === 'number' ? qm.readability : undefined,
-                    clarity: typeof qm.clarity === 'number' ? qm.clarity : undefined,
-                    objectiveFit: typeof qm.objectiveFit === 'number' ? qm.objectiveFit : undefined,
-                    brandRisk: typeof qm.brandRisk === 'number' ? qm.brandRisk : undefined,
+                    readability: typeof qm.readability === 'number' ? (qm.readability as number) : undefined,
+                    clarity: typeof qm.clarity === 'number' ? (qm.clarity as number) : undefined,
+                    objectiveFit: typeof qm.objectiveFit === 'number' ? (qm.objectiveFit as number) : undefined,
+                    brandRisk: typeof qm.brandRisk === 'number' ? (qm.brandRisk as number) : undefined,
                   }
                 }
               }
@@ -301,7 +327,7 @@ async function startRun() {
               try { console.log('[AgentResultsPopup] mapped quality-report:', mapped['quality-report']) } catch {}
             } else {
               // Fallback: assume legacy AppResult shape
-              appResult.value = (evt.data as any) ?? null
+              appResult.value = (evt.data as AppResultView) ?? null
             }
             break
           }

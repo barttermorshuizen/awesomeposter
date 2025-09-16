@@ -111,14 +111,17 @@ async function startRun() {
   running.value = true
   abortController = new AbortController()
 
-  const options: any = {
+  type AgentRunOptions = NonNullable<AgentRunRequest['options']>
+  const options: AgentRunOptions = {
     toolPolicy: toolPolicy.value,
     toolsAllowlist: parseAllowlist(),
     trace: trace.value,
-    ...(mode.value === 'chat' ? { targetAgentId: selectedAgentId.value } : {}),
+    ...(mode.value === 'chat' ? { targetAgentId: selectedAgentId.value } as Pick<AgentRunOptions, 'targetAgentId'> : {}),
+    ...(qualityThreshold.value != null ? { qualityThreshold: qualityThreshold.value } as Pick<AgentRunOptions, 'qualityThreshold'> : {}),
+    ...(maxRevisionCycles.value != null
+      ? { maxRevisionCycles: Math.max(0, Math.floor(Number(maxRevisionCycles.value))) } as Pick<AgentRunOptions, 'maxRevisionCycles'>
+      : {}),
   }
-  if (qualityThreshold.value != null) options.qualityThreshold = qualityThreshold.value
-  if (maxRevisionCycles.value != null) options.maxRevisionCycles = Math.max(0, Math.floor(Number(maxRevisionCycles.value)))
 
   const body: AgentRunRequest = {
     mode: mode.value,
@@ -189,10 +192,18 @@ async function startRun() {
           break
         case 'plan_update': {
           try {
-            const d = (evt.data as any) || {}
-            const p = d.plan
-            if (p && typeof p === 'object' && Array.isArray(p.steps)) {
-              plan.value = { version: Number(p.version || 0), steps: p.steps as PlanStep[] }
+            const d = evt.data as unknown
+            if (d !== null && typeof d === 'object') {
+              const p = (d as Record<string, unknown>)['plan']
+              if (p !== null && typeof p === 'object') {
+                const prec = p as Record<string, unknown>
+                const steps = prec['steps']
+                if (Array.isArray(steps)) {
+                  const versionRaw = prec['version']
+                  const version = typeof versionRaw === 'number' ? versionRaw : Number(versionRaw || 0)
+                  plan.value = { version, steps: steps as PlanStep[] }
+                }
+              }
             }
           } catch {}
           break
