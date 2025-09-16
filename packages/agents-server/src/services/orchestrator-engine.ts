@@ -17,6 +17,21 @@ function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?
   return { capabilityId: s };
 }
 
+function defaultNoteForStep(target?: { capabilityId?: string; action?: 'finalize' }) {
+  if (!target) return undefined;
+  if (target.action === 'finalize') return 'Final review';
+  switch (target.capabilityId) {
+    case 'strategy':
+      return 'Strategy plan';
+    case 'generation':
+      return 'Draft content';
+    case 'qa':
+      return 'QA review';
+    default:
+      return undefined;
+  }
+}
+
 function normalizePlanPatchInput(
   input: any,
   targetPlan: Plan
@@ -49,18 +64,22 @@ function normalizePlanPatchInput(
       const path = String((op as any).path || '');
       if (operation !== 'add' || !path) continue;
       const value = (op as any).value;
-      const note = typeof value?.details === 'string' ? value.details : undefined;
+      let note = typeof value?.details === 'string' ? value.details : undefined;
       if (path.startsWith('/strategies')) {
         out.stepsAdd ??= [];
+        note = note || defaultNoteForStep({ capabilityId: 'strategy' });
         out.stepsAdd.push({ id: uniqueId('strategy'), capabilityId: 'strategy', status: 'pending', note });
       } else if (path.startsWith('/generations')) {
         out.stepsAdd ??= [];
+        note = note || defaultNoteForStep({ capabilityId: 'generation' });
         out.stepsAdd.push({ id: uniqueId('generation'), capabilityId: 'generation', status: 'pending', note });
       } else if (path.startsWith('/qas')) {
         out.stepsAdd ??= [];
+        note = note || defaultNoteForStep({ capabilityId: 'qa' });
         out.stepsAdd.push({ id: uniqueId('qa'), capabilityId: 'qa', status: 'pending', note });
       } else if (path.startsWith('/finalize')) {
         out.stepsAdd ??= [];
+        note = note || defaultNoteForStep({ action: 'finalize' });
         out.stepsAdd.push({ id: uniqueId('finalize'), action: 'finalize', status: 'pending', note });
       }
     }
@@ -76,7 +95,7 @@ function normalizePlanPatchInput(
         const mapped = mapToCapabilityIdOrAction(raw);
         if (!mapped) continue;
         const base = mapped.capabilityId || mapped.action || 'step';
-        out.stepsAdd.push({ id: uniqueId(String(base)), ...mapped, status: 'pending' as PlanStepStatus });
+        out.stepsAdd.push({ id: uniqueId(String(base)), ...mapped, status: 'pending' as PlanStepStatus, note: defaultNoteForStep(mapped) });
         continue;
       }
       if (raw && typeof raw === 'object') {
@@ -86,7 +105,7 @@ function normalizePlanPatchInput(
         if (!m) continue;
         const base = ((m as any).capabilityId ?? (m as any).action ?? 'step') as string;
         const id = typeof (raw as any).id === 'string' ? String((raw as any).id) : uniqueId(String(base));
-        const note =
+        let note =
           typeof (raw as any).note === 'string'
             ? (raw as any).note
             : typeof (raw as any).description === 'string'
@@ -98,6 +117,7 @@ function normalizePlanPatchInput(
         else if (s === 'done' || s === 'complete' || s === 'completed') status = 'done';
         else if (s === 'skipped') status = 'skipped';
         const label = typeof (raw as any).label === 'string' ? (raw as any).label : undefined;
+        if (!note) note = defaultNoteForStep(m);
         out.stepsAdd.push({ id, ...m, label, status, note });
       }
     }
@@ -278,7 +298,7 @@ export async function runOrchestratorEngine(
   const ensureFinalizeStep = () => {
     let step = plan.steps.find((s) => s.action === 'finalize');
     if (!step) {
-      const newStep = { id: 'auto_finalize_1', action: 'finalize' as const, status: 'pending' as PlanStepStatus };
+      const newStep = { id: 'auto_finalize_1', action: 'finalize' as const, status: 'pending' as PlanStepStatus, note: 'Final review' };
       plan.steps.push(newStep as any);
       emitPlanUpdate({ stepsAdd: [newStep] });
       step = newStep as any;
@@ -414,7 +434,8 @@ export async function runOrchestratorEngine(
     'Use capabilityId values "strategy", "generation", "qa". Always include a finalize step.',
     'Initial planning: create a minimal plan [strategy -> generation -> qa -> finalize].',
     'Replanning: only extend the plan if QA indicates revision is required (pass=false or score below threshold). In that case, add [generation, qa] steps to revise and re-check.',
-    'Do not re-add steps that are already present; avoid duplicates. Prefer concise notes.'
+    'Do not re-add steps that are already present; avoid duplicates.',
+    'Every step must include a note with a short task description (maximum 5 words).'
   ].join('\n');
 
   const planWithLLM = async () => {
@@ -484,8 +505,8 @@ export async function runOrchestratorEngine(
     if (needsRevision && revisionCycles < maxCycles) {
       const patch = {
         stepsAdd: [
-          { id: `rev_generation_${revisionCycles + 1}`, capabilityId: 'generation', status: 'pending' as PlanStepStatus, note: 'Revise content based on QA feedback' },
-          { id: `rev_qa_${revisionCycles + 1}`, capabilityId: 'qa', status: 'pending' as PlanStepStatus, note: 'Re-evaluate revised content' }
+          { id: `rev_generation_${revisionCycles + 1}`, capabilityId: 'generation', status: 'pending' as PlanStepStatus, note: 'Revise content' },
+          { id: `rev_qa_${revisionCycles + 1}`, capabilityId: 'qa', status: 'pending' as PlanStepStatus, note: 'QA recheck' }
         ]
       };
       applyPlanPatch(plan, patch);
@@ -496,7 +517,7 @@ export async function runOrchestratorEngine(
       const lastIsFinal = plan.steps.length > 0 && plan.steps[plan.steps.length - 1].action === 'finalize';
       if (finals.length > 0 && !lastIsFinal) {
         const removeIds = finals.map(s => s.id);
-        const newFinal = { id: `auto_finalize_${plan.version + 1}`, action: 'finalize' as const, status: 'pending' as PlanStepStatus };
+        const newFinal = { id: `auto_finalize_${plan.version + 1}`, action: 'finalize' as const, status: 'pending' as PlanStepStatus, note: 'Final review' };
         const rePatch = { stepsRemove: removeIds, stepsAdd: [newFinal] };
         applyPlanPatch(plan, rePatch);
         emitPlanUpdate(rePatch);
