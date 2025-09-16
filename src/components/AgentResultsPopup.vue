@@ -37,7 +37,6 @@ const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
 // Run state
 const running = ref(false)
 const frames = ref<Array<{ id?: string; type: AgentEvent['type']; data: AgentEventWithId; t: number }>>([])
-const phase = ref<string | undefined>(undefined)
 const correlationId = ref<string | undefined>(undefined)
 const errorMsg = ref<string | null>(null)
 const backlog = ref<{ busy: boolean; retryAfter: number; pending: number; limit: number }>({ busy: false, retryAfter: 0, pending: 0, limit: 0 })
@@ -72,7 +71,6 @@ onBeforeUnmount(() => stopRun())
 
 function reset() {
   frames.value = []
-  phase.value = undefined
   correlationId.value = undefined
   errorMsg.value = null
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
@@ -250,9 +248,6 @@ async function startRun() {
           correlationId.value = evt.correlationId
         }
         switch (evt.type) {
-          case 'phase':
-            phase.value = evt.phase
-            break
           case 'plan_update': {
             try {
               const d = (evt.data as any) || {}
@@ -427,17 +422,20 @@ watch(plan, () => {
 }, { deep: true })
 
 function planStatusColor(status: PlanStep['status']) {
+  // Vuetify theme tokens store RGB channels; wrap in rgb() for visible colors
   switch (status) {
     case 'done':
-      return 'var(--v-theme-success)'
+      return 'rgb(var(--v-theme-success))'
     case 'in_progress':
-      return 'var(--v-theme-info)'
+      return 'rgb(var(--v-theme-info))'
     case 'skipped':
-      return 'var(--v-theme-warning)'
+      return 'rgb(var(--v-theme-warning))'
     default:
       return 'rgba(var(--v-theme-on-surface), 0.38)'
   }
 }
+
+// no trailing status chips in the plan list
 
 function planStepNote(step: PlanStep) {
   const note = typeof step.note === 'string' ? step.note.trim() : ''
@@ -461,9 +459,6 @@ function planStepNote(step: PlanStep) {
           <small class="text-medium-emphasis">{{ props.brief?.title || '(untitled brief)' }}</small>
         </div>
         <v-spacer />
-        <v-chip v-if="phase" size="small" color="secondary" variant="flat" class="me-2">
-          Phase: {{ phase }}
-        </v-chip>
         <v-chip v-if="correlationId" size="small" color="primary" variant="tonal" class="me-2">
           CID: {{ correlationId }}
         </v-chip>
@@ -499,16 +494,21 @@ function planStepNote(step: PlanStep) {
               <v-card-title class="d-flex align-center">
                 <v-icon icon="mdi-clipboard-text-outline" class="me-2" />
                 Plan
-                <v-spacer />
-                <v-chip v-if="plan?.version !== undefined" size="x-small" variant="tonal">v{{ plan?.version ?? 0 }}</v-chip>
               </v-card-title>
               <v-divider />
               <v-card-text>
-                <div v-if="!plan" class="text-caption text-medium-emphasis">No plan yet</div>
+                <div v-if="!plan" class="plan-steps-scroll d-flex align-center justify-center">
+                  <div class="text-caption text-medium-emphasis">No plan yet</div>
+                </div>
                 <div v-else ref="planScroll" class="plan-steps-scroll">
-                  <div v-for="s in plan.steps" :key="s.id" class="plan-step-row">
+                  <div
+                    v-for="s in plan.steps"
+                    :key="s.id"
+                    class="plan-step-row"
+                    :style="{ '--status-color': planStatusColor(s.status) }"
+                  >
                     <span class="plan-status-dot" :style="{ backgroundColor: planStatusColor(s.status) }" />
-                    <span class="text-caption">{{ planStepNote(s) }}</span>
+                    <span class="plan-step-text text-body-2">{{ planStepNote(s) }}</span>
                   </div>
                 </div>
               </v-card-text>
@@ -659,18 +659,23 @@ function planStepNote(step: PlanStep) {
 .plan-step-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
+  gap: 10px;
+  padding: 8px 10px 8px 12px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-left: 3px solid var(--status-color, transparent);
 }
 .plan-step-row:last-of-type {
   border-bottom: none;
 }
 .plan-status-dot {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 9999px;
   display: inline-block;
   flex-shrink: 0;
+}
+.plan-step-text {
+  /* Use medium emphasis for readability on dark backgrounds */
+  color: rgb(var(--v-theme-on-surface));
 }
 </style>

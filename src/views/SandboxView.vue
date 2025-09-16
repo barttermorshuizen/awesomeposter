@@ -591,32 +591,36 @@ const groupedFrames = computed(() => {
           </v-card-title>
           <v-divider />
           <v-card-text>
-            <div v-if="!plan" class="text-caption text-medium-emphasis">No plan yet</div>
-            <v-table v-else density="compact">
-              <thead>
-                <tr>
-                  <th class="text-caption text-medium-emphasis">ID</th>
-                  <th class="text-caption text-medium-emphasis">Step</th>
-                  <th class="text-caption text-medium-emphasis">Status</th>
-                  <th class="text-caption text-medium-emphasis">Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="s in plan.steps" :key="s.id">
-                  <td class="text-caption">{{ s.id }}</td>
-                  <td class="text-caption">
-                    <span v-if="s.action">{{ s.action }}</span>
-                    <span v-else>{{ s.capabilityId || 'step' }}</span>
-                  </td>
-                  <td>
-                    <v-chip size="x-small" :color="s.status === 'done' ? 'success' : s.status === 'in_progress' ? 'info' : s.status === 'skipped' ? 'warning' : 'default'" variant="flat">
-                      {{ s.status }}
-                    </v-chip>
-                  </td>
-                  <td class="text-caption">{{ s.note || '' }}</td>
-                </tr>
-              </tbody>
-            </v-table>
+            <div v-if="!plan" class="plan-table-scroll d-flex align-center justify-center">
+              <div class="text-caption text-medium-emphasis">No plan yet</div>
+            </div>
+            <div v-else class="plan-table-scroll">
+              <v-table density="compact">
+                <thead>
+                  <tr>
+                    <th class="text-caption text-medium-emphasis">ID</th>
+                    <th class="text-caption text-medium-emphasis">Step</th>
+                    <th class="text-caption text-medium-emphasis">Status</th>
+                    <th class="text-caption text-medium-emphasis">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in plan.steps" :key="s.id">
+                    <td class="text-caption">{{ s.id }}</td>
+                    <td class="text-caption">
+                      <span v-if="s.action">{{ s.action }}</span>
+                      <span v-else>{{ s.capabilityId || 'step' }}</span>
+                    </td>
+                    <td>
+                      <v-chip size="x-small" :color="s.status === 'done' ? 'success' : s.status === 'in_progress' ? 'info' : s.status === 'skipped' ? 'warning' : 'default'" variant="flat">
+                        {{ s.status }}
+                      </v-chip>
+                    </td>
+                    <td class="text-caption">{{ s.note || '' }}</td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -673,5 +677,10 @@ export default {
   min-height: 200px;
   max-height: 520px;
   overflow: auto;
+}
+.plan-table-scroll {
+  height: 240px;
+  overflow: auto;
+  padding: 4px 0;
 }
 </style>
