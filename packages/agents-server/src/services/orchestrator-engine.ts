@@ -1,4 +1,4 @@
-import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport } from '@awesomeposter/shared';
+import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport, agentThresholds } from '@awesomeposter/shared';
 import { AgentRuntime } from './agent-runtime';
 import { getCapabilityRegistry } from './agents-container';
 import { Runner } from '@openai/agents';
@@ -444,7 +444,7 @@ export async function runOrchestratorEngine(
     const genHasDraft = typeof artifacts.generation?.draftText === 'string' && artifacts.generation!.draftText!.trim().length > 0;
     const constraints = {
       maxRevisionCycles: (req.options as any)?.maxRevisionCycles ?? 1,
-      qualityThreshold: (req.options as any)?.qualityThreshold ?? 0.7
+      qualityThreshold: (req.options as any)?.qualityThreshold ?? agentThresholds.minCompositeScore
     };
     const context = [
       `Objective:\n${req.objective}`,
@@ -498,7 +498,7 @@ export async function runOrchestratorEngine(
     const qa = artifacts.qa?.result as any | undefined;
     const score = typeof qa?.composite === 'number' ? qa.composite : undefined;
     const pass = typeof qa?.compliance === 'boolean' ? qa.compliance : undefined;
-    const threshold = (req.options as any)?.qualityThreshold ?? 0.7;
+    const threshold = (req.options as any)?.qualityThreshold ?? agentThresholds.minCompositeScore;
     const genDone = plan.steps.filter(s => s.capabilityId === 'generation' && s.status === 'done').length;
     const revisionCycles = Math.max(0, genDone - 1);
     const needsRevision = (!!qa && pass === false) || (typeof score === 'number' && score < threshold);
