@@ -435,7 +435,7 @@ export async function runOrchestratorEngine(
     'Initial planning: create a minimal plan [strategy -> generation -> qa -> finalize].',
     'Replanning: only extend the plan if QA indicates revision is required (pass=false or score below threshold). In that case, add [generation, qa] steps to revise and re-check.',
     'Do not re-add steps that are already present; avoid duplicates.',
-    'Every step must include a note with a short task description (maximum 5 words).'
+    'Every step must include a note with a short task description (maximum 5 words). Use elements from the brief to create meaningful task descriptions.'
   ].join('\n');
 
   const planWithLLM = async () => {
