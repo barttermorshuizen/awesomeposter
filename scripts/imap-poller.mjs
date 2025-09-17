@@ -161,39 +161,41 @@ async function loadMessageContent(imapClient, message) {
   }
 
   let { textPart, htmlPart, attachments } = selectBodyParts(message.bodyStructure)
+  let textPartSynthetic = false
+  let htmlPartSynthetic = false
 
   if (!textPart && message.bodyStructure && typeof message.bodyStructure.type === 'string') {
     const lowerType = message.bodyStructure.type.toLowerCase()
     if (lowerType.startsWith('text/plain')) {
       textPart = { ...message.bodyStructure, part: message.bodyStructure.part ?? 'TEXT' }
+      textPartSynthetic = true
     } else if (lowerType.startsWith('text/html')) {
       htmlPart = { ...message.bodyStructure, part: message.bodyStructure.part ?? 'TEXT' }
+      htmlPartSynthetic = true
     }
   }
 
   const partsToFetch = new Set()
-  if (textPart?.part) partsToFetch.add(textPart.part)
-  if (htmlPart?.part) partsToFetch.add(htmlPart.part)
+  if (textPart?.part && !textPartSynthetic) partsToFetch.add(textPart.part)
+  if (htmlPart?.part && !htmlPartSynthetic) partsToFetch.add(htmlPart.part)
   for (const attachment of attachments) {
     if (attachment?.part) partsToFetch.add(attachment.part)
   }
 
-  if (partsToFetch.size === 0) {
-    return { text: '', html: null, attachments: [] }
-  }
-
   let fetched = {}
-  try {
-    const response = await imapClient.downloadMany(message.uid, Array.from(partsToFetch), { uid: true })
-    if (response && response.response !== false) {
-      fetched = response
+  if (partsToFetch.size > 0) {
+    try {
+      const response = await imapClient.downloadMany(message.uid, Array.from(partsToFetch), { uid: true })
+      if (response && response.response !== false) {
+        fetched = response
+      }
+    } catch (error) {
+      logError('Failed to download message parts', error)
     }
-  } catch (error) {
-    logError('Failed to download message parts', error)
   }
 
-  const textEntry = textPart?.part ? fetched[textPart.part] : null
-  const htmlEntry = htmlPart?.part ? fetched[htmlPart.part] : null
+  const textEntry = textPart?.part && !textPartSynthetic ? fetched[textPart.part] : null
+  const htmlEntry = htmlPart?.part && !htmlPartSynthetic ? fetched[htmlPart.part] : null
 
   const text = textEntry?.content
     ? bufferToString(textEntry.content, textEntry.meta?.charset || textPart?.parameters?.charset)
@@ -242,6 +244,9 @@ async function loadMessageContent(imapClient, message) {
         if (buffer) {
           finalText = bufferToString(buffer)
         }
+      }
+      if (!finalText && fallback?.source) {
+        finalText = bufferToString(fallback.source)
       }
     } catch (error) {
       logError('Fallback fetch for message body failed', error)
