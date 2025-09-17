@@ -59,7 +59,7 @@ the repository root (dotenv is loaded automatically).
    tokens expire after 7 days).
 3. **Create an OAuth client.** Either create a Desktop client and run a local helper, or create a Web client with a localhost
    redirect URI and use the same helper script. Note the resulting client ID and secret.
-4. **Generate a refresh token**. The repo provides `node scripts/gmail-generate-refresh-token.mjs` which spins up a temporary
+4. **Generate a refresh token**. The repo provides `node -r dotenv/config scripts/gmail-generate-refresh-token.mjs` which spins up a temporary
    localhost redirect handler and opens the consent flow for the `https://mail.google.com/` scope. The script prints the refresh
    token—copy it into `GMAIL_REFRESH_TOKEN`.
 5. **Label your inbox items.** Create the Gmail label `awesomeposter` (or any label you plan to use) and assign it to messages

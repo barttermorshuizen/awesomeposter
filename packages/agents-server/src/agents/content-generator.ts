@@ -15,8 +15,8 @@ export const CONTENT_TOOLS = [
 // the orchestrated workflow where structured output is desired.
 export const CONTENT_INSTRUCTIONS_APP = [
   'You are the Content Generator agent.',
-  'Generate or revise a post from the writer brief.',
-  'A post has the structure: first line is the hook, then a blank line, then the body.',
+  'Generate or revise a post based on the description of the brief and the guidelines provided in the writer brief.',
+  'A post has the structure: first line is the hook, then a blank line, then the body, then the hashtags (if any).',
   'Payload contract:',
   '- "writerBrief" and optional "knobs" describe the target content.',
   '- If "contentRecommendations" (array of strings) is present, this is a revision task: apply the recommendations with minimal necessary edits.',

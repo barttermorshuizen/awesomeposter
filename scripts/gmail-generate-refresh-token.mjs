@@ -2,8 +2,6 @@
 import { google } from 'googleapis'
 import http from 'node:http'
 import { config as loadEnv } from 'dotenv'
-import { createInterface } from 'node:readline/promises'
-import { stdin as input, stdout as output } from 'node:process'
 import open from 'open'
 
 loadEnv()
@@ -36,7 +34,7 @@ console.log('\nWaiting for authorization...')
 
 try {
   await open(authUrl)
-} catch (error) {
+} catch {
   console.warn('Unable to open browser automatically. Copy the URL above into your browser.')
 }
 
@@ -103,7 +101,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-const { hostname, port, pathname } = new URL(redirectUri)
+const { hostname, port } = new URL(redirectUri)
 
 server.listen(port, hostname, () => {
   console.log(`Listening for OAuth callback on ${redirectUri}`)
