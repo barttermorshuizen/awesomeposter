@@ -52,3 +52,6 @@ coverage
 # Nitro build output (ignore everywhere)
 .nitro/
 **/.nitro/
+
+# Mail poller runtime artifacts
+tokens/

@@ -22,7 +22,8 @@
     "test:unit": "vitest",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
-    "lint": "eslint . --fix"
+    "lint": "eslint . --fix",
+    "imap:poller": "node scripts/imap-poller.mjs"
   },
   "dependencies": {
     "@awesomeposter/db": "file:./packages/db",
@@ -30,7 +31,9 @@
     "@aws-sdk/client-s3": "^3.864.0",
     "@aws-sdk/s3-request-presigner": "^3.873.0",
     "@mdi/font": "^7.4.47",
+    "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.4",
+    "imapflow": "^1.0.164",
     "openai": "^5.12.2",
     "pg": "^8.16.3",
     "pinia": "^3.0.3",
