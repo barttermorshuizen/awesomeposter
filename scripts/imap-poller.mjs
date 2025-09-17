@@ -50,6 +50,10 @@ function requireString(name, rawValue) {
   return rawValue.trim()
 }
 
+const authTypeRaw = (process.env.IMAP_AUTH_TYPE ?? 'password').trim().toLowerCase()
+const authType = authTypeRaw === '' ? 'password' : authTypeRaw
+const isOauthAuth = authType === 'oauth' || authType === 'xoauth2'
+
 const pollIntervalSeconds = parseInteger(
   'IMAP_POLL_INTERVAL_SECONDS',
   process.env.IMAP_POLL_INTERVAL_SECONDS,
@@ -78,11 +82,11 @@ const recentMessageRetention = parseInteger(
   1,
 )
 
-const host = requireString('IMAP_HOST', process.env.IMAP_HOST)
-const port = parseInteger('IMAP_PORT', process.env.IMAP_PORT, null, 1)
+const resolvedHostEnv = process.env.IMAP_HOST ?? (isOauthAuth ? 'imap.gmail.com' : '')
+const host = requireString('IMAP_HOST', resolvedHostEnv)
+const port = parseInteger('IMAP_PORT', process.env.IMAP_PORT, isOauthAuth ? 993 : null, 1)
 const user = requireString('IMAP_USER', process.env.IMAP_USER)
-const password = requireString('IMAP_PASSWORD', process.env.IMAP_PASSWORD)
-const mailbox = (process.env.IMAP_MAILBOX ?? 'INBOX').trim() || 'INBOX'
+const mailbox = (process.env.IMAP_MAILBOX ?? (isOauthAuth ? 'awesomeposter' : 'INBOX')).trim() || 'INBOX'
 
 const secure = parseBoolean('IMAP_SECURE', process.env.IMAP_SECURE, port === 993)
 const requireUnseen = parseBoolean('IMAP_REQUIRE_UNSEEN', process.env.IMAP_REQUIRE_UNSEEN, false)
@@ -91,6 +95,8 @@ const rejectUnauthorized = parseBoolean(
   process.env.IMAP_TLS_REJECT_UNAUTHORIZED,
   true,
 )
+
+const DEFAULT_GMAIL_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 
 const repoRoot = process.cwd()
 const tokensDir = path.resolve(repoRoot, 'tokens')
@@ -102,6 +108,88 @@ function log(...args) {
 
 function logError(message, error) {
   console.error('[imap-poller]', message, error)
+}
+
+async function fetchGmailAccessToken({ clientId, clientSecret, refreshToken, tokenEndpoint }) {
+  const endpoint = tokenEndpoint && tokenEndpoint.trim() !== '' ? tokenEndpoint.trim() : DEFAULT_GMAIL_TOKEN_ENDPOINT
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  })
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params,
+  })
+
+  if (!response.ok) {
+    let responseText = ''
+    try {
+      responseText = await response.text()
+    } catch (responseError) {
+      logError('Failed to read Gmail token error response', responseError)
+    }
+
+    const detail = responseText ? ` Response body: ${responseText}` : ''
+    throw new Error(`Failed to refresh Gmail access token (status ${response.status}).${detail}`)
+  }
+
+  const payload = await response.json()
+  if (!payload || typeof payload.access_token !== 'string' || payload.access_token.trim() === '') {
+    throw new Error('Gmail token response did not include an access_token')
+  }
+
+  const expiresIn = typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)
+    ? Math.max(0, Math.trunc(payload.expires_in))
+    : null
+
+  return { accessToken: payload.access_token, expiresIn }
+}
+
+let authStrategy
+
+if (isOauthAuth) {
+  const gmailClientId = requireString('GMAIL_CLIENT_ID', process.env.GMAIL_CLIENT_ID)
+  const gmailClientSecret = requireString('GMAIL_CLIENT_SECRET', process.env.GMAIL_CLIENT_SECRET)
+  const gmailRefreshToken = requireString('GMAIL_REFRESH_TOKEN', process.env.GMAIL_REFRESH_TOKEN)
+  const gmailTokenEndpoint = process.env.GMAIL_TOKEN_ENDPOINT ?? DEFAULT_GMAIL_TOKEN_ENDPOINT
+
+  const oauthOptions = {
+    clientId: gmailClientId,
+    clientSecret: gmailClientSecret,
+    refreshToken: gmailRefreshToken,
+    tokenEndpoint: gmailTokenEndpoint,
+  }
+
+  authStrategy = {
+    type: 'oauth',
+    async resolveCredentials() {
+      const { accessToken, expiresIn } = await fetchGmailAccessToken(oauthOptions)
+      if (expiresIn && expiresIn > 0) {
+        const minutes = Math.max(1, Math.round(expiresIn / 60))
+        log(`Refreshed Gmail access token (valid for ~${minutes} minute${minutes === 1 ? '' : 's'})`)
+      } else {
+        log('Refreshed Gmail access token')
+      }
+
+      return { user, accessToken }
+    },
+  }
+} else {
+  const password = requireString('IMAP_PASSWORD', process.env.IMAP_PASSWORD)
+
+  authStrategy = {
+    type: 'password',
+    async resolveCredentials() {
+      return { user, pass: password }
+    },
+  }
 }
 
 async function ensureTokensDir() {
@@ -160,36 +248,63 @@ class ImapPoller {
     this.intervalHandle = null
     this.isPolling = false
     this.mailboxOpened = false
+    this.client = null
+  }
 
-    this.client = new ImapFlow({
-      host: options.host,
-      port: options.port,
-      secure: options.secure,
-      auth: {
-        user: options.user,
-        pass: options.password,
-      },
+  async ensureClient() {
+    if (this.client) {
+      return
+    }
+
+    const auth = await this.options.authStrategy.resolveCredentials()
+
+    const client = new ImapFlow({
+      host: this.options.host,
+      port: this.options.port,
+      secure: this.options.secure,
+      auth,
       tls: {
-        rejectUnauthorized: options.rejectUnauthorized,
+        rejectUnauthorized: this.options.rejectUnauthorized,
       },
     })
 
-    this.client.on('error', (error) => {
+    client.on('error', (error) => {
       logError('IMAP client error', error)
+      if (error && (error.authenticationFailed || error.responseStatus === 'NO')) {
+        this.invalidateClient()
+      }
     })
 
-    this.client.on('close', () => {
+    client.on('close', () => {
       log('IMAP connection closed')
       this.mailboxOpened = false
+      this.client = null
     })
 
-    this.client.on('mailboxClose', () => {
+    client.on('mailboxClose', () => {
       this.mailboxOpened = false
     })
 
-    this.client.on('mailboxOpen', () => {
+    client.on('mailboxOpen', () => {
       this.mailboxOpened = true
     })
+
+    this.client = client
+  }
+
+  invalidateClient() {
+    if (!this.client) {
+      return
+    }
+
+    try {
+      this.client.close()
+    } catch (error) {
+      logError('Error closing IMAP client during invalidation', error)
+    }
+
+    this.client = null
+    this.mailboxOpened = false
   }
 
   async initialize() {
@@ -234,14 +349,37 @@ class ImapPoller {
   }
 
   async ensureConnected() {
+    await this.ensureClient()
+
+    if (!this.client) {
+      throw new Error('IMAP client not initialized')
+    }
+
     if (!this.client.usable) {
-      await this.client.connect()
-      log(`Connected to IMAP server ${this.options.host}:${this.options.port}`)
+      try {
+        await this.client.connect()
+        log(`Connected to IMAP server ${this.options.host}:${this.options.port}`)
+      } catch (error) {
+        this.invalidateClient()
+        throw error
+      }
     }
 
     if (!this.mailboxOpened || !this.client.mailbox || this.client.mailbox.path !== this.options.mailbox) {
-      await this.client.mailboxOpen(this.options.mailbox, { readOnly: true })
-      log(`Opened mailbox ${this.options.mailbox}`)
+      try {
+        await this.client.mailboxOpen(this.options.mailbox, { readOnly: true })
+        log(`Opened mailbox ${this.options.mailbox}`)
+      } catch (error) {
+        if (error && error.code === 'MailboxDoesNotExist') {
+          logError(`Mailbox ${this.options.mailbox} not found`, error)
+        }
+
+        if (error && error.authenticationFailed) {
+          this.invalidateClient()
+        }
+
+        throw error
+      }
     }
   }
 
@@ -269,10 +407,18 @@ class ImapPoller {
     this.stop()
 
     try {
-      if (this.client.usable) {
-        await this.client.logout()
-      } else {
-        this.client.close()
+      if (this.client) {
+        if (this.client.usable) {
+          await this.client.logout()
+        }
+        try {
+          this.client.close()
+        } catch (error) {
+          logError('Error closing IMAP client', error)
+        } finally {
+          this.client = null
+          this.mailboxOpened = false
+        }
       }
     } catch (error) {
       logError('Error closing IMAP connection', error)
@@ -290,6 +436,10 @@ class ImapPoller {
 
     try {
       await this.ensureConnected()
+      if (!this.client) {
+        throw new Error('IMAP client unavailable during polling')
+      }
+
       lock = await this.client.getMailboxLock(this.options.mailbox, { readOnly: true })
 
       const searchCriteria = {}
@@ -391,6 +541,9 @@ class ImapPoller {
     } catch (error) {
       logError('Encountered an error while polling IMAP', error)
       this.mailboxOpened = false
+      if (error && error.authenticationFailed) {
+        this.invalidateClient()
+      }
     } finally {
       if (lock) {
         lock.release()
@@ -410,7 +563,6 @@ async function main() {
     port,
     secure,
     user,
-    password,
     mailbox,
     requireUnseen,
     rejectUnauthorized,
@@ -419,6 +571,7 @@ async function main() {
     stateFilePath,
     maxResults,
     recentMessageRetention,
+    authStrategy,
   }
 
   const poller = new ImapPoller(options)
