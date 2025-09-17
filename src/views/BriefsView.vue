@@ -22,6 +22,7 @@ const items = ref<Brief[]>([])
 const search = ref('')
 const router = useRouter()
 const approvingId = ref<string | null>(null)
+const deletingId = ref<string | null>(null)
 
 const createPostOpen = ref(false)
 const selectedBrief = ref<Brief | null>(null)
@@ -73,7 +74,34 @@ onMounted(load)
 // No-op handlers for now
 function onNewBrief(): void { router.push({ name: 'briefs-new' }) }
 function onEdit(row: Brief): void { router.push({ name: 'briefs-edit', params: { id: row.id } }) }
-function onDelete(row: Brief): void { alert(`Delete Brief ${row.id}: not implemented yet`) }
+async function onDelete(row: Brief): Promise<void> {
+  if (deletingId.value) return
+  const confirmed = confirm('Delete this brief? This permanently removes the brief and any uploaded assets tied to it.')
+  if (!confirmed) return
+
+  deletingId.value = row.id
+  try {
+    const res = await fetch(`/api/briefs/${row.id}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' }
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data?.ok !== true) {
+      throw new Error(data?.statusMessage || data?.error || 'Failed to delete brief')
+    }
+
+    items.value = items.value.filter((b) => b.id !== row.id)
+    if (selectedBrief.value?.id === row.id) {
+      selectedBrief.value = null
+      createPostOpen.value = false
+    }
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Unknown error deleting brief'
+    alert(message)
+  } finally {
+    deletingId.value = null
+  }
+}
 
 async function onApprove(row: Brief): Promise<void> {
   if (row.status !== 'draft') return
@@ -206,8 +234,9 @@ function statusColor(status?: string | null): string {
                   @click="onApprove(item as any)"
                 />
                 <v-list-item
-                  prepend-icon="mdi-delete-outline"
-                  title="Delete"
+                  :prepend-icon="deletingId === (item as any).id ? 'mdi-progress-clock' : 'mdi-delete-outline'"
+                  :title="deletingId === (item as any).id ? 'Deleting...' : 'Delete'"
+                  :disabled="!!deletingId"
                   @click="onDelete(item as any)"
                 />
               </v-list>

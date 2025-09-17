@@ -146,12 +146,31 @@ function bufferToString(buffer, charset) {
   }
 }
 
+function stripHtmlLight(html) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 async function loadMessageContent(imapClient, message) {
   if (!imapClient || !message?.bodyStructure) {
     return { text: '', html: null, attachments: [] }
   }
 
-  const { textPart, htmlPart, attachments } = selectBodyParts(message.bodyStructure)
+  let { textPart, htmlPart, attachments } = selectBodyParts(message.bodyStructure)
+
+  if (!textPart && message.bodyStructure && typeof message.bodyStructure.type === 'string') {
+    const lowerType = message.bodyStructure.type.toLowerCase()
+    if (lowerType.startsWith('text/plain')) {
+      textPart = { ...message.bodyStructure, part: message.bodyStructure.part ?? 'TEXT' }
+    } else if (lowerType.startsWith('text/html')) {
+      htmlPart = { ...message.bodyStructure, part: message.bodyStructure.part ?? 'TEXT' }
+    }
+  }
+
   const partsToFetch = new Set()
   if (textPart?.part) partsToFetch.add(textPart.part)
   if (htmlPart?.part) partsToFetch.add(htmlPart.part)
@@ -206,9 +225,32 @@ async function loadMessageContent(imapClient, message) {
     })
   }
 
+  let finalText = text
+  let finalHtml = htmlRaw
+
+  if (!finalText && !finalHtml) {
+    try {
+      const fallback = await imapClient.fetchOne(
+        message.uid,
+        { bodyParts: ['1', 'TEXT'] },
+        { uid: true },
+      )
+
+      const bodyPartsMap = fallback?.bodyParts
+      if (bodyPartsMap instanceof Map) {
+        const buffer = bodyPartsMap.get('1') ?? bodyPartsMap.get('TEXT')
+        if (buffer) {
+          finalText = bufferToString(buffer)
+        }
+      }
+    } catch (error) {
+      logError('Fallback fetch for message body failed', error)
+    }
+  }
+
   return {
-    text,
-    html: htmlRaw,
+    text: finalText,
+    html: finalHtml,
     attachments: attachmentPayloads,
   }
 }
@@ -433,6 +475,13 @@ async function processMessage({ imapClient, message }) {
       receivedAt,
       attachments,
     }
+
+    const bodyPreview = text && text.trim().length > 0
+      ? text.trim().split(/\s+/).join(' ').slice(0, 160)
+      : html && html.trim().length > 0
+        ? stripHtmlLight(html).slice(0, 160)
+        : '(empty)'
+    log(`Preparing LLM ingest payload for UID ${message.uid} | Subject: ${message.subject} | Body preview: ${bodyPreview}`)
 
     const result = await processInboundEmail(payload)
 
@@ -703,6 +752,8 @@ class ImapPoller {
         const internalDate = message.internalDate instanceof Date ? message.internalDate.getTime() : Date.now()
         const dateCandidate = envelope.date instanceof Date ? envelope.date : message.internalDate ?? new Date(internalDate)
         const normalizedDate = dateCandidate instanceof Date ? dateCandidate : new Date(internalDate)
+
+        log(`BodyStructure for UID ${message.uid}:`, JSON.stringify(message.bodyStructure, null, 2))
 
         messages.push({
           uid: message.uid,
