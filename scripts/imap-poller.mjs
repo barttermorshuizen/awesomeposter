@@ -3,9 +3,13 @@ import { ImapFlow } from 'imapflow'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { createRequire } from 'node:module'
 import { config as loadEnv } from 'dotenv'
 
 loadEnv()
+
+const jiti = createRequire(import.meta.url)('jiti')(import.meta.url)
+const { processInboundEmail } = jiti('../server/utils/email-intake.ts')
 
 function parseInteger(name, rawValue, defaultValue, minimum) {
   const hasRaw = typeof rawValue === 'string' && rawValue.trim() !== ''
@@ -48,6 +52,165 @@ function requireString(name, rawValue) {
     throw new Error(`${name} environment variable is required`)
   }
   return rawValue.trim()
+}
+
+function flattenStructure(node, acc = []) {
+  if (!node) {
+    return acc
+  }
+
+  if (Array.isArray(node.childNodes) && node.childNodes.length > 0) {
+    for (const child of node.childNodes) {
+      flattenStructure(child, acc)
+    }
+  } else {
+    acc.push(node)
+  }
+
+  return acc
+}
+
+function isAttachmentPart(part) {
+  const disposition = (part?.disposition || '').toLowerCase()
+  const hasFilename = Boolean(part?.dispositionParameters?.filename || part?.parameters?.name)
+  const type = (part?.type || '').toLowerCase()
+
+  if (disposition === 'attachment') {
+    return true
+  }
+
+  if (disposition === 'inline' && hasFilename) {
+    return true
+  }
+
+  if (hasFilename) {
+    return true
+  }
+
+  if (type && !type.startsWith('text/plain') && !type.startsWith('text/html')) {
+    return true
+  }
+
+  return false
+}
+
+function selectBodyParts(structure) {
+  const leaves = flattenStructure(structure, [])
+  let textPart = null
+  let htmlPart = null
+  const attachments = []
+
+  for (const part of leaves) {
+    if (!part || !part.part) {
+      continue
+    }
+
+    if (isAttachmentPart(part)) {
+      attachments.push(part)
+      continue
+    }
+
+    const type = (part.type || '').toLowerCase()
+    if (!textPart && type.startsWith('text/plain')) {
+      textPart = part
+      continue
+    }
+
+    if (!htmlPart && type.startsWith('text/html')) {
+      htmlPart = part
+    }
+  }
+
+  return { textPart, htmlPart, attachments }
+}
+
+function bufferToString(buffer, charset) {
+  if (!buffer) return ''
+  const normalized = (charset || 'utf-8').toLowerCase()
+  if (normalized === 'utf-8' || normalized === 'utf8') {
+    return buffer.toString('utf8')
+  }
+  if (normalized === 'us-ascii' || normalized === 'ascii') {
+    return buffer.toString('ascii')
+  }
+  if (normalized === 'latin1' || normalized === 'iso-8859-1' || normalized === 'windows-1252') {
+    return buffer.toString('latin1')
+  }
+  if (normalized === 'utf-16' || normalized === 'utf16le' || normalized === 'utf-16le') {
+    return buffer.toString('utf16le')
+  }
+  try {
+    return buffer.toString()
+  } catch {
+    return buffer.toString('utf8')
+  }
+}
+
+async function loadMessageContent(imapClient, message) {
+  if (!imapClient || !message?.bodyStructure) {
+    return { text: '', html: null, attachments: [] }
+  }
+
+  const { textPart, htmlPart, attachments } = selectBodyParts(message.bodyStructure)
+  const partsToFetch = new Set()
+  if (textPart?.part) partsToFetch.add(textPart.part)
+  if (htmlPart?.part) partsToFetch.add(htmlPart.part)
+  for (const attachment of attachments) {
+    if (attachment?.part) partsToFetch.add(attachment.part)
+  }
+
+  if (partsToFetch.size === 0) {
+    return { text: '', html: null, attachments: [] }
+  }
+
+  let fetched = {}
+  try {
+    const response = await imapClient.downloadMany(message.uid, Array.from(partsToFetch), { uid: true })
+    if (response && response.response !== false) {
+      fetched = response
+    }
+  } catch (error) {
+    logError('Failed to download message parts', error)
+  }
+
+  const textEntry = textPart?.part ? fetched[textPart.part] : null
+  const htmlEntry = htmlPart?.part ? fetched[htmlPart.part] : null
+
+  const text = textEntry?.content
+    ? bufferToString(textEntry.content, textEntry.meta?.charset || textPart?.parameters?.charset)
+    : ''
+
+  const htmlRaw = htmlEntry?.content
+    ? bufferToString(htmlEntry.content, htmlEntry.meta?.charset || htmlPart?.parameters?.charset)
+    : null
+
+  const attachmentPayloads = []
+  for (const part of attachments) {
+    if (!part?.part) continue
+    const entry = fetched[part.part]
+    if (!entry?.content || entry.content.length === 0) continue
+
+    const filename =
+      entry.meta?.filename ||
+      part.dispositionParameters?.filename ||
+      part.parameters?.name ||
+      `attachment-${part.part.replace(/\./g, '-')}`
+
+    const contentType = entry.meta?.contentType || part.type || 'application/octet-stream'
+    attachmentPayloads.push({
+      filename,
+      contentType,
+      content: entry.content,
+      size: entry.content.length,
+      disposition: entry.meta?.disposition || part.disposition || null,
+    })
+  }
+
+  return {
+    text,
+    html: htmlRaw,
+    attachments: attachmentPayloads,
+  }
 }
 
 const authTypeRaw = (process.env.IMAP_AUTH_TYPE ?? 'password').trim().toLowerCase()
@@ -237,8 +400,56 @@ function formatAddress(address) {
   return '(unknown sender)'
 }
 
-async function processMessage(message) {
-  log('processMessage stub invoked for UID', message.uid)
+async function processMessage({ imapClient, message }) {
+  try {
+    const { text, html, attachments } = await loadMessageContent(imapClient, message)
+
+    const fromAddress = message.fromAddressObject?.address?.trim() || ''
+    if (!fromAddress) {
+      log(`Skipping message UID ${message.uid} because sender address is missing`)
+      return
+    }
+
+    const toAddresses = (message.toAddresses ?? [])
+      .map((item) => (item?.address ? { address: item.address, name: item?.name ?? null } : null))
+      .filter((value) => value !== null)
+
+    const receivedAt = message.date instanceof Date
+      ? message.date
+      : new Date(message.internalDate ?? Date.now())
+
+    const payload = {
+      provider: 'imap',
+      providerEventId: String(message.uid),
+      messageId: message.messageId ?? null,
+      subject: message.subject,
+      text,
+      html,
+      from: {
+        address: fromAddress,
+        name: message.fromAddressObject?.name ?? null,
+      },
+      to: toAddresses,
+      receivedAt,
+      attachments,
+    }
+
+    const result = await processInboundEmail(payload)
+
+    if (result.status === 'processed') {
+      log(
+        `✅ Created draft brief ${result.briefId} for message UID ${message.uid} (${result.attachmentCount ?? 0} attachment${
+          (result.attachmentCount ?? 0) === 1 ? '' : 's'
+        })`,
+      )
+    } else if (result.status === 'duplicate') {
+      log(`ℹ️ Message UID ${message.uid} already processed (brief ${result.briefId})`)
+    } else {
+      log(`⚠️ Skipped message UID ${message.uid}: ${result.reason ?? 'unknown reason'}`)
+    }
+  } catch (error) {
+    logError(`Failed to process message UID ${message?.uid ?? '?'}:`, error)
+  }
 }
 
 class ImapPoller {
@@ -335,8 +546,14 @@ class ImapPoller {
     }
 
     if (typeof this.cursor.lastInternalDate !== 'number') {
-      const initialCursor = Date.now() - this.options.initialLookbackMs
-      this.cursor.lastInternalDate = Math.max(0, initialCursor)
+      const lookbackOrigin = Math.max(0, Date.now() - this.options.initialLookbackMs)
+      const normalized = new Date(lookbackOrigin)
+      if (Number.isNaN(normalized.getTime())) {
+        this.cursor.lastInternalDate = 0
+      } else {
+        normalized.setUTCHours(0, 0, 0, 0)
+        this.cursor.lastInternalDate = normalized.getTime()
+      }
       log(`Initialized polling cursor to ${new Date(this.cursor.lastInternalDate).toISOString()}`)
     }
 
@@ -468,14 +685,20 @@ class ImapPoller {
       const limitedUids = uids.length > this.options.maxResults ? uids.slice(-this.options.maxResults) : uids
 
       const messages = []
-      for await (const message of this.client.fetch(limitedUids, {
-        uid: true,
-        envelope: true,
-        internalDate: true,
-        flags: true,
-      })) {
+      for await (const message of this.client.fetch(
+        limitedUids,
+        {
+          uid: true,
+          envelope: true,
+          internalDate: true,
+          flags: true,
+          bodyStructure: true,
+        },
+        { uid: true },
+      )) {
         const envelope = message.envelope ?? {}
-        const fromAddress = formatAddress(envelope.from && envelope.from.length > 0 ? envelope.from[0] : null)
+        const fromAddressObject = Array.isArray(envelope.from) && envelope.from.length > 0 ? envelope.from[0] : null
+        const fromAddress = formatAddress(fromAddressObject)
         const subject = envelope.subject && envelope.subject.trim() ? envelope.subject : '(no subject)'
         const internalDate = message.internalDate instanceof Date ? message.internalDate.getTime() : Date.now()
         const dateCandidate = envelope.date instanceof Date ? envelope.date : message.internalDate ?? new Date(internalDate)
@@ -485,10 +708,14 @@ class ImapPoller {
           uid: message.uid,
           messageId: envelope.messageId ?? null,
           from: fromAddress,
+          fromAddressObject,
+          toAddresses: Array.isArray(envelope.to) ? envelope.to : [],
           subject,
           date: normalizedDate,
           internalDate,
           flags: message.flags ? Array.from(message.flags) : [],
+          envelope,
+          bodyStructure: message.bodyStructure ?? null,
         })
       }
 
@@ -526,7 +753,7 @@ class ImapPoller {
         log(
           `New message UID ${message.uid} from ${message.from} | Subject: ${message.subject} | Date: ${message.date.toISOString()}`,
         )
-        await processMessage(message)
+        await processMessage({ imapClient: this.client, message })
 
         this.cursor.lastUid = typeof this.cursor.lastUid === 'number' && this.cursor.lastUid > 0
           ? Math.max(this.cursor.lastUid, message.uid)
