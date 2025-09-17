@@ -407,17 +407,18 @@ class ImapPoller {
     this.stop()
 
     try {
-      if (this.client) {
-        if (this.client.usable) {
-          await this.client.logout()
+      const client = this.client
+      this.client = null
+      this.mailboxOpened = false
+
+      if (client) {
+        if (client.usable) {
+          await client.logout()
         }
         try {
-          this.client.close()
+          client.close()
         } catch (error) {
           logError('Error closing IMAP client', error)
-        } finally {
-          this.client = null
-          this.mailboxOpened = false
         }
       }
     } catch (error) {
