@@ -198,6 +198,45 @@ export const PlanPatchSchema = z.object({
 })
 export type PlanPatch = z.infer<typeof PlanPatchSchema>
 
+
+export const ApprovalSeverityEnum = z.enum(['info', 'warn', 'block'])
+export type ApprovalSeverity = z.infer<typeof ApprovalSeverityEnum>
+
+export const ApprovalReviewerRoleEnum = z.enum([
+  'marketing_manager',
+  'legal',
+  'compliance',
+  'executive'
+])
+export type ApprovalReviewerRole = z.infer<typeof ApprovalReviewerRoleEnum>
+
+export const ApprovalAdvisorySchema = z.object({
+  severity: ApprovalSeverityEnum,
+  reason: z.string().min(1),
+  evidenceRefs: z.array(z.string()).default([]),
+  suggestedRoles: z.array(ApprovalReviewerRoleEnum).optional(),
+  autoEscalate: z.boolean().optional()
+})
+export type ApprovalAdvisory = z.infer<typeof ApprovalAdvisorySchema>
+
+export const ApprovalDecisionStatusEnum = z.enum(['waiting', 'approved', 'rejected'])
+export type ApprovalDecisionStatus = z.infer<typeof ApprovalDecisionStatusEnum>
+
+export const PendingApprovalSchema = z.object({
+  checkpointId: z.string(),
+  reason: z.string().min(1),
+  requestedBy: z.string().min(1),
+  requestedAt: z.string().datetime().optional(),
+  requiredRoles: z.array(ApprovalReviewerRoleEnum).default([]),
+  evidenceRefs: z.array(z.string()).default([]),
+  advisory: ApprovalAdvisorySchema.optional(),
+  status: ApprovalDecisionStatusEnum.default('waiting'),
+  decidedBy: z.string().optional(),
+  decidedAt: z.string().datetime().optional(),
+  decisionNotes: z.string().optional()
+})
+export type PendingApproval = z.infer<typeof PendingApprovalSchema>
+
 // Shared step result schema used by orchestrator and specialists.
 // - stepId: identifier of the plan step this result corresponds to
 // - output: arbitrary structured data produced by the step
@@ -208,6 +247,7 @@ export const StepResultSchema = z.object({
   output: z.any().optional(),
   error: z.string().optional(),
   metrics: z.record(z.any()).optional(),
+  approvalAdvisory: ApprovalAdvisorySchema.optional(),
 })
 export type StepResult = z.infer<typeof StepResultSchema>
 
