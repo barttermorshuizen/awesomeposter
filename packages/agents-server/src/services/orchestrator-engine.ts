@@ -1,5 +1,5 @@
 import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport, agentThresholds } from '@awesomeposter/shared';
-import type { ApprovalAdvisory } from '@awesomeposter/shared';
+import type { ApprovalAdvisory, PendingApproval } from '@awesomeposter/shared';
 import { AgentRuntime } from './agent-runtime';
 import { getCapabilityRegistry } from './agents-container';
 import { Runner } from '@openai/agents';
@@ -12,21 +12,25 @@ import {
   evaluateContentApprovalAdvisory,
   evaluateQaApprovalAdvisory
 } from './approval-advisories';
+import { getApprovalStore } from './approval-store';
 
 type SpecialistId = 'strategy' | 'generation' | 'qa';
 
 const RESUME_STORE = new Map<string, { plan: Plan; history: any[]; runReport?: RunReport; updatedAt: number }>();
+const approvalStore = getApprovalStore();
 
-function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' } | undefined {
+function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' | 'approval.wait' } | undefined {
   const s = String(value || '').toLowerCase().trim();
   if (!s) return undefined;
   if (s === 'final' || s === 'finalize' || /finish|complete/.test(s)) return { action: 'finalize' };
+  if (s === 'approval.wait' || s === 'approval_wait' || s === 'approval-wait') return { action: 'approval.wait' };
   return { capabilityId: s };
 }
 
 function defaultNoteForStep(target?: { capabilityId?: string; action?: 'finalize' }) {
   if (!target) return undefined;
   if (target.action === 'finalize') return 'Final review';
+  if ((target as any).action === 'approval.wait') return 'Await human approval';
   switch (target.capabilityId) {
     case 'strategy':
       return 'Strategy plan';
@@ -277,6 +281,7 @@ export async function runOrchestratorEngine(
   // Aggregate step results for consolidation (RunReport)
   const stepResults: StepResult[] = [];
 
+  const approvalsEnabled = process.env.ENABLE_HITL_APPROVALS === 'true';
   const hitlPolicy = resolveHitlPolicy(req);
 
   const artifacts: {
@@ -298,6 +303,7 @@ export async function runOrchestratorEngine(
           history: [...stepResults],
           runReport: { steps: [...stepResults] } as RunReport,
           updatedAt: Date.now(),
+          pendingApprovals: approvalsEnabled ? approvalStore.listByThread(resumeKey) : undefined,
         };
         RESUME_STORE.set(resumeKey, snapshot as any);
       } catch {}
@@ -336,6 +342,29 @@ export async function runOrchestratorEngine(
       return { draftText: artifacts.generation?.draftText };
     }
     return {};
+  };
+
+  const queueApprovalHold = ({ advisory, stepId: originStepId, capabilityId: originCapability, threadId, requestedBy }: { advisory: ApprovalAdvisory; stepId: string; capabilityId: SpecialistId; threadId: string; requestedBy: string }) => {
+    const existingWaiting = approvalStore.listByThread(threadId).some((entry) => entry.status === 'waiting');
+    if (existingWaiting) return;
+    const checkpointId = `approval_${originStepId}_${Math.random().toString(36).slice(2, 8)}`;
+    const pending: PendingApproval = {
+      checkpointId,
+      reason: advisory.reason,
+      requestedBy,
+      requestedAt: new Date().toISOString(),
+      requiredRoles: advisory.suggestedRoles ?? [],
+      evidenceRefs: advisory.evidenceRefs ?? [],
+      advisory,
+      status: 'waiting',
+    };
+    approvalStore.create({ ...pending, threadId });
+    const approvalStep = { id: checkpointId, action: 'approval.wait' as const, status: 'pending' as PlanStepStatus, note: defaultNoteForStep({ action: 'approval.wait' as any }) };
+    applyPlanPatch(plan, { stepsAdd: [approvalStep] });
+    emitPlanUpdate({ stepsAdd: [approvalStep] });
+    try {
+      onEvent({ type: 'message', message: 'pending_approval', data: { checkpointId, advisory, originStepId, capabilityId: originCapability }, correlationId: cid });
+    } catch {}
   };
 
   const executeSpecialistStep = async (stepId: string, capabilityId?: string, payload?: any) => {
@@ -455,6 +484,16 @@ export async function runOrchestratorEngine(
         approvalAdvisory
       });
       onEvent({ type: 'metrics', durationMs, correlationId: cid });
+
+      if (approvalsEnabled && resumeKey && approvalAdvisory) {
+        queueApprovalHold({
+          advisory: approvalAdvisory,
+          stepId: id,
+          capabilityId: sid,
+          threadId: resumeKey,
+          requestedBy: registry[sid]?.name || sid,
+        });
+      }
     } catch {}
   };
 
@@ -595,7 +634,8 @@ export async function runOrchestratorEngine(
     }
   }
 
-  let state: 'plan' | 'step' | 'replan' | 'final' = 'plan';
+  let state: 'plan' | 'step' | 'replan' | 'final' | 'approval_wait' = 'plan';
+  let approvalHold: { checkpointId: string; note?: string } | null = null;
   let finalizeStepId: string | undefined = undefined;
   let finished = false;
   const getNextPendingStep = () => {
@@ -629,6 +669,29 @@ export async function runOrchestratorEngine(
         state = 'final';
         finished = true;
         break;
+      } else if ((next as any).action === 'approval.wait') {
+        setStepStatusById(next.id, 'in_progress');
+        approvalHold = { checkpointId: next.id, note: next.note };
+        const pending = approvalStore.get(next.id);
+        onEvent({ type: 'phase', phase: 'approval' as any, message: pending?.reason || 'Awaiting approval', data: { checkpointId: next.id, pending }, correlationId: cid });
+        state = 'approval_wait' as any;
+        try {
+          const decision = await approvalStore.waitForDecision(next.id);
+          onEvent({ type: 'message', message: 'approval_decision', data: { checkpointId: next.id, status: decision.status, decidedBy: decision.decidedBy, decisionNotes: decision.decisionNotes }, correlationId: cid });
+          const note = decision.status === 'approved' ? 'Approved' : 'Rejected';
+          setStepStatusById(next.id, 'done', note);
+          approvalHold = null;
+          if (decision.status === 'rejected') {
+            throw new Error(`Approval rejected by ${decision.decidedBy || 'reviewer'}`);
+          }
+        } catch (err: any) {
+          if (approvalHold) {
+            try { setStepStatusById(approvalHold.checkpointId, 'done', 'Approval failed'); } catch {}
+          }
+          throw err;
+        }
+        state = 'plan';
+        continue;
       }
       setStepStatusById(next.id, 'in_progress');
       // Emit phase by capability
@@ -712,7 +775,7 @@ export async function runOrchestratorEngine(
   if (resumeKey) {
     try {
       const existing = RESUME_STORE.get(resumeKey) || ({} as any);
-      RESUME_STORE.set(resumeKey, { ...existing, plan: JSON.parse(JSON.stringify(plan)), history: [...stepResults], runReport, updatedAt: Date.now() } as any);
+      RESUME_STORE.set(resumeKey, { ...existing, plan: JSON.parse(JSON.stringify(plan)), history: [...stepResults], runReport, pendingApprovals: approvalsEnabled ? approvalStore.listByThread(resumeKey) : undefined, updatedAt: Date.now() } as any);
     } catch {}
   }
   onEvent({ type: 'metrics', data: runReport.summary, correlationId: cid });

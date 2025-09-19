@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+import { getApprovalStore } from '../src/services/approval-store'
 
 const responseRegistry = vi.hoisted(() => new Map<string, (prompt: string, opts?: { stream?: boolean }) => { finalOutput?: string; streamChunks?: string[] }>)
 
@@ -80,9 +81,12 @@ async function registerTestTools(runtime: any, names: string[]) {
 }
 
 describe('human-in-the-loop advisory integration', () => {
+  const approvalStore = getApprovalStore()
+
   beforeEach(async () => {
     const mod = await import('@openai/agents') as { __clearAgentResponses: () => void }
     mod.__clearAgentResponses()
+    approvalStore.clear()
   })
 
   it('captures advisory metadata from strategy, generation, and QA steps', async () => {
@@ -166,5 +170,99 @@ describe('human-in-the-loop advisory integration', () => {
 
     expect(qaStep?.approvalAdvisory?.severity).toBe('block')
     expect(qaStep?.approvalAdvisory?.suggestedRoles).toContain('compliance')
+  })
+
+  it('pauses execution on approval wait until a decision arrives', async () => {
+    const originalFlag = process.env.ENABLE_HITL_APPROVALS
+    process.env.ENABLE_HITL_APPROVALS = 'true'
+
+    try {
+      const [{ OrchestratorAgent }, { AgentRuntime }] = await Promise.all([
+        import('../src/services/orchestrator-agent'),
+        import('../src/services/agent-runtime')
+      ])
+      const { __setAgentResponse } = (await import('@openai/agents')) as {
+        __setAgentResponse: (name: string, handler: (prompt: string, opts?: { stream?: boolean }) => { finalOutput?: string; streamChunks?: string[] }) => void
+      }
+
+      const runtime = new AgentRuntime()
+      const STRATEGY_TOOLS = ['strategy_analyze_assets', 'strategy_plan_knobs']
+      const CONTENT_TOOLS = ['apply_format_rendering', 'optimize_for_platform']
+      const QA_TOOLS = ['qa_evaluate_content']
+      await registerTestTools(runtime, [...STRATEGY_TOOLS, ...CONTENT_TOOLS, ...QA_TOOLS])
+
+      __setAgentResponse('Orchestrator', () => ({
+        finalOutput: JSON.stringify({
+          stepsAdd: [
+            { id: 'strategy_1', capabilityId: 'strategy', status: 'pending', note: 'Strategy plan' },
+            { id: 'generation_1', capabilityId: 'generation', status: 'pending', note: 'Draft content' },
+            { id: 'qa_1', capabilityId: 'qa', status: 'pending', note: 'QA review' }
+          ]
+        })
+      }))
+
+      __setAgentResponse('Strategy Manager', () => ({
+        finalOutput: JSON.stringify({
+          rationale: 'IPO requires cautious messaging.',
+          writerBrief: {
+            clientName: 'Acme Corp',
+            audience: '',
+            tone: '',
+            hooks: [],
+            cta: '',
+            platform: 'linkedin'
+          },
+          knobs: { formatType: 'text' }
+        })
+      }))
+
+      __setAgentResponse('Content Generator', () => ({
+        finalOutput: 'IPO Hook\n\nOur IPO guarantees 100% returns for every investor. {{CTA}}'
+      }))
+
+      __setAgentResponse('Quality Assurance', () => ({
+        finalOutput: JSON.stringify({
+          compliance: false,
+          brandRisk: 0.6,
+          composite: 0.62,
+          contentRecommendations: ['Needs legal review before publishing']
+        })
+      }))
+
+      const orch = new OrchestratorAgent(runtime)
+      const events: any[] = []
+      const req = {
+        mode: 'app',
+        objective: 'Plan IPO announcement with aggressive targets.',
+        threadId: 'thread_hitl_wait',
+        options: {
+          toolsAllowlist: [...STRATEGY_TOOLS, ...CONTENT_TOOLS, ...QA_TOOLS]
+        }
+      }
+
+      const runPromise = orch.run(req as any, (e) => events.push(e), 'cid_wait')
+
+      // Allow orchestrator to enqueue the approval wait step
+      await new Promise((resolve) => setTimeout(resolve, 5))
+
+      const pending = approvalStore.listByThread('thread_hitl_wait')
+      expect(pending).toHaveLength(1)
+      const checkpointId = pending[0]!.checkpointId
+
+      const sawApprovalPhase = events.some((e) => e?.type === 'phase' && e?.phase === 'approval')
+      expect(sawApprovalPhase).toBe(true)
+
+      approvalStore.resolve(checkpointId, { status: 'approved', decidedBy: 'qa_lead', decisionNotes: 'Ship it' })
+
+      const { final } = await runPromise
+      expect(final).toBeTruthy()
+
+      const decisionEvent = events.find((e) => e?.type === 'message' && e?.message === 'approval_decision')
+      expect(decisionEvent?.data?.status).toBe('approved')
+      expect(decisionEvent?.data?.checkpointId).toBe(checkpointId)
+    } finally {
+      process.env.ENABLE_HITL_APPROVALS = originalFlag
+      approvalStore.clear()
+    }
   })
 })

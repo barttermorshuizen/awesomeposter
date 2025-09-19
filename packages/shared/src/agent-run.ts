@@ -48,7 +48,7 @@ export const AgentEventSchema = z.object({
     'error',
     'complete'
   ]),
-  phase: z.enum(['analysis', 'planning', 'generation', 'qa', 'finalization', 'idle']).optional(),
+  phase: z.enum(['analysis', 'planning', 'generation', 'qa', 'finalization', 'idle', 'approval']).optional(),
   message: z.string().optional(),
   data: z.any().optional(),
   tokens: z.number().optional(),
@@ -158,7 +158,7 @@ export const PlanStepStatusEnum = z.enum(['pending', 'in_progress', 'done', 'ski
 export type PlanStepStatus = z.infer<typeof PlanStepStatusEnum>
 
 // Non-handoff actions reserved for the orchestrator (e.g., finalize)
-export const PlanActionEnum = z.enum(['finalize'])
+export const PlanActionEnum = z.enum(['finalize', 'approval.wait'])
 export type PlanAction = z.infer<typeof PlanActionEnum>
 
 // Capability-driven plan step schema.
