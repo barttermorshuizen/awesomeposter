@@ -1,10 +1,17 @@
 import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport, agentThresholds } from '@awesomeposter/shared';
+import type { ApprovalAdvisory } from '@awesomeposter/shared';
 import { AgentRuntime } from './agent-runtime';
 import { getCapabilityRegistry } from './agents-container';
 import { Runner } from '@openai/agents';
 import { createStrategyAgent } from '../agents/strategy-manager';
 import { createContentAgent } from '../agents/content-generator';
 import { createQaAgent } from '../agents/quality-assurance';
+import {
+  resolveHitlPolicy,
+  evaluateStrategyApprovalAdvisory,
+  evaluateContentApprovalAdvisory,
+  evaluateQaApprovalAdvisory
+} from './approval-advisories';
 
 type SpecialistId = 'strategy' | 'generation' | 'qa';
 
@@ -270,6 +277,8 @@ export async function runOrchestratorEngine(
   // Aggregate step results for consolidation (RunReport)
   const stepResults: StepResult[] = [];
 
+  const hitlPolicy = resolveHitlPolicy(req);
+
   const artifacts: {
     strategy?: { rationale?: string; writerBrief?: any; knobs?: any; rawText?: string };
     generation?: { draftText?: string; rawText?: string };
@@ -424,7 +433,27 @@ export async function runOrchestratorEngine(
       const id = stepId || last?.id || `step_${sid}_${plan.version}`;
       const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
       const hasError = !text;
-      stepResults.push({ stepId: id, output: parsed ?? text, error: hasError ? 'step_failed_or_timeout' : undefined, metrics: { durationMs, attempt, capabilityId: sid } });
+      let approvalAdvisory: ApprovalAdvisory | undefined;
+      try {
+        if (sid === 'strategy') {
+          approvalAdvisory = evaluateStrategyApprovalAdvisory(req.objective, artifacts.strategy?.writerBrief, hitlPolicy.strategy);
+        } else if (sid === 'generation') {
+          approvalAdvisory = evaluateContentApprovalAdvisory(artifacts.generation?.draftText, hitlPolicy.content);
+        } else if (sid === 'qa') {
+          approvalAdvisory = evaluateQaApprovalAdvisory(artifacts.qa?.result, hitlPolicy.qa);
+        }
+      } catch (err: any) {
+        try {
+          onEvent({ type: 'warning', message: 'advisory_evaluation_failed', data: { capabilityId: sid, error: String(err?.message || err) }, correlationId: cid });
+        } catch {}
+      }
+      stepResults.push({
+        stepId: id,
+        output: parsed ?? text,
+        error: hasError ? 'step_failed_or_timeout' : undefined,
+        metrics: { durationMs, attempt, capabilityId: sid },
+        approvalAdvisory
+      });
       onEvent({ type: 'metrics', durationMs, correlationId: cid });
     } catch {}
   };
