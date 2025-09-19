@@ -463,17 +463,34 @@ export async function runOrchestratorEngine(
     let patch: any = null;
     const candidates = extractJsonCandidates(text);
     try { onEvent({ type: 'message', message: 'planner_candidates', data: { count: candidates.length }, correlationId: cid }); } catch {}
+    const hasPatchOperations = (p: any) => {
+      if (!p || typeof p !== 'object') return false;
+      const hasAdd = Array.isArray((p as any).stepsAdd) && (p as any).stepsAdd.length > 0;
+      const hasUpdate = Array.isArray((p as any).stepsUpdate) && (p as any).stepsUpdate.length > 0;
+      const hasRemove = Array.isArray((p as any).stepsRemove) && (p as any).stepsRemove.length > 0;
+      const note = typeof (p as any).note === 'string' ? (p as any).note.trim() : '';
+      return hasAdd || hasUpdate || hasRemove || note.length > 0;
+    };
     for (const cand of candidates) {
       try {
         const obj = JSON.parse(cand);
         const candidate = (obj as any).planPatch ?? obj;
         const parsed = PlanPatchSchema.safeParse(candidate);
-        if (parsed.success) patch = parsed.data;
-        else patch = normalizePlanPatchInput(candidate, plan);
-        if (patch) break;
+        if (parsed.success) {
+          if (hasPatchOperations(parsed.data)) {
+            patch = parsed.data;
+            break;
+          }
+          continue;
+        }
+        const normalized = normalizePlanPatchInput(candidate, plan);
+        if (normalized && hasPatchOperations(normalized)) {
+          patch = normalized;
+          break;
+        }
       } catch {}
     }
-    if (patch) {
+    if (patch && hasPatchOperations(patch)) {
       applyPlanPatch(plan, patch);
       emitPlanUpdate(patch);
     } else {

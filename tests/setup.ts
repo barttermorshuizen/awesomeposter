@@ -27,6 +27,12 @@ type GlobalLike = {
 
 const g = globalThis as unknown as GlobalLike
 
+// Ensure SDK-dependent code sees an API key in tests. In CI the .env loader is not invoked,
+// so default to a stable placeholder unless one is already defined.
+if (!process.env.OPENAI_API_KEY) {
+  process.env.OPENAI_API_KEY = 'test-openai-key'
+}
+
 // Polyfill ResizeObserver used by Vuetify if not present
 if (!g.ResizeObserver) {
   g.ResizeObserver = FakeResizeObserver as any
