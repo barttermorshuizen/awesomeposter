@@ -301,6 +301,115 @@ describe('human-in-the-loop advisory integration', () => {
     }
   })
 
+  it('finalizes immediately when rejection behavior is finalize', async () => {
+    const originalFlag = process.env.ENABLE_HITL_APPROVALS
+    process.env.ENABLE_HITL_APPROVALS = 'true'
+
+    try {
+      const [{ OrchestratorAgent }, { AgentRuntime }] = await Promise.all([
+        import('../src/services/orchestrator-agent'),
+        import('../src/services/agent-runtime')
+      ])
+      const { __setAgentResponse } = (await import('@openai/agents')) as {
+        __setAgentResponse: (name: string, handler: (prompt: string, opts?: { stream?: boolean }) => { finalOutput?: string }) => void
+      }
+
+      const runtime = new AgentRuntime()
+      const STRATEGY_TOOLS = ['strategy_analyze_assets', 'strategy_plan_knobs']
+      const CONTENT_TOOLS = ['apply_format_rendering', 'optimize_for_platform']
+      const QA_TOOLS = ['qa_evaluate_content']
+      await registerTestTools(runtime, [...STRATEGY_TOOLS, ...CONTENT_TOOLS, ...QA_TOOLS])
+
+      __setAgentResponse('Orchestrator', () => ({
+        finalOutput: JSON.stringify({
+          stepsAdd: [
+            { id: 'strategy_1', capabilityId: 'strategy', status: 'pending', note: 'Strategy plan' },
+            { id: 'generation_1', capabilityId: 'generation', status: 'pending', note: 'Draft content' },
+            { id: 'qa_1', capabilityId: 'qa', status: 'pending', note: 'QA review' }
+          ]
+        })
+      }))
+
+      __setAgentResponse('Strategy Manager', () => ({
+        finalOutput: JSON.stringify({
+          rationale: 'IPO requires cautious messaging.',
+          writerBrief: {
+            clientName: 'Acme Corp',
+            audience: 'Investors',
+            tone: 'Formal',
+            hooks: ['Growth story'],
+            cta: 'Register now',
+            platform: 'linkedin'
+          },
+          knobs: { formatType: 'text' }
+        })
+      }))
+
+      let generationCall = 0
+      __setAgentResponse('Content Generator', () => {
+        generationCall += 1
+        return { finalOutput: 'IPO Hook\n\nOur IPO guarantees 100% returns for every investor. {{CTA}}' }
+      })
+
+      let qaCall = 0
+      __setAgentResponse('Quality Assurance', () => {
+        qaCall += 1
+        throw new Error('QA should not run when rejection finalizes the run')
+      })
+
+      const orch = new OrchestratorAgent(runtime)
+      const events: any[] = []
+      const req = {
+        mode: 'app',
+        objective: 'Plan IPO announcement with aggressive targets.',
+        threadId: 'thread_hitl_finalize',
+        options: {
+          toolsAllowlist: [...STRATEGY_TOOLS, ...CONTENT_TOOLS, ...QA_TOOLS],
+          hitlPolicy: { rejectionBehavior: 'finalize' }
+        }
+      }
+
+      const runPromise = orch.run(req as any, (e) => events.push(e), 'cid_finalize')
+
+      await new Promise((resolve) => setTimeout(resolve, 5))
+
+      const pending = approvalStore.listByThread('thread_hitl_finalize')
+      expect(pending).toHaveLength(1)
+      const checkpointId = pending[0]!.checkpointId
+
+      approvalStore.resolve(checkpointId, {
+        status: 'rejected',
+        decidedBy: 'legal_team',
+        decisionNotes: 'Rejected pending further review.'
+      })
+
+      const { final } = await runPromise
+
+      expect(generationCall).toBe(1)
+      expect(qaCall).toBe(0)
+
+      expect(events.some((e) => e?.type === 'warning' && e?.message === 'approval_rejected_finalized')).toBe(true)
+      const decisionEvent = events.find((e) => e?.type === 'message' && e?.message === 'approval_decision')
+      expect(decisionEvent?.data?.behavior).toBe('finalize')
+      expect(decisionEvent?.data?.originCapabilityId).toBe('generation')
+
+      expect(final?.result?.content).toBe('')
+      expect(final?.result?.failureStatus).toBe('approval_rejected')
+      expect(final?.result?.reviewerDecision?.status).toBe('rejected')
+      expect(final?.result?.reviewerDecision?.checkpointId).toBe(checkpointId)
+      expect(final?.['acceptance-report']?.overall).toBe(false)
+      const approvalCriterion = (final?.['acceptance-report']?.criteria || []).find((c: any) => c?.criterion === 'approval_status')
+      expect(approvalCriterion?.passed).toBe(false)
+      expect(final?.quality?.pass).toBe(false)
+
+      const finalizeEvent = events.find((e) => e?.type === 'plan_update' && Array.isArray(e?.data?.patch?.stepsUpdate))
+      expect(finalizeEvent).toBeTruthy()
+    } finally {
+      process.env.ENABLE_HITL_APPROVALS = originalFlag
+      approvalStore.clear()
+    }
+  })
+
   it('resumes a pending approval checkpoint from snapshot', async () => {
     const originalFlag = process.env.ENABLE_HITL_APPROVALS
     process.env.ENABLE_HITL_APPROVALS = 'true'

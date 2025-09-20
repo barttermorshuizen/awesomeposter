@@ -73,10 +73,14 @@ describe('pending approval schema', () => {
       decidedBy: 'reviewer-1',
       decidedAt: '2025-01-01T01:00:00.000Z',
       decisionNotes: 'Reviewed by counsel',
+      originCapabilityId: 'generation',
+      originStepId: 'generation_1',
     })
 
     expect(approval.status).toBe(ApprovalDecisionStatusEnum.enum.approved)
     expect(approval.requiredRoles).toEqual(['legal'])
     expect(approval.advisory?.severity).toBe('block')
+    expect(approval.originCapabilityId).toBe('generation')
+    expect(approval.originStepId).toBe('generation_1')
   })
 })

@@ -142,6 +142,9 @@ export const AcceptanceReportSchema = z.object({
 })
 export type AcceptanceReport = z.infer<typeof AcceptanceReportSchema>
 
+export const ApprovalOriginCapabilityEnum = z.enum(['strategy', 'generation', 'qa'])
+export type ApprovalOriginCapability = z.infer<typeof ApprovalOriginCapabilityEnum>
+
 export const FinalBundleSchema = z.object({
   result: z.any(),
   quality: FinalQualitySchema,
@@ -231,6 +234,8 @@ export const PendingApprovalSchema = z.object({
   evidenceRefs: z.array(z.string()).default([]),
   advisory: ApprovalAdvisorySchema.optional(),
   status: ApprovalDecisionStatusEnum.default('waiting'),
+  originCapabilityId: ApprovalOriginCapabilityEnum.optional(),
+  originStepId: z.string().optional(),
   decidedBy: z.string().optional(),
   decidedAt: z.string().datetime().optional(),
   decisionNotes: z.string().optional()

@@ -389,6 +389,15 @@ function stringify(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
 
+const ORIGIN_CAPABILITIES = ['strategy', 'generation', 'qa'] as const
+
+function normalizeOriginCapability(value: unknown): PendingApproval['originCapabilityId'] | undefined {
+  if (typeof value !== 'string') return undefined
+  return (ORIGIN_CAPABILITIES as readonly string[]).includes(value)
+    ? (value as PendingApproval['originCapabilityId'])
+    : undefined
+}
+
 function normalizePendingFromFrame(raw: unknown, fallbackId?: string): PendingApproval | null {
   if (!raw || typeof raw !== 'object') return null
   const obj = raw as Record<string, unknown>
@@ -419,6 +428,8 @@ function normalizePendingFromFrame(raw: unknown, fallbackId?: string): PendingAp
     decidedBy: typeof obj.decidedBy === 'string' ? obj.decidedBy : undefined,
     decidedAt: typeof obj.decidedAt === 'string' ? obj.decidedAt : undefined,
     decisionNotes: typeof obj.decisionNotes === 'string' ? obj.decisionNotes : undefined,
+    originCapabilityId: normalizeOriginCapability(obj.originCapabilityId),
+    originStepId: typeof obj.originStepId === 'string' ? obj.originStepId : undefined,
   }
 
   return pending
@@ -456,6 +467,8 @@ const approvalTrail = computed<ApprovalTrailItem[]>(() => {
           evidenceRefs: [...pending.evidenceRefs],
           advisory: pending.advisory ?? prev?.entry.advisory,
           status: pending.status ?? prev?.entry.status ?? 'waiting',
+          originCapabilityId: pending.originCapabilityId ?? prev?.entry.originCapabilityId,
+          originStepId: pending.originStepId ?? prev?.entry.originStepId,
         }
         map.set(pending.checkpointId, {
           entry: merged,
@@ -478,6 +491,8 @@ const approvalTrail = computed<ApprovalTrailItem[]>(() => {
       const requiredRoles = prev?.entry.requiredRoles ? [...prev.entry.requiredRoles] : []
       const evidenceRefs = prev?.entry.evidenceRefs ? [...prev.entry.evidenceRefs] : []
       const advisory = prev?.entry.advisory
+      const originCapabilityId = normalizeOriginCapability(data?.originCapabilityId) ?? prev?.entry.originCapabilityId
+      const originStepId = typeof data?.originStepId === 'string' ? data.originStepId : prev?.entry.originStepId
 
       const entry: PendingApproval = {
         checkpointId,
@@ -491,6 +506,8 @@ const approvalTrail = computed<ApprovalTrailItem[]>(() => {
         decidedBy,
         decisionNotes,
         decidedAt: decidedAt || new Date(frame.t).toISOString(),
+        originCapabilityId,
+        originStepId,
       }
 
       map.set(checkpointId, {

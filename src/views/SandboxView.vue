@@ -125,6 +125,15 @@ function resetApprovals() {
   approvalsLoadedForThread.value = null
 }
 
+const ORIGIN_CAPABILITIES = ['strategy', 'generation', 'qa'] as const
+
+function normalizeOriginCapability(value: unknown): PendingApproval['originCapabilityId'] | undefined {
+  if (typeof value !== 'string') return undefined
+  return (ORIGIN_CAPABILITIES as readonly string[]).includes(value)
+    ? (value as PendingApproval['originCapabilityId'])
+    : undefined
+}
+
 function setPendingApprovals(list: PendingApproval[]) {
   pendingApprovals.value = list.map((entry) => ({
     ...entry,
@@ -216,6 +225,8 @@ function normalizePendingApproval(raw: unknown, fallbackId?: string): PendingApp
     decidedBy: typeof obj.decidedBy === 'string' ? obj.decidedBy : undefined,
     decidedAt: typeof obj.decidedAt === 'string' ? obj.decidedAt : undefined,
     decisionNotes: typeof obj.decisionNotes === 'string' ? obj.decisionNotes : undefined,
+    originCapabilityId: normalizeOriginCapability(obj.originCapabilityId),
+    originStepId: typeof obj.originStepId === 'string' ? obj.originStepId : undefined,
   }
 
   return pending
