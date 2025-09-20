@@ -57,6 +57,7 @@ M3 — Persistence Adapter (1 day)
 - ✅ Ensure run resume uses store to restore waiting state.
 
 M4 — Approval API Surface (1 day)
+- ✅ Completed (2025-02-16).
 - Add Nitro route `POST /api/v1/orchestrator/approval` with validation and auth (reuse session middleware).
 - Optional `GET /api/v1/orchestrator/approvals` for dashboard/polling.
 - Emit SSE `approval_decision` frames after persisting decision.
