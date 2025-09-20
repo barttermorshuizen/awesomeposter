@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import type { AgentEvent, AgentMode, AgentRunRequest } from '@awesomeposter/shared'
+import type { AgentEvent, AgentMode, AgentRunRequest, PendingApproval } from '@awesomeposter/shared'
+import ApprovalCheckpointBanner from '@/components/ApprovalCheckpointBanner.vue'
+import { AGENTS_BASE_URL, AGENTS_AUTH, listPendingApprovals, postApprovalDecision } from '@/lib/agents-api'
 // Temporary local alias while shared package builds
 type TargetAgentId = 'orchestrator' | 'strategy' | 'generator' | 'qa'
 
 type AgentInfo = { id: TargetAgentId; label: string; supports: ('app' | 'chat')[] }
-
-const AGENTS_BASE_URL = import.meta.env.VITE_AGENTS_BASE_URL || 'http://localhost:3002'
-const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
 
 // Safe fallback list so the Sandbox remains usable even if the server is down
 const DEFAULT_AGENTS: AgentInfo[] = [
@@ -45,6 +44,14 @@ type PlanStep = { id: string; capabilityId?: string; action?: string; label?: st
 type PlanState = { version: number; steps: PlanStep[] }
 const plan = ref<PlanState | null>(null)
 
+const threadId = ref<string | undefined>(undefined)
+const pendingApprovals = ref<PendingApproval[]>([])
+const approvalNotes = ref('')
+const approvalReviewer = ref('')
+const approvalError = ref<string | null>(null)
+const approvalBusy = ref(false)
+const approvalsLoadedForThread = ref<string | null>(null)
+
 const backlog = reactive({ busy: false, retryAfter: 0, pending: 0, limit: 0 })
 let abortController: AbortController | null = null
 
@@ -62,6 +69,18 @@ const filteredAgents = computed(() => {
 
 const agentSelectDisabled = computed(() => running.value || mode.value === 'app')
 
+const waitingApproval = computed(() => pendingApprovals.value.find((entry) => entry.status === 'waiting') || null)
+const approvalHistory = computed(() =>
+  pendingApprovals.value
+    .filter((entry) => entry.status !== 'waiting')
+    .slice()
+    .sort((a, b) => {
+      const at = entryTime(a.decidedAt || a.requestedAt)
+      const bt = entryTime(b.decidedAt || b.requestedAt)
+      return bt - at
+    })
+)
+
 // Enforce orchestrator selection in App mode
 watch(mode, (m) => {
   if (m === 'app') selectedAgentId.value = 'orchestrator'
@@ -72,6 +91,12 @@ function parseAllowlist() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+function entryTime(input?: string | null) {
+  if (!input) return 0
+  const value = Date.parse(input)
+  return Number.isNaN(value) ? 0 : value
 }
 
 async function loadAgents() {
@@ -92,17 +117,135 @@ async function loadAgents() {
   }
 }
 
+function resetApprovals() {
+  pendingApprovals.value = []
+  approvalNotes.value = ''
+  approvalError.value = null
+  approvalBusy.value = false
+  approvalsLoadedForThread.value = null
+}
+
+function setPendingApprovals(list: PendingApproval[]) {
+  pendingApprovals.value = list.map((entry) => ({
+    ...entry,
+    requiredRoles: Array.isArray(entry.requiredRoles) ? [...entry.requiredRoles] : [],
+    evidenceRefs: Array.isArray(entry.evidenceRefs) ? [...entry.evidenceRefs] : [],
+    advisory: entry.advisory ? { ...entry.advisory } : undefined,
+  }))
+}
+
+function upsertPendingApproval(entry: PendingApproval) {
+  const normalized: PendingApproval = {
+    ...entry,
+    requiredRoles: Array.isArray(entry.requiredRoles) ? [...entry.requiredRoles] : [],
+    evidenceRefs: Array.isArray(entry.evidenceRefs) ? [...entry.evidenceRefs] : [],
+    advisory: entry.advisory ? { ...entry.advisory } : undefined,
+  }
+  const idx = pendingApprovals.value.findIndex((item) => item.checkpointId === normalized.checkpointId)
+  if (idx === -1) {
+    pendingApprovals.value = [...pendingApprovals.value, normalized]
+  } else {
+    const current = pendingApprovals.value[idx]
+    pendingApprovals.value.splice(idx, 1, {
+      ...current,
+      ...normalized,
+    })
+  }
+}
+
+function applyDecisionPatch(patch: {
+  checkpointId: string
+  status: 'approved' | 'rejected'
+  decidedBy?: string
+  decisionNotes?: string
+  decidedAt?: string
+}) {
+  const idx = pendingApprovals.value.findIndex((item) => item.checkpointId === patch.checkpointId)
+  if (idx === -1) {
+    const decidedAt = patch.decidedAt || new Date().toISOString()
+    pendingApprovals.value = [
+      ...pendingApprovals.value,
+      {
+        checkpointId: patch.checkpointId,
+        reason: 'Approval decision',
+        requestedBy: 'orchestrator',
+        requiredRoles: [],
+        evidenceRefs: [],
+        status: patch.status,
+        decidedBy: patch.decidedBy,
+        decisionNotes: patch.decisionNotes,
+        decidedAt,
+      },
+    ]
+    return
+  }
+
+  const current = pendingApprovals.value[idx]
+  pendingApprovals.value.splice(idx, 1, {
+    ...current,
+    status: patch.status,
+    decidedBy: patch.decidedBy ?? current.decidedBy,
+    decisionNotes: patch.decisionNotes ?? current.decisionNotes,
+    decidedAt: patch.decidedAt || current.decidedAt || new Date().toISOString(),
+  })
+}
+
+function normalizePendingApproval(raw: unknown, fallbackId?: string): PendingApproval | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const checkpointId = typeof obj.checkpointId === 'string' ? obj.checkpointId : fallbackId
+  const reason = typeof obj.reason === 'string' ? obj.reason : undefined
+  const requestedBy = typeof obj.requestedBy === 'string' ? obj.requestedBy : undefined
+  if (!checkpointId || !reason || !requestedBy) return null
+
+  const requiredRolesRaw = Array.isArray(obj.requiredRoles) ? obj.requiredRoles : []
+  const evidenceRefsRaw = Array.isArray(obj.evidenceRefs) ? obj.evidenceRefs : []
+
+  const pending: PendingApproval = {
+    checkpointId,
+    reason,
+    requestedBy,
+    requestedAt: typeof obj.requestedAt === 'string' ? obj.requestedAt : undefined,
+    requiredRoles: requiredRolesRaw.filter((role): role is PendingApproval['requiredRoles'][number] => typeof role === 'string'),
+    evidenceRefs: evidenceRefsRaw.filter((ref): ref is string => typeof ref === 'string'),
+    advisory: typeof obj.advisory === 'object' && obj.advisory !== null ? (obj.advisory as PendingApproval['advisory']) : undefined,
+    status: ((): PendingApproval['status'] => {
+      const status = obj.status
+      return status === 'approved' || status === 'rejected' ? status : 'waiting'
+    })(),
+    decidedBy: typeof obj.decidedBy === 'string' ? obj.decidedBy : undefined,
+    decidedAt: typeof obj.decidedAt === 'string' ? obj.decidedAt : undefined,
+    decisionNotes: typeof obj.decisionNotes === 'string' ? obj.decisionNotes : undefined,
+  }
+
+  return pending
+}
+
+async function refreshApprovalsForThread(force = false) {
+  if (!threadId.value) return
+  if (!force && approvalsLoadedForThread.value === threadId.value) return
+  try {
+    const list = await listPendingApprovals(threadId.value)
+    setPendingApprovals(list)
+    approvalsLoadedForThread.value = threadId.value
+  } catch (err) {
+    console.warn('[Sandbox] Failed to load approvals', err)
+  }
+}
+
 function resetRun() {
   chatText.value = ''
   frames.value = []
   correlationId.value = undefined
   phase.value = undefined
+  threadId.value = undefined
   backlog.busy = false
   backlog.retryAfter = 0
   backlog.pending = 0
   backlog.limit = 0
   errorMsg.value = null
   plan.value = null
+  resetApprovals()
 }
 
 async function startRun() {
@@ -181,14 +324,50 @@ async function startRun() {
       }
 
       switch (evt.type) {
+        case 'start': {
+          const data = evt.data as Record<string, unknown> | undefined
+          const tid = typeof data?.threadId === 'string' ? data.threadId : undefined
+          if (tid) {
+            threadId.value = tid
+            approvalsLoadedForThread.value = null
+            void refreshApprovalsForThread(true)
+          }
+          break
+        }
         case 'delta':
           if (evt.message) chatText.value += evt.message
           break
         case 'message':
+          if (evt.message === 'approval_decision') {
+            const data = evt.data as Record<string, unknown> | undefined
+            const checkpointId = typeof data?.checkpointId === 'string' ? data.checkpointId : undefined
+            if (checkpointId) {
+              applyDecisionPatch({
+                checkpointId,
+                status: data?.status === 'rejected' ? 'rejected' : 'approved',
+                decidedBy: typeof data?.decidedBy === 'string' ? data.decidedBy : undefined,
+                decisionNotes: typeof data?.decisionNotes === 'string' ? data.decisionNotes : undefined,
+                decidedAt: typeof data?.decidedAt === 'string' ? data.decidedAt : undefined,
+              })
+              approvalError.value = null
+              void refreshApprovalsForThread(true)
+            }
+            break
+          }
           if (evt.message) chatText.value = evt.message
           break
         case 'phase':
           phase.value = evt.phase
+          if (evt.phase === 'approval') {
+            const raw = evt.data as Record<string, unknown> | undefined
+            const checkpointId = typeof raw?.checkpointId === 'string' ? raw.checkpointId : undefined
+            const pending = normalizePendingApproval((raw as any)?.pending ?? raw, checkpointId)
+            if (pending) {
+              pending.status = 'waiting'
+              upsertPendingApproval(pending)
+              approvalError.value = null
+            }
+          }
           break
         case 'plan_update': {
           try {
@@ -232,6 +411,51 @@ async function startRun() {
 function stopRun() {
   abortController?.abort()
   running.value = false
+}
+
+async function submitApprovalDecision(decision: 'approved' | 'rejected') {
+  if (approvalBusy.value) return
+  const current = waitingApproval.value
+  if (!current) return
+
+  approvalBusy.value = true
+  approvalError.value = null
+
+  const decidedBy = approvalReviewer.value.trim() || undefined
+  const notes = approvalNotes.value.trim() || undefined
+
+  const snapshot: PendingApproval = {
+    ...current,
+    requiredRoles: [...(current.requiredRoles || [])],
+    evidenceRefs: [...(current.evidenceRefs || [])],
+    advisory: current.advisory ? { ...current.advisory } : undefined,
+  }
+
+  const optimistic: PendingApproval = {
+    ...snapshot,
+    status: decision,
+    decidedBy,
+    decisionNotes: notes,
+    decidedAt: new Date().toISOString(),
+  }
+  upsertPendingApproval(optimistic)
+
+  try {
+    await postApprovalDecision({
+      checkpointId: current.checkpointId,
+      decision,
+      decidedBy,
+      notes,
+    })
+    approvalNotes.value = ''
+    approvalError.value = null
+    void refreshApprovalsForThread(true)
+  } catch (err) {
+    upsertPendingApproval(snapshot)
+    approvalError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    approvalBusy.value = false
+  }
 }
 
 async function parseSse(
@@ -300,6 +524,18 @@ function clearAll() {
 function copyCid() {
   if (!correlationId.value) return
   navigator.clipboard?.writeText(correlationId.value).catch(() => {})
+}
+
+function formatTimestamp(value?: string | null) {
+  if (!value) return ''
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+}
+
+function approvalStatusColor(status: PendingApproval['status']) {
+  if (status === 'approved') return 'success'
+  if (status === 'rejected') return 'error'
+  return 'warning'
 }
 onMounted(loadAgents)
 onBeforeUnmount(() => abortController?.abort())
@@ -502,6 +738,65 @@ const groupedFrames = computed(() => {
 
               <v-col cols="12" v-if="errorMsg">
                 <v-alert type="error" :text="errorMsg" variant="tonal" border="start" density="comfortable" />
+              </v-col>
+
+              <v-col cols="12" v-if="waitingApproval">
+                <ApprovalCheckpointBanner
+                  :pending="waitingApproval"
+                  v-model:notes="approvalNotes"
+                  v-model:reviewer="approvalReviewer"
+                  :busy="approvalBusy"
+                  :error="approvalError"
+                  @approve="submitApprovalDecision('approved')"
+                  @reject="submitApprovalDecision('rejected')"
+                />
+              </v-col>
+
+              <v-col cols="12" v-if="approvalHistory.length">
+                <v-card variant="outlined">
+                  <v-card-title class="d-flex align-center">
+                    <v-icon icon="mdi-account-check-outline" class="me-2" />
+                    Approval history
+                  </v-card-title>
+                  <v-divider />
+                  <v-card-text>
+                    <div
+                      v-for="(item, idx) in approvalHistory"
+                      :key="`${item.checkpointId}-${idx}`"
+                      class="mb-3"
+                    >
+                      <div class="d-flex align-center mb-1">
+                        <v-chip size="x-small" :color="approvalStatusColor(item.status)" variant="flat">
+                          {{ item.status }}
+                        </v-chip>
+                        <span class="text-caption text-medium-emphasis ms-2">{{ item.checkpointId }}</span>
+                        <span
+                          v-if="item.decidedAt"
+                          class="text-caption text-medium-emphasis ms-2"
+                        >
+                          {{ formatTimestamp(item.decidedAt) }}
+                        </span>
+                      </div>
+                      <div class="text-body-2">{{ item.reason }}</div>
+                      <div class="text-caption text-medium-emphasis" v-if="item.requestedBy">
+                        Requested by {{ item.requestedBy }}
+                      </div>
+                      <div class="text-caption text-medium-emphasis" v-if="item.decidedBy">
+                        Reviewer: {{ item.decidedBy }}
+                      </div>
+                      <div class="text-body-2 mt-1" v-if="item.decisionNotes">
+                        <strong>Notes:</strong> {{ item.decisionNotes }}
+                      </div>
+                      <div class="text-caption text-medium-emphasis mt-1" v-if="item.requiredRoles?.length">
+                        Roles: {{ item.requiredRoles.join(', ') }}
+                      </div>
+                      <div class="text-caption text-medium-emphasis mt-1" v-if="item.evidenceRefs?.length">
+                        Evidence: {{ item.evidenceRefs.join(', ') }}
+                      </div>
+                      <v-divider v-if="idx < approvalHistory.length - 1" class="my-3" />
+                    </div>
+                  </v-card-text>
+                </v-card>
               </v-col>
             </v-row>
           </v-card-text>

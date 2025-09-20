@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality } from '@awesomeposter/shared'
+import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality, PendingApproval } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
+import { AGENTS_BASE_URL, AGENTS_AUTH } from '@/lib/agents-api'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
 
@@ -31,9 +32,6 @@ const isOpen = computed({
   set: (v: boolean) => emit('update:modelValue', v)
 })
 
-const AGENTS_BASE_URL = import.meta.env.VITE_AGENTS_BASE_URL || 'http://localhost:3002'
-const AGENTS_AUTH = import.meta.env.VITE_AGENTS_AUTH_BEARER || undefined
-
 // Run state
 const running = ref(false)
 const frames = ref<Array<{ id?: string; type: AgentEvent['type']; data: AgentEventWithId; t: number }>>([])
@@ -57,6 +55,8 @@ type AppResultView = {
   ['quality-report']?: unknown
 }
 const appResult = ref<AppResultView | null>(null)
+
+type ApprovalTrailItem = PendingApproval & { startedAt?: number; decidedAt?: number }
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
@@ -389,7 +389,133 @@ function stringify(v: unknown) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
 
+function normalizePendingFromFrame(raw: unknown, fallbackId?: string): PendingApproval | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const checkpointId = typeof obj.checkpointId === 'string' ? obj.checkpointId : fallbackId
+  const reason = typeof obj.reason === 'string' ? obj.reason : undefined
+  const requestedBy = typeof obj.requestedBy === 'string' ? obj.requestedBy : undefined
+  if (!checkpointId || !reason || !requestedBy) return null
+
+  const requiredRoles = Array.isArray(obj.requiredRoles)
+    ? (obj.requiredRoles.filter((role): role is PendingApproval['requiredRoles'][number] => typeof role === 'string'))
+    : []
+  const evidenceRefs = Array.isArray(obj.evidenceRefs)
+    ? obj.evidenceRefs.filter((ref): ref is string => typeof ref === 'string')
+    : []
+
+  const pending: PendingApproval = {
+    checkpointId,
+    reason,
+    requestedBy,
+    requestedAt: typeof obj.requestedAt === 'string' ? obj.requestedAt : undefined,
+    requiredRoles,
+    evidenceRefs,
+    advisory: typeof obj.advisory === 'object' && obj.advisory !== null ? (obj.advisory as PendingApproval['advisory']) : undefined,
+    status: ((): PendingApproval['status'] => {
+      const status = obj.status
+      return status === 'approved' || status === 'rejected' ? status : 'waiting'
+    })(),
+    decidedBy: typeof obj.decidedBy === 'string' ? obj.decidedBy : undefined,
+    decidedAt: typeof obj.decidedAt === 'string' ? obj.decidedAt : undefined,
+    decisionNotes: typeof obj.decisionNotes === 'string' ? obj.decisionNotes : undefined,
+  }
+
+  return pending
+}
+
+function approvalStatusColor(status: PendingApproval['status']) {
+  if (status === 'approved') return 'success'
+  if (status === 'rejected') return 'error'
+  return 'warning'
+}
+
+function formatTimestamp(value?: string | number | null) {
+  if (value === null || value === undefined) return ''
+  const date = typeof value === 'number' ? new Date(value) : new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+}
+
 //
+
+const approvalTrail = computed<ApprovalTrailItem[]>(() => {
+  const map = new Map<string, { entry: PendingApproval; startedAt?: number; decidedAt?: number }>()
+
+  frames.value.forEach((frame) => {
+    const evt = frame.data
+    if (evt.type === 'phase' && evt.phase === 'approval') {
+      const raw = evt.data as Record<string, unknown> | undefined
+      const checkpointId = typeof raw?.checkpointId === 'string' ? raw.checkpointId : undefined
+      const pending = normalizePendingFromFrame((raw as any)?.pending ?? raw, checkpointId)
+      if (pending) {
+        const prev = map.get(pending.checkpointId)
+        const merged: PendingApproval = {
+          ...(prev?.entry || pending),
+          ...pending,
+          requiredRoles: [...pending.requiredRoles],
+          evidenceRefs: [...pending.evidenceRefs],
+          advisory: pending.advisory ?? prev?.entry.advisory,
+          status: pending.status ?? prev?.entry.status ?? 'waiting',
+        }
+        map.set(pending.checkpointId, {
+          entry: merged,
+          startedAt: prev?.startedAt ?? frame.t,
+          decidedAt: prev?.decidedAt,
+        })
+      }
+    } else if (evt.type === 'message' && evt.message === 'approval_decision') {
+      const data = evt.data as Record<string, unknown> | undefined
+      const checkpointId = typeof data?.checkpointId === 'string' ? data.checkpointId : undefined
+      if (!checkpointId) return
+      const prev = map.get(checkpointId)
+      const status: PendingApproval['status'] = data?.status === 'rejected' ? 'rejected' : 'approved'
+      const decidedBy = typeof data?.decidedBy === 'string' ? data.decidedBy : prev?.entry.decidedBy
+      const decisionNotes = typeof data?.decisionNotes === 'string' ? data.decisionNotes : prev?.entry.decisionNotes
+      const decidedAt = typeof data?.decidedAt === 'string' ? data.decidedAt : prev?.entry.decidedAt
+      const reason = prev?.entry.reason || (typeof data?.reason === 'string' ? data.reason : 'Approval required')
+      const requestedBy = prev?.entry.requestedBy || 'orchestrator'
+      const requestedAt = prev?.entry.requestedAt
+      const requiredRoles = prev?.entry.requiredRoles ? [...prev.entry.requiredRoles] : []
+      const evidenceRefs = prev?.entry.evidenceRefs ? [...prev.entry.evidenceRefs] : []
+      const advisory = prev?.entry.advisory
+
+      const entry: PendingApproval = {
+        checkpointId,
+        reason,
+        requestedBy,
+        requestedAt,
+        requiredRoles,
+        evidenceRefs,
+        advisory,
+        status,
+        decidedBy,
+        decisionNotes,
+        decidedAt: decidedAt || new Date(frame.t).toISOString(),
+      }
+
+      map.set(checkpointId, {
+        entry,
+        startedAt: prev?.startedAt,
+        decidedAt: frame.t,
+      })
+    }
+  })
+
+  return Array.from(map.values())
+    .map(({ entry, startedAt, decidedAt }) => ({
+      ...entry,
+      requiredRoles: [...(entry.requiredRoles || [])],
+      evidenceRefs: [...(entry.evidenceRefs || [])],
+      advisory: entry.advisory ? { ...entry.advisory } : undefined,
+      startedAt,
+      decidedAt,
+    }))
+    .sort((a, b) => {
+      const aT = a.startedAt ?? (a.decidedAt ? Date.parse(a.decidedAt) : 0)
+      const bT = b.startedAt ?? (b.decidedAt ? Date.parse(b.decidedAt) : 0)
+      return aT - bT
+    })
+})
 
 const timelinePanels = computed(() => {
   const out: Array<{ id?: string; type: AgentEvent['type'] | 'data'; data: AgentEventWithId; t: number }> = []
@@ -536,6 +662,44 @@ function planStepNote(step: PlanStep) {
                     <span class="plan-status-dot" :style="{ backgroundColor: planStatusColor(s.status) }" />
                     <span class="plan-step-text text-body-2">{{ planStepNote(s) }}</span>
                   </div>
+                </div>
+              </v-card-text>
+            </v-card>
+
+            <v-card v-if="approvalTrail.length" class="mb-3">
+              <v-card-title class="d-flex align-center">
+                <v-icon icon="mdi-account-check-outline" class="me-2" />
+                Approvals
+              </v-card-title>
+              <v-divider />
+              <v-card-text>
+                <div v-for="(item, idx) in approvalTrail" :key="`${item.checkpointId}-${idx}`" class="mb-3">
+                  <div class="d-flex align-center mb-1">
+                    <v-chip size="x-small" :color="approvalStatusColor(item.status)" variant="flat">
+                      {{ item.status }}
+                    </v-chip>
+                    <span class="text-caption text-medium-emphasis ms-2">{{ item.checkpointId }}</span>
+                    <span v-if="item.decidedAt" class="text-caption text-medium-emphasis ms-2">
+                      {{ formatTimestamp(item.decidedAt) }}
+                    </span>
+                  </div>
+                  <div class="text-body-2">{{ item.reason }}</div>
+                  <div class="text-caption text-medium-emphasis" v-if="item.requestedBy">
+                    Requested by {{ item.requestedBy }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis" v-if="item.decidedBy">
+                    Reviewer: {{ item.decidedBy }}
+                  </div>
+                  <div class="text-body-2 mt-1" v-if="item.decisionNotes">
+                    <strong>Notes:</strong> {{ item.decisionNotes }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-1" v-if="item.requiredRoles?.length">
+                    Roles: {{ item.requiredRoles.join(', ') }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-1" v-if="item.evidenceRefs?.length">
+                    Evidence: {{ item.evidenceRefs.join(', ') }}
+                  </div>
+                  <v-divider v-if="idx < approvalTrail.length - 1" class="my-3" />
                 </div>
               </v-card-text>
             </v-card>
