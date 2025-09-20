@@ -51,10 +51,11 @@ M2 — Orchestrator Policy Engine (1.5 days)
   - 🔜 Broaden integration coverage for resume after restart once durable store lands.
 
 M3 — Persistence Adapter (1 day)
-- 🟡 In progress (started 2025-02-16).
+- ✅ Completed (2025-02-16).
 - ✅ Create persistence abstraction `ApprovalStore` with methods `getPending`, `saveDecision`, `listByThread`.
-- Back `ApprovalStore` with existing persistence layer (initially same in-memory store; later Postgres/Redis) under feature flag `ENABLE_HITL_APPROVALS`.
+- ✅ Back `ApprovalStore` with existing persistence layer (initially same in-memory store; later Postgres/Redis) under feature flag `ENABLE_HITL_APPROVALS`.
 - ✅ Ensure run resume uses store to restore waiting state.
+- ✅ Add Postgres-backed durable store behind `ENABLE_HITL_APPROVALS_DURABLE` with graceful fallback.
 
 M4 — Approval API Surface (1 day)
 - ✅ Completed (2025-02-16).

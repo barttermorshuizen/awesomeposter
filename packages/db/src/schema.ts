@@ -156,6 +156,18 @@ export const postTelemetry = pgTable('post_telemetry', {
   capturedAt: timestamp('captured_at', { withTimezone: true }).defaultNow()
 })
 
+export const approvalCheckpoints = pgTable('approval_checkpoints', {
+  checkpointId: text('checkpoint_id').primaryKey(),
+  threadId: text('thread_id').notNull(),
+  payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().notNull(),
+  status: text('status').$type<'waiting' | 'approved' | 'rejected'>().notNull(),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow(),
+  decidedBy: text('decided_by'),
+  decisionNotes: text('decision_notes'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+})
+
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey(),
   clientId: uuid('client_id'),
@@ -166,5 +178,3 @@ export const tasks = pgTable('tasks', {
   payloadJson: jsonb('payload_json').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 })
-
-
