@@ -314,6 +314,18 @@ describe('human-in-the-loop advisory integration', () => {
       evidenceRefs: ['qa.brandRisk']
     }
 
+    const pendingEntry = {
+      checkpointId,
+      reason: advisory.reason,
+      requestedBy: 'QA Specialist',
+      requestedAt: new Date().toISOString(),
+      requiredRoles: [],
+      evidenceRefs: advisory.evidenceRefs || [],
+      advisory,
+      status: 'waiting',
+      threadId
+    }
+
     RESUME_STORE.set(threadId, {
       plan: {
         version: 1,
@@ -324,20 +336,9 @@ describe('human-in-the-loop advisory integration', () => {
       },
       history: [],
       runReport: { steps: [] },
+      pendingApprovals: [pendingEntry],
       updatedAt: Date.now()
     } as any)
-
-    approvalStore.create({
-      checkpointId,
-      reason: advisory.reason,
-      requestedBy: 'QA Specialist',
-      requestedAt: new Date().toISOString(),
-      requiredRoles: [],
-      evidenceRefs: advisory.evidenceRefs || [],
-      advisory,
-      status: 'waiting',
-      threadId
-    })
 
     const [{ OrchestratorAgent }, { AgentRuntime }] = await Promise.all([
       import('../src/services/orchestrator-agent'),

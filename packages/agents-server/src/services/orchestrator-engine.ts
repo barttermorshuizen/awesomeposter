@@ -17,7 +17,6 @@ import { getApprovalStore } from './approval-store';
 type SpecialistId = 'strategy' | 'generation' | 'qa';
 
 const RESUME_STORE = new Map<string, { plan: Plan; history: any[]; runReport?: RunReport; updatedAt: number }>();
-const approvalStore = getApprovalStore();
 
 function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' | 'approval.wait' } | undefined {
   const s = String(value || '').toLowerCase().trim();
@@ -282,6 +281,7 @@ export async function runOrchestratorEngine(
   const stepResults: StepResult[] = [];
   const approvalsEnabled = process.env.ENABLE_HITL_APPROVALS === 'true';
   const hitlPolicy = resolveHitlPolicy(req);
+  const approvalStore = getApprovalStore();
   let approvalFeedback: { notes?: string; decidedBy?: string } | null = null;
 
   const artifacts: {
@@ -666,6 +666,17 @@ export async function runOrchestratorEngine(
       if (snap?.plan) {
         plan.version = snap.plan.version || 0;
         plan.steps = Array.isArray(snap.plan.steps) ? [...snap.plan.steps] : [];
+      }
+      if (approvalsEnabled && Array.isArray((snap as any).pendingApprovals)) {
+        for (const entry of (snap as any).pendingApprovals as any[]) {
+          if (!entry || typeof entry !== 'object') continue;
+          const checkpointId = (entry as any).checkpointId;
+          if (typeof checkpointId !== 'string' || checkpointId.length === 0) continue;
+          approvalStore.create({
+            ...(entry as any),
+            threadId: (entry as any).threadId || resumeKey,
+          });
+        }
       }
       if (Array.isArray(snap?.runReport?.steps)) stepResults.push(...(snap!.runReport!.steps as StepResult[]));
       else if (Array.isArray(snap?.history)) stepResults.push(...(snap!.history as any[]));

@@ -51,9 +51,10 @@ M2 — Orchestrator Policy Engine (1.5 days)
   - 🔜 Broaden integration coverage for resume after restart once durable store lands.
 
 M3 — Persistence Adapter (1 day)
-- Create persistence abstraction `ApprovalStore` with methods `getPending`, `saveDecision`, `listByThread`.
+- 🟡 In progress (started 2025-02-16).
+- ✅ Create persistence abstraction `ApprovalStore` with methods `getPending`, `saveDecision`, `listByThread`.
 - Back `ApprovalStore` with existing persistence layer (initially same in-memory store; later Postgres/Redis) under feature flag `ENABLE_HITL_APPROVALS`.
-- Ensure run resume uses store to restore waiting state.
+- ✅ Ensure run resume uses store to restore waiting state.
 
 M4 — Approval API Surface (1 day)
 - Add Nitro route `POST /api/v1/orchestrator/approval` with validation and auth (reuse session middleware).
