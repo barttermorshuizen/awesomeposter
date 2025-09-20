@@ -280,9 +280,9 @@ export async function runOrchestratorEngine(
 
   // Aggregate step results for consolidation (RunReport)
   const stepResults: StepResult[] = [];
-
   const approvalsEnabled = process.env.ENABLE_HITL_APPROVALS === 'true';
   const hitlPolicy = resolveHitlPolicy(req);
+  let approvalFeedback: { notes?: string; decidedBy?: string } | null = null;
 
   const artifacts: {
     strategy?: { rationale?: string; writerBrief?: any; knobs?: any; rawText?: string };
@@ -303,7 +303,7 @@ export async function runOrchestratorEngine(
           history: [...stepResults],
           runReport: { steps: [...stepResults] } as RunReport,
           updatedAt: Date.now(),
-          pendingApprovals: approvalsEnabled ? approvalStore.listByThread(resumeKey) : undefined,
+          pendingApprovals: approvalsEnabled && resumeKey ? approvalStore.listByThread(resumeKey) : undefined,
         };
         RESUME_STORE.set(resumeKey, snapshot as any);
       } catch {}
@@ -321,6 +321,23 @@ export async function runOrchestratorEngine(
     return step;
   };
 
+  const movePendingFinalizeToTail = () => {
+    const pendingFinals = plan.steps.filter((s) => s.action === 'finalize' && s.status !== 'done');
+    const lastIsFinal = plan.steps.length > 0 && plan.steps[plan.steps.length - 1].action === 'finalize';
+    if (pendingFinals.length > 0 && !lastIsFinal) {
+      const removeIds = pendingFinals.map((s) => s.id);
+      const newFinal = {
+        id: `auto_finalize_${plan.version + 1}`,
+        action: 'finalize' as const,
+        status: 'pending' as PlanStepStatus,
+        note: 'Final review',
+      };
+      const patch = { stepsRemove: removeIds, stepsAdd: [newFinal] };
+      applyPlanPatch(plan, patch);
+      emitPlanUpdate(patch);
+    }
+  };
+
   const setStepStatusById = (id: string, status: PlanStepStatus, note?: string) => {
     const step = plan.steps.find((s) => s.id === id);
     if (!step) return;
@@ -336,6 +353,8 @@ export async function runOrchestratorEngine(
       const qaRec = (artifacts.qa?.result as any)?.contentRecommendations;
       if (Array.isArray(qaRec) && qaRec.length > 0) payload.contentRecommendations = qaRec;
       if (typeof artifacts.generation?.draftText === 'string' && artifacts.generation!.draftText!.trim().length > 0) payload.previousDraft = artifacts.generation!.draftText;
+      if (approvalFeedback?.notes) payload.reviewerNotes = approvalFeedback.notes;
+      if (approvalFeedback?.decidedBy) payload.reviewerDecisionBy = approvalFeedback.decidedBy;
       return payload;
     }
     if (capabilityId === 'qa') {
@@ -345,8 +364,9 @@ export async function runOrchestratorEngine(
   };
 
   const queueApprovalHold = ({ advisory, stepId: originStepId, capabilityId: originCapability, threadId, requestedBy }: { advisory: ApprovalAdvisory; stepId: string; capabilityId: SpecialistId; threadId: string; requestedBy: string }) => {
-    const existingWaiting = approvalStore.listByThread(threadId).some((entry) => entry.status === 'waiting');
-    if (existingWaiting) return;
+    if (!approvalsEnabled) return undefined;
+    const existing = plan.steps.find((s) => s.action === 'approval.wait' && s.status !== 'done');
+    if (existing) return existing.id;
     const checkpointId = `approval_${originStepId}_${Math.random().toString(36).slice(2, 8)}`;
     const pending: PendingApproval = {
       checkpointId,
@@ -359,11 +379,46 @@ export async function runOrchestratorEngine(
       status: 'waiting',
     };
     approvalStore.create({ ...pending, threadId });
-    const approvalStep = { id: checkpointId, action: 'approval.wait' as const, status: 'pending' as PlanStepStatus, note: defaultNoteForStep({ action: 'approval.wait' as any }) };
+    const approvalStep = {
+      id: checkpointId,
+      action: 'approval.wait' as const,
+      status: 'pending' as PlanStepStatus,
+      note: defaultNoteForStep({ action: 'approval.wait' as any }),
+    };
     applyPlanPatch(plan, { stepsAdd: [approvalStep] });
     emitPlanUpdate({ stepsAdd: [approvalStep] });
+    movePendingFinalizeToTail();
     try {
       onEvent({ type: 'message', message: 'pending_approval', data: { checkpointId, advisory, originStepId, capabilityId: originCapability }, correlationId: cid });
+    } catch {}
+    return checkpointId;
+  };
+
+  const enqueueReplanAfterRejection = (decision: { decidedBy?: string; decisionNotes?: string }) => {
+    const seed = `${plan.version}_${plan.steps.length}`;
+    const genStep = {
+      id: `approval_rework_generation_${seed}`,
+      capabilityId: 'generation' as const,
+      status: 'pending' as PlanStepStatus,
+      note: 'Revise content (approval)',
+    };
+    const qaStep = {
+      id: `approval_rework_qa_${seed}`,
+      capabilityId: 'qa' as const,
+      status: 'pending' as PlanStepStatus,
+      note: 'QA recheck (approval)',
+    };
+    const patch = { stepsAdd: [genStep, qaStep] };
+    applyPlanPatch(plan, patch);
+    emitPlanUpdate(patch);
+    movePendingFinalizeToTail();
+    try {
+      onEvent({
+        type: 'message',
+        message: 'approval_replan',
+        data: { decidedBy: decision.decidedBy, decisionNotes: decision.decisionNotes },
+        correlationId: cid,
+      });
     } catch {}
   };
 
@@ -448,6 +503,7 @@ export async function runOrchestratorEngine(
       try { const parsed = JSON.parse(text); artifacts.strategy = { rawText: text, rationale: parsed.rationale, writerBrief: parsed.writerBrief, knobs: parsed.knobs ?? parsed.writerBrief?.knobs }; } catch {}
     } else if (sid === 'generation') {
       artifacts.generation = { rawText: text, draftText: text };
+      approvalFeedback = null;
     } else if (sid === 'qa') {
       artifacts.qa = { rawText: text };
       try {
@@ -485,7 +541,7 @@ export async function runOrchestratorEngine(
       });
       onEvent({ type: 'metrics', durationMs, correlationId: cid });
 
-      if (approvalsEnabled && resumeKey && approvalAdvisory) {
+      if (approvalAdvisory && resumeKey) {
         queueApprovalHold({
           advisory: approvalAdvisory,
           stepId: id,
@@ -494,6 +550,7 @@ export async function runOrchestratorEngine(
           requestedBy: registry[sid]?.name || sid,
         });
       }
+
     } catch {}
   };
 
@@ -597,16 +654,7 @@ export async function runOrchestratorEngine(
       applyPlanPatch(plan, patch);
       emitPlanUpdate(patch);
 
-      // Reposition finalize to end: remove existing pending finalize step(s) and add a new one at the tail
-      const finals = plan.steps.filter(s => s.action === 'finalize' && s.status !== 'done');
-      const lastIsFinal = plan.steps.length > 0 && plan.steps[plan.steps.length - 1].action === 'finalize';
-      if (finals.length > 0 && !lastIsFinal) {
-        const removeIds = finals.map(s => s.id);
-        const newFinal = { id: `auto_finalize_${plan.version + 1}`, action: 'finalize' as const, status: 'pending' as PlanStepStatus, note: 'Final review' };
-        const rePatch = { stepsRemove: removeIds, stepsAdd: [newFinal] };
-        applyPlanPatch(plan, rePatch);
-        emitPlanUpdate(rePatch);
-      }
+      movePendingFinalizeToTail();
     }
     ensureFinalizeStep();
   };
@@ -635,7 +683,7 @@ export async function runOrchestratorEngine(
   }
 
   let state: 'plan' | 'step' | 'replan' | 'final' | 'approval_wait' = 'plan';
-  let approvalHold: { checkpointId: string; note?: string } | null = null;
+  let approvalHold: { checkpointId: string } | null = null;
   let finalizeStepId: string | undefined = undefined;
   let finished = false;
   const getNextPendingStep = () => {
@@ -671,10 +719,10 @@ export async function runOrchestratorEngine(
         break;
       } else if ((next as any).action === 'approval.wait') {
         setStepStatusById(next.id, 'in_progress');
-        approvalHold = { checkpointId: next.id, note: next.note };
+        approvalHold = { checkpointId: next.id };
         const pending = approvalStore.get(next.id);
         onEvent({ type: 'phase', phase: 'approval' as any, message: pending?.reason || 'Awaiting approval', data: { checkpointId: next.id, pending }, correlationId: cid });
-        state = 'approval_wait' as any;
+        state = 'approval_wait';
         try {
           const decision = await approvalStore.waitForDecision(next.id);
           onEvent({ type: 'message', message: 'approval_decision', data: { checkpointId: next.id, status: decision.status, decidedBy: decision.decidedBy, decisionNotes: decision.decisionNotes }, correlationId: cid });
@@ -682,7 +730,8 @@ export async function runOrchestratorEngine(
           setStepStatusById(next.id, 'done', note);
           approvalHold = null;
           if (decision.status === 'rejected') {
-            throw new Error(`Approval rejected by ${decision.decidedBy || 'reviewer'}`);
+            approvalFeedback = { notes: decision.decisionNotes, decidedBy: decision.decidedBy };
+            enqueueReplanAfterRejection(decision);
           }
         } catch (err: any) {
           if (approvalHold) {
@@ -775,7 +824,14 @@ export async function runOrchestratorEngine(
   if (resumeKey) {
     try {
       const existing = RESUME_STORE.get(resumeKey) || ({} as any);
-      RESUME_STORE.set(resumeKey, { ...existing, plan: JSON.parse(JSON.stringify(plan)), history: [...stepResults], runReport, pendingApprovals: approvalsEnabled ? approvalStore.listByThread(resumeKey) : undefined, updatedAt: Date.now() } as any);
+      RESUME_STORE.set(resumeKey, {
+        ...existing,
+        plan: JSON.parse(JSON.stringify(plan)),
+        history: [...stepResults],
+        runReport,
+        pendingApprovals: approvalsEnabled ? approvalStore.listByThread(resumeKey) : undefined,
+        updatedAt: Date.now(),
+      } as any);
     } catch {}
   }
   onEvent({ type: 'metrics', data: runReport.summary, correlationId: cid });

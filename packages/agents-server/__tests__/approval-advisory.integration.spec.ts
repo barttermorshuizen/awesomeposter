@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { getApprovalStore } from '../src/services/approval-store'
+import { RESUME_STORE } from '../src/services/orchestrator-engine'
 
 const responseRegistry = vi.hoisted(() => new Map<string, (prompt: string, opts?: { stream?: boolean }) => { finalOutput?: string; streamChunks?: string[] }>)
 
@@ -216,18 +217,40 @@ describe('human-in-the-loop advisory integration', () => {
         })
       }))
 
-      __setAgentResponse('Content Generator', () => ({
-        finalOutput: 'IPO Hook\n\nOur IPO guarantees 100% returns for every investor. {{CTA}}'
-      }))
+      let generationCall = 0
+      const generationPrompts: string[] = []
+      __setAgentResponse('Content Generator', (prompt: string) => {
+        generationPrompts.push(prompt)
+        generationCall += 1
+        if (generationCall === 1) {
+          return { finalOutput: 'IPO Hook\n\nOur IPO guarantees 100% returns for every investor. {{CTA}}' }
+        }
+        expect(prompt).toMatch(/reviewerNotes/)
+        return { finalOutput: 'Updated post with compliant messaging.' }
+      })
 
-      __setAgentResponse('Quality Assurance', () => ({
-        finalOutput: JSON.stringify({
-          compliance: false,
-          brandRisk: 0.6,
-          composite: 0.62,
-          contentRecommendations: ['Needs legal review before publishing']
-        })
-      }))
+      let qaCall = 0
+      __setAgentResponse('Quality Assurance', () => {
+        qaCall += 1
+        if (qaCall === 1) {
+          return {
+            finalOutput: JSON.stringify({
+              compliance: false,
+              brandRisk: 0.6,
+              composite: 0.62,
+              contentRecommendations: ['Needs legal review before publishing']
+            })
+          }
+        }
+        return {
+          finalOutput: JSON.stringify({
+            compliance: true,
+            brandRisk: 0.1,
+            composite: 0.85,
+            contentRecommendations: []
+          })
+        }
+      })
 
       const orch = new OrchestratorAgent(runtime)
       const events: any[] = []
@@ -242,7 +265,6 @@ describe('human-in-the-loop advisory integration', () => {
 
       const runPromise = orch.run(req as any, (e) => events.push(e), 'cid_wait')
 
-      // Allow orchestrator to enqueue the approval wait step
       await new Promise((resolve) => setTimeout(resolve, 5))
 
       const pending = approvalStore.listByThread('thread_hitl_wait')
@@ -252,17 +274,102 @@ describe('human-in-the-loop advisory integration', () => {
       const sawApprovalPhase = events.some((e) => e?.type === 'phase' && e?.phase === 'approval')
       expect(sawApprovalPhase).toBe(true)
 
-      approvalStore.resolve(checkpointId, { status: 'approved', decidedBy: 'qa_lead', decisionNotes: 'Ship it' })
+      approvalStore.resolve(checkpointId, { status: 'rejected', decidedBy: 'qa_lead', decisionNotes: 'Remove absolute guarantees.' })
 
       const { final } = await runPromise
-      expect(final).toBeTruthy()
+
+      expect(generationPrompts.length).toBeGreaterThanOrEqual(2)
+      expect(generationPrompts[generationPrompts.length - 1]).toMatch(/reviewerNotes/)
+      expect(final?.result?.content).toBe('Updated post with compliant messaging.')
 
       const decisionEvent = events.find((e) => e?.type === 'message' && e?.message === 'approval_decision')
-      expect(decisionEvent?.data?.status).toBe('approved')
+      expect(decisionEvent?.data?.status).toBe('rejected')
       expect(decisionEvent?.data?.checkpointId).toBe(checkpointId)
+
+      const replanPatch = events
+        .filter((e) => e?.type === 'plan_update')
+        .some((evt) => {
+          const add = evt?.data?.patch?.stepsAdd as any[] | undefined
+          return Array.isArray(add) && add.some((step) => step?.capabilityId === 'generation' && /approval/i.test(String(step?.note || '')))
+        })
+      expect(replanPatch).toBe(true)
+
+
     } finally {
       process.env.ENABLE_HITL_APPROVALS = originalFlag
       approvalStore.clear()
     }
   })
+
+  it('resumes a pending approval checkpoint from snapshot', async () => {
+    const originalFlag = process.env.ENABLE_HITL_APPROVALS
+    process.env.ENABLE_HITL_APPROVALS = 'true'
+
+    const threadId = 'resume_thread'
+    const checkpointId = 'approval_resume'
+
+    const advisory = {
+      severity: 'warn' as const,
+      reason: 'Manual approval required',
+      evidenceRefs: ['qa.brandRisk']
+    }
+
+    RESUME_STORE.set(threadId, {
+      plan: {
+        version: 1,
+        steps: [
+          { id: checkpointId, action: 'approval.wait' as any, status: 'pending', note: 'Await human approval' },
+          { id: 'auto_finalize_1', action: 'finalize' as any, status: 'pending', note: 'Final review' }
+        ]
+      },
+      history: [],
+      runReport: { steps: [] },
+      updatedAt: Date.now()
+    } as any)
+
+    approvalStore.create({
+      checkpointId,
+      reason: advisory.reason,
+      requestedBy: 'QA Specialist',
+      requestedAt: new Date().toISOString(),
+      requiredRoles: [],
+      evidenceRefs: advisory.evidenceRefs || [],
+      advisory,
+      status: 'waiting',
+      threadId
+    })
+
+    const [{ OrchestratorAgent }, { AgentRuntime }] = await Promise.all([
+      import('../src/services/orchestrator-agent'),
+      import('../src/services/agent-runtime')
+    ])
+
+    const orch = new OrchestratorAgent(new AgentRuntime())
+    const events: any[] = []
+
+    const runPromise = orch.run({
+      mode: 'app',
+      objective: 'Resume approval checkpoint',
+      threadId,
+      options: { toolsAllowlist: [] }
+    } as any, (e) => events.push(e), 'cid_resume')
+
+    setTimeout(() => {
+      approvalStore.resolve(checkpointId, { status: 'approved', decidedBy: 'qa_lead', decisionNotes: 'All good' })
+    }, 5)
+
+    const { final } = await runPromise
+
+    expect(events.some((e) => e?.type === 'phase' && e?.phase === 'approval')).toBe(true)
+    const decisionEvent = events.find((e) => e?.type === 'message' && e?.message === 'approval_decision')
+    expect(decisionEvent?.data?.status).toBe('approved')
+    expect(decisionEvent?.data?.checkpointId).toBe(checkpointId)
+    expect(approvalStore.listByThread(threadId)[0]?.status).toBe('approved')
+    expect(final).toBeTruthy()
+
+    approvalStore.clear()
+    RESUME_STORE.delete(threadId)
+    process.env.ENABLE_HITL_APPROVALS = originalFlag
+  })
+
 })

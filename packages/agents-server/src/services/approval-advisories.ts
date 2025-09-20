@@ -23,12 +23,14 @@ export type QaPolicy = {
   brandRiskThreshold?: number
   compositeThreshold?: number
   escalateRecommendationKeywords?: string[]
+  rejectionBehavior?: 'replan' | 'finalize'
 }
 
 export type HitlPolicy = {
   strategy?: StrategyPolicy
   content?: ContentPolicy
   qa?: QaPolicy
+  rejectionBehavior?: 'replan' | 'finalize'
 }
 
 type AdvisoryIssue = {
@@ -85,8 +87,10 @@ const DEFAULT_POLICY: Required<HitlPolicy> = {
     convertComplianceFailure: true,
     brandRiskThreshold: 0.25,
     compositeThreshold: 0.75,
-    escalateRecommendationKeywords: ['legal review', 'manual approval', 'policy exception', 'compliance review', 'escalate']
-  }
+    escalateRecommendationKeywords: ['legal review', 'manual approval', 'policy exception', 'compliance review', 'escalate'],
+    rejectionBehavior: 'replan'
+  },
+  rejectionBehavior: 'replan'
 }
 
 function cloneDefaultPolicy(): HitlPolicy {
@@ -222,12 +226,14 @@ export function resolveHitlPolicy(req: AgentRunRequest): HitlPolicy {
     if (statePolicy.strategy) resolved.strategy = deepMergePolicy(resolved.strategy, statePolicy.strategy)
     if (statePolicy.content) resolved.content = deepMergePolicy(resolved.content, statePolicy.content)
     if (statePolicy.qa) resolved.qa = deepMergePolicy(resolved.qa, statePolicy.qa)
+    if (statePolicy.rejectionBehavior) resolved.rejectionBehavior = statePolicy.rejectionBehavior as any
   }
   const optionPolicy = pickPolicySource((req.options as any) || {})
   if (optionPolicy) {
     if (optionPolicy.strategy) resolved.strategy = deepMergePolicy(resolved.strategy, optionPolicy.strategy)
     if (optionPolicy.content) resolved.content = deepMergePolicy(resolved.content, optionPolicy.content)
     if (optionPolicy.qa) resolved.qa = deepMergePolicy(resolved.qa, optionPolicy.qa)
+    if (optionPolicy.rejectionBehavior) resolved.rejectionBehavior = optionPolicy.rejectionBehavior as any
   }
   return resolved
 }

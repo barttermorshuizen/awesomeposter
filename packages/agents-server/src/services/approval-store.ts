@@ -13,8 +13,8 @@ type DecisionUpdate = {
 type Waiter = (entry: PendingEntry) => void
 
 /**
- * In-memory approval store used during early HITL rollout.
- * TODO: replace with external persistence (M3) when feature flag graduates.
+ * Temporary in-memory approval store used while M2/M3 iterate.
+ * TODO (M3): replace with durable persistence behind feature flag.
  */
 class InMemoryApprovalStore {
   private entries = new Map<string, PendingEntry>()
@@ -24,18 +24,17 @@ class InMemoryApprovalStore {
   create(entry: PendingEntry) {
     this.entries.set(entry.checkpointId, entry)
     if (entry.threadId) {
-      const existing = this.threadIndex.get(entry.threadId) || new Set<string>()
-      existing.add(entry.checkpointId)
-      this.threadIndex.set(entry.threadId, existing)
+      const set = this.threadIndex.get(entry.threadId) ?? new Set<string>()
+      set.add(entry.checkpointId)
+      this.threadIndex.set(entry.threadId, set)
     }
-    this.resolveWaiters(entry.checkpointId, entry)
   }
 
   get(checkpointId: string) {
     return this.entries.get(checkpointId)
   }
 
-  listByThread(threadId: string): PendingEntry[] {
+  listByThread(threadId: string) {
     const ids = this.threadIndex.get(threadId)
     if (!ids) return []
     return Array.from(ids)
@@ -43,15 +42,15 @@ class InMemoryApprovalStore {
       .filter((entry): entry is PendingEntry => !!entry)
   }
 
-  async waitForDecision(checkpointId: string): Promise<PendingEntry> {
-    const current = this.entries.get(checkpointId)
-    if (current && current.status !== 'waiting') {
-      return current
+  waitForDecision(checkpointId: string): Promise<PendingEntry> {
+    const existing = this.entries.get(checkpointId)
+    if (existing && existing.status !== 'waiting') {
+      return Promise.resolve(existing)
     }
-    return await new Promise<PendingEntry>((resolve) => {
-      const list = this.waiters.get(checkpointId) || []
-      list.push(resolve)
-      this.waiters.set(checkpointId, list)
+    return new Promise<PendingEntry>((resolve) => {
+      const waiters = this.waiters.get(checkpointId) ?? []
+      waiters.push(resolve)
+      this.waiters.set(checkpointId, waiters)
     })
   }
 
@@ -59,16 +58,16 @@ class InMemoryApprovalStore {
     const existing = this.entries.get(checkpointId)
     if (!existing) return undefined
     const decidedAt = new Date().toISOString()
-    const updated: PendingEntry = {
+    const next: PendingEntry = {
       ...existing,
       status: update.status,
       decidedBy: update.decidedBy ?? existing.decidedBy,
       decisionNotes: update.decisionNotes ?? existing.decisionNotes,
       decidedAt,
     }
-    this.entries.set(checkpointId, updated)
-    this.resolveWaiters(checkpointId, updated)
-    return updated
+    this.entries.set(checkpointId, next)
+    this.flushWaiters(checkpointId, next)
+    return next
   }
 
   clear() {
@@ -77,16 +76,16 @@ class InMemoryApprovalStore {
     this.waiters.clear()
   }
 
-  private resolveWaiters(checkpointId: string, entry: PendingEntry) {
+  private flushWaiters(checkpointId: string, entry: PendingEntry) {
     if (entry.status === 'waiting') return
     const waiters = this.waiters.get(checkpointId)
-    if (!waiters || waiters.length === 0) return
+    if (!waiters?.length) return
     this.waiters.delete(checkpointId)
     for (const waiter of waiters) {
       try {
         waiter(entry)
       } catch {
-        // ignore waiter errors
+        // ignore waiter failures
       }
     }
   }
@@ -98,4 +97,4 @@ export function getApprovalStore() {
   return approvalStore
 }
 
-export type { PendingEntry }
+export type { PendingEntry, DecisionUpdate }

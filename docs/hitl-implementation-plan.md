@@ -39,17 +39,16 @@ M1 — Specialist Advisory Support (1 day)
 - Add guardrails so advisories never block the specialist from returning control.
 
 M2 — Orchestrator Policy Engine (1.5 days)
-- 🚧 In progress (next up).
+- ✅ Completed (2025-02-16).
 - Implement approval policy evaluator in `orchestrator-engine.ts` that inspects `StepResult` and global policy.
 - Introduce plan step type `approval.wait` and plan patch logic.
 - Persist `pendingApprovals` to in-memory store prototype; add TODO for external store gating behind feature flag.
 - Emit SSE `phase=approval` and `message` frames when waiting.
 - Unit tests: verify plan patching, dedupe, resume behavior with mocked store.
 - Implementation notes / TODOs:
-  - Consume `StepResult.approvalAdvisory` to enqueue `pendingApprovals` keyed by `checkpointId` (use plan step id + version).
-  - Gate new behavior behind `ENABLE_HITL_APPROVALS` env toggle while M2 is in flight.
-  - Update orchestrator resume path to restore waiting approvals from in-memory store stub.
-  - Cover with vitest integration exercising advisory-triggered pause/resume via mock decision callback.
+  - ✅ Step results inject `approval.wait` checkpoints & persist to in-memory approval store behind `ENABLE_HITL_APPROVALS`.
+  - ✅ Rejection decisions trigger deterministic replan with reviewer notes enqueued for Strategy/Content.
+  - 🔜 Broaden integration coverage for resume after restart once durable store lands.
 
 M3 — Persistence Adapter (1 day)
 - Create persistence abstraction `ApprovalStore` with methods `getPending`, `saveDecision`, `listByThread`.
