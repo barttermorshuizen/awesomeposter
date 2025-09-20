@@ -65,24 +65,30 @@ M4 — Approval API Surface (1 day)
 - Integration tests hitting the new endpoint with mock store.
 
 M5 — UI Enhancements (1.5 days)
-- Sandbox view: show waiting banner, evidence list, approve/reject buttons.
-- AgentResultsPopup/CreatePostPopup: display approval trail (decision, reviewer, notes).
-- Add API client helpers in `src/lib/api.ts` (or equivalent) and handle optimistic UI updates.
-- End-to-end smoke test (Cypress/Vitest component) verifying UI renders approval state.
+- ✅ Completed (2025-02-18). `SandboxView.vue` renders the waiting banner, evidence list, and approval form via
+  `ApprovalCheckpointBanner.vue`, including optimistic decision handling and history view.
+- ✅ Completed (2025-02-18). `AgentResultsPopup.vue` mirrors pending and resolved approvals so reviewers see the
+  checkpoint trail alongside the plan and timeline.
+- ✅ Completed (2025-02-18). API helpers (`src/lib/agents-api.ts`) expose `listPendingApprovals` and
+  `postApprovalDecision` with optimistic UI fallbacks.
+- 🔜 Add an automated end-to-end/UI smoke test that exercises the approval banner and decision buttons (manual
+  verification only so far).
 
 M6 — Resume & Failure Paths (0.5 day)
-- Ensure orchestrator resumes automatically when approval is granted; handles rejection by replanning or finalizing with failure (policy-configurable).
-- Add tests for approval rejection leading to replanning with reviewer notes appended to next step payload.
+- ✅ Completed (2025-02-18). Orchestrator resumes automatically after approval decisions and applies rejection
+  behaviors (`replan` vs `finalize`) per `hitlPolicy`, emitting SSE updates for downstream clients.
+- ✅ Completed (2025-02-18). Integration coverage in
+  `packages/agents-server/__tests__/approval-advisory.integration.spec.ts` asserts replanning, forced finalize, and
+  resume-from-snapshot flows.
 
 M7 — Observability & Metrics (0.5 day)
-- Log structured approval events (request/decision) with correlationId.
-- Add metrics counters (e.g., `approvals_requested_total`, `approvals_rejected_total`, `approval_wait_duration_ms`).
-- Update monitoring dashboards/documentation as needed.
+- 🚧 Not started. Structured logs exist via SSE events, but dedicated metrics counters and dashboard updates remain
+  TODO.
 
 M8 — Hardening & Feature Flag Rollout (0.5 day)
-- Wrap all behavior behind `ENABLE_HITL_APPROVALS`.
-- Backfill migration notes in `docs/migration_notes.md`.
-- Conduct load test for concurrent approvals.
+- ✅ Completed (2025-02-18). Feature flags `ENABLE_HITL_APPROVALS` and `ENABLE_HITL_APPROVALS_DURABLE` gate the
+  orchestrator policy and persistence adapters.
+- 🔜 Update `docs/migration_notes.md` with approval rollout steps and schedule load testing before GA.
 
 Acceptance Criteria
 - Orchestrator emits `plan_update` and `phase=approval` when policy triggers, and stays idle until decision arrives.
