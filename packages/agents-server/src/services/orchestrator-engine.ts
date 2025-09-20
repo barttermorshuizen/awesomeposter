@@ -18,6 +18,9 @@ type SpecialistId = 'strategy' | 'generation' | 'qa';
 
 const RESUME_STORE = new Map<string, { plan: Plan; history: any[]; runReport?: RunReport; updatedAt: number }>();
 
+const isSpecialistId = (value: unknown): value is SpecialistId =>
+  value === 'strategy' || value === 'generation' || value === 'qa';
+
 function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' | 'approval.wait' } | undefined {
   const s = String(value || '').toLowerCase().trim();
   if (!s) return undefined;
@@ -282,7 +285,29 @@ export async function runOrchestratorEngine(
   const approvalsEnabled = process.env.ENABLE_HITL_APPROVALS === 'true';
   const hitlPolicy = resolveHitlPolicy(req);
   const approvalStore = getApprovalStore();
+  const approvalOrigins = new Map<string, { capabilityId: SpecialistId; originStepId: string }>();
+  const approvalDecisionLog: Array<{
+    checkpointId: string;
+    status: 'approved' | 'rejected';
+    decidedBy?: string;
+    decisionNotes?: string;
+    behavior?: 'replan' | 'finalize';
+    originCapabilityId?: SpecialistId;
+  }> = [];
+  let forcedFailure: {
+    checkpointId: string;
+    decidedBy?: string;
+    decisionNotes?: string;
+    originCapabilityId?: SpecialistId;
+  } | null = null;
   let approvalFeedback: { notes?: string; decidedBy?: string } | null = null;
+
+  const resolveRejectionBehavior = (originCapability?: SpecialistId): 'replan' | 'finalize' => {
+    if (originCapability === 'qa') {
+      return (hitlPolicy.qa?.rejectionBehavior as 'replan' | 'finalize' | undefined) ?? hitlPolicy.rejectionBehavior ?? 'replan';
+    }
+    return hitlPolicy.rejectionBehavior ?? 'replan';
+  };
 
   const artifacts: {
     strategy?: { rationale?: string; writerBrief?: any; knobs?: any; rawText?: string };
@@ -338,6 +363,18 @@ export async function runOrchestratorEngine(
     }
   };
 
+  const skipPendingSpecialistSteps = (note: string) => {
+    const updates: Array<{ id: string; status: PlanStepStatus; note?: string }> = [];
+    for (const step of plan.steps) {
+      if (step.status !== 'pending') continue;
+      if (step.action) continue;
+      step.status = 'skipped';
+      if (note) step.note = note;
+      updates.push({ id: step.id, status: 'skipped', note: step.note });
+    }
+    if (updates.length > 0) emitPlanUpdate({ stepsUpdate: updates });
+  };
+
   const setStepStatusById = (id: string, status: PlanStepStatus, note?: string) => {
     const step = plan.steps.find((s) => s.id === id);
     if (!step) return;
@@ -377,8 +414,11 @@ export async function runOrchestratorEngine(
       evidenceRefs: advisory.evidenceRefs ?? [],
       advisory,
       status: 'waiting',
+      originCapabilityId: originCapability,
+      originStepId: originStepId,
     };
     approvalStore.create({ ...pending, threadId });
+    approvalOrigins.set(checkpointId, { capabilityId: originCapability, originStepId });
     const approvalStep = {
       id: checkpointId,
       action: 'approval.wait' as const,
@@ -676,6 +716,13 @@ export async function runOrchestratorEngine(
             ...(entry as any),
             threadId: (entry as any).threadId || resumeKey,
           });
+          const origin = (entry as any).originCapabilityId;
+          if (isSpecialistId(origin)) {
+            approvalOrigins.set(checkpointId, {
+              capabilityId: origin,
+              originStepId: typeof (entry as any).originStepId === 'string' ? (entry as any).originStepId : checkpointId,
+            });
+          }
         }
       }
       if (Array.isArray(snap?.runReport?.steps)) stepResults.push(...(snap!.runReport!.steps as StepResult[]));
@@ -732,17 +779,82 @@ export async function runOrchestratorEngine(
         setStepStatusById(next.id, 'in_progress');
         approvalHold = { checkpointId: next.id };
         const pending = approvalStore.get(next.id);
+        let origin = approvalOrigins.get(next.id);
+        if ((!origin || !origin.capabilityId) && pending?.originCapabilityId && isSpecialistId(pending.originCapabilityId)) {
+          origin = {
+            capabilityId: pending.originCapabilityId,
+            originStepId: pending.originStepId || next.id,
+          };
+          approvalOrigins.set(next.id, origin);
+        }
         onEvent({ type: 'phase', phase: 'approval' as any, message: pending?.reason || 'Awaiting approval', data: { checkpointId: next.id, pending }, correlationId: cid });
         state = 'approval_wait';
         try {
           const decision = await approvalStore.waitForDecision(next.id);
-          onEvent({ type: 'message', message: 'approval_decision', data: { checkpointId: next.id, status: decision.status, decidedBy: decision.decidedBy, decisionNotes: decision.decisionNotes }, correlationId: cid });
+          const originCapabilityId = isSpecialistId((decision as any).originCapabilityId)
+            ? ((decision as any).originCapabilityId as SpecialistId)
+            : origin?.capabilityId;
+          if ((!origin || !origin.capabilityId) && originCapabilityId) {
+            origin = {
+              capabilityId: originCapabilityId,
+              originStepId: typeof (decision as any).originStepId === 'string' ? (decision as any).originStepId : next.id,
+            };
+            approvalOrigins.set(next.id, origin);
+          }
+          const decisionBehavior = decision.status === 'rejected' ? resolveRejectionBehavior(origin?.capabilityId) : undefined;
+          onEvent({
+            type: 'message',
+            message: 'approval_decision',
+            data: {
+              checkpointId: next.id,
+              status: decision.status,
+              decidedBy: decision.decidedBy,
+              decisionNotes: decision.decisionNotes,
+              behavior: decisionBehavior,
+              originCapabilityId: origin?.capabilityId,
+            },
+            correlationId: cid,
+          });
           const note = decision.status === 'approved' ? 'Approved' : 'Rejected';
           setStepStatusById(next.id, 'done', note);
           approvalHold = null;
+          approvalOrigins.delete(next.id);
+          approvalDecisionLog.push({
+            checkpointId: next.id,
+            status: decision.status === 'rejected' ? 'rejected' : 'approved',
+            decidedBy: decision.decidedBy,
+            decisionNotes: decision.decisionNotes,
+            behavior: decisionBehavior,
+            originCapabilityId: origin?.capabilityId,
+          });
           if (decision.status === 'rejected') {
-            approvalFeedback = { notes: decision.decisionNotes, decidedBy: decision.decidedBy };
-            enqueueReplanAfterRejection(decision);
+            const behavior = decisionBehavior ?? 'replan';
+            if (behavior === 'replan') {
+              approvalFeedback = { notes: decision.decisionNotes, decidedBy: decision.decidedBy };
+              enqueueReplanAfterRejection(decision);
+            } else {
+              forcedFailure = {
+                checkpointId: next.id,
+                decidedBy: decision.decidedBy,
+                decisionNotes: decision.decisionNotes,
+                originCapabilityId: origin?.capabilityId,
+              };
+              approvalFeedback = null;
+              skipPendingSpecialistSteps('Skipped after rejection');
+              try {
+                onEvent({
+                  type: 'warning',
+                  message: 'approval_rejected_finalized',
+                  data: {
+                    checkpointId: next.id,
+                    decidedBy: decision.decidedBy,
+                    decisionNotes: decision.decisionNotes,
+                    behavior,
+                  },
+                  correlationId: cid,
+                });
+              } catch {}
+            }
           }
         } catch (err: any) {
           if (approvalHold) {
@@ -797,6 +909,36 @@ export async function runOrchestratorEngine(
       }
     : { score: undefined, issues: undefined, pass: undefined, metrics: undefined };
 
+  const latestApprovedDecision = (() => {
+    for (let i = approvalDecisionLog.length - 1; i >= 0; i -= 1) {
+      const entry = approvalDecisionLog[i];
+      if (entry.status === 'approved') return entry;
+    }
+    return undefined;
+  })();
+
+  if (forcedFailure) {
+    resultObj.content = '';
+    resultObj.failureStatus = 'approval_rejected';
+    if (forcedFailure.decisionNotes) resultObj.failureReason = forcedFailure.decisionNotes;
+    resultObj.reviewerDecision = {
+      status: 'rejected',
+      decidedBy: forcedFailure.decidedBy,
+      decisionNotes: forcedFailure.decisionNotes,
+      checkpointId: forcedFailure.checkpointId,
+      originCapabilityId: forcedFailure.originCapabilityId,
+    };
+    quality.pass = false;
+  } else if (latestApprovedDecision) {
+    resultObj.reviewerDecision = {
+      status: 'approved',
+      decidedBy: latestApprovedDecision.decidedBy,
+      decisionNotes: latestApprovedDecision.decisionNotes,
+      checkpointId: latestApprovedDecision.checkpointId,
+      originCapabilityId: latestApprovedDecision.originCapabilityId,
+    };
+  }
+
   // Emit warnings and construct acceptance-report with explicit criteria
   const criteria: Array<{ criterion: string; passed: boolean; details?: string }> = [];
   if (!hasContent) {
@@ -810,6 +952,17 @@ export async function runOrchestratorEngine(
     criteria.push({ criterion: 'qa_performed', passed: false, details: 'No QA specialist output available.' });
   } else {
     criteria.push({ criterion: 'qa_performed', passed: true });
+  }
+  if (forcedFailure) {
+    const decidedByText = forcedFailure.decidedBy ? ` by ${forcedFailure.decidedBy}` : '';
+    const detailParts = [`Approval rejected${decidedByText}.`];
+    if (forcedFailure.decisionNotes) detailParts.push(forcedFailure.decisionNotes);
+    criteria.push({ criterion: 'approval_status', passed: false, details: detailParts.join(' ').trim() || undefined });
+  } else if (latestApprovedDecision) {
+    const decidedByText = latestApprovedDecision.decidedBy ? ` by ${latestApprovedDecision.decidedBy}` : '';
+    const detailParts = [`Approval granted${decidedByText}.`];
+    if (latestApprovedDecision.decisionNotes) detailParts.push(latestApprovedDecision.decisionNotes);
+    criteria.push({ criterion: 'approval_status', passed: true, details: detailParts.join(' ').trim() || undefined });
   }
   const overall = criteria.every((c) => c.passed);
   const acceptanceReport = { overall, criteria };
