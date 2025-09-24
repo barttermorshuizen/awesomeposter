@@ -1,9 +1,33 @@
 import { AgentRunRequestSchema } from '@awesomeposter/shared'
 import { createSse } from '../../../../src/utils/sse'
 import { withSseConcurrency, sseSemaphore, isBacklogFull, backlogSnapshot } from '../../../../src/utils/concurrency'
-import { setHeader } from 'h3'
+import { setHeader, getMethod, getHeader, sendNoContent } from 'h3'
 
 export default defineEventHandler(async (event) => {
+  const method = getMethod(event)
+
+  if (method === 'OPTIONS') {
+    const origin = getHeader(event, 'origin')
+    if (origin) {
+      setHeader(event, 'Vary', 'Origin')
+      setHeader(event, 'Access-Control-Allow-Origin', origin)
+    }
+    setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    setHeader(event, 'Access-Control-Allow-Headers', getHeader(event, 'access-control-request-headers') || 'content-type,accept,authorization,x-correlation-id')
+    setHeader(event, 'Access-Control-Max-Age', '600')
+    return sendNoContent(event, 204)
+  }
+
+  const origin = getHeader(event, 'origin')
+  if (origin) {
+    setHeader(event, 'Vary', 'Origin')
+    setHeader(event, 'Access-Control-Allow-Origin', origin)
+    setHeader(event, 'Access-Control-Allow-Credentials', 'true')
+  }
+  setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  setHeader(event, 'Access-Control-Allow-Headers', 'content-type,accept,authorization,x-correlation-id')
+  setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
+
   const body = (event as any).context?.body ?? (await readBody(event))
   const req = AgentRunRequestSchema.parse(body)
   // Forward-compat: merge original options to preserve unknown future fields (e.g., targetAgentId)
@@ -15,16 +39,6 @@ export default defineEventHandler(async (event) => {
       const { genCorrelationId } = await import('../../../../src/services/logger')
       finalReq.threadId = genCorrelationId()
     }
-  } catch {}
-
-  // Route-level CORS for browsers (complements global middleware, ensures SSE responses carry CORS header)
-  try {
-    const origin = getHeader(event, 'origin') || '*'
-    setHeader(event, 'Vary', 'Origin')
-    setHeader(event, 'Access-Control-Allow-Origin', origin)
-    // Allow commonly used headers
-    setHeader(event, 'Access-Control-Allow-Headers', 'content-type,authorization,x-correlation-id')
-    setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   } catch {}
 
   if (req.mode === 'chat') {

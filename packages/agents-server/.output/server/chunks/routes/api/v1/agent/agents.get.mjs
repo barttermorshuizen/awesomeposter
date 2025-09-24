@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/agent/agents.get');import { d as defineEventHandler, g as getHeader, a as setHeader } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, g as getHeader, a as setHeader } from '../../../../nitro/nitro.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -22,5 +22,5 @@ const agents_get = defineEventHandler((event) => {
   };
 });
 
-export { agents_get as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/agent/agents.get');
+export { agents_get as default };
 //# sourceMappingURL=agents.get.mjs.map

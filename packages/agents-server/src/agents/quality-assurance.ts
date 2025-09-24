@@ -1,5 +1,6 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
+import { HITL_TOOL_NAME } from '../tools/hitl'
 
 export class QualityAssuranceAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -7,7 +8,8 @@ export class QualityAssuranceAgent {
 
 // Agents SDK configuration for the QA specialist
 export const QA_TOOLS = [
-  'qa_evaluate_content'
+  'qa_evaluate_content',
+  HITL_TOOL_NAME
 ] as const
 
 export const QA_INSTRUCTIONS = [

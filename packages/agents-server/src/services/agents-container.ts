@@ -6,6 +6,7 @@ import { registerIOTools } from '../tools/io'
 import { registerStrategyTools } from '../tools/strategy'
 import { registerContentTools } from '../tools/content'
 import { registerQaTools } from '../tools/qa'
+import { registerHitlTools } from '../tools/hitl'
 import { createStrategyAgent } from '../agents/strategy-manager'
 import { createContentAgent } from '../agents/content-generator'
 import { createQaAgent } from '../agents/quality-assurance'
@@ -24,6 +25,7 @@ export function getAgents(): Agents {
   const runtime = new AgentRuntime()
   // Register core IO tools on first initialization
   registerIOTools(runtime)
+  registerHitlTools(runtime)
   registerStrategyTools(runtime)
   registerContentTools(runtime)
   registerQaTools(runtime)

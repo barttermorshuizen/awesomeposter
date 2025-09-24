@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/health.get');import { d as defineEventHandler } from '../../../nitro/nitro.mjs';
+import { d as defineEventHandler } from '../../../nitro/nitro.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -40,5 +40,5 @@ const health_get = defineEventHandler(async () => {
   };
 });
 
-export { health_get as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/health.get');
+export { health_get as default };
 //# sourceMappingURL=health.get.mjs.map

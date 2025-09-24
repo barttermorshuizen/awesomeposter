@@ -1,21 +1,136 @@
-globalThis.__timing__.logStart('Load chunks/_/agents-container');import { ZodObject, z } from 'zod';
+import { z, ZodObject } from 'zod';
 import { tool, Runner, Agent } from '@openai/agents';
+import { g as getDefaultModelName } from './model.mjs';
+import { getLogger, genCorrelationId } from './logger.mjs';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { a as PlanStepStatusEnum } from './agent-run.mjs';
 import { g as getDb, b as briefs, c as clients, a as assets, d as getClientProfileByClientId } from './index.mjs';
 import { eq } from 'drizzle-orm';
 
-const DEFAULT_MODEL_FALLBACK = "gpt-4o";
-function getDefaultModelName() {
-  const m = process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || DEFAULT_MODEL_FALLBACK;
-  return m.trim();
+const scoringWeights = {
+  readability: 0.35,
+  objectiveFit: 0.35,
+  clarity: 0.2,
+  brandRisk: -0.2
+  // magnitude used in composite; brand risk is applied inversely (brandSafety = 1 - brandRisk) with an offset to preserve scale
+};
+const agentThresholds = {
+  minCompositeScore: 0.78,
+  maxBrandRisk: 0.2};
+
+const clamp01 = (n) => Math.max(0, Math.min(1, n));
+function computeCompositeScore({ readability, clarity, objectiveFit, brandRisk }, opts) {
+  const r = clamp01(Number(readability != null ? readability : 0));
+  const c = clamp01(Number(clarity != null ? clarity : 0));
+  const o = clamp01(Number(objectiveFit != null ? objectiveFit : 0));
+  const br = clamp01(Number(brandRisk != null ? brandRisk : 0));
+  const base = scoringWeights;
+  let w = base;
+  if ((opts == null ? void 0 : opts.weights) && typeof opts.weights === "object") {
+    w = { ...base, ...opts.weights };
+  } else if (opts == null ? void 0 : opts.platform) {
+    const p = String(opts.platform).toLowerCase();
+    if (p === "linkedin") {
+      w = { ...base, readability: 0.4, clarity: 0.25, objectiveFit: 0.25, brandRisk: -0.2 };
+    } else if (p === "x" || p === "twitter") {
+      w = { ...base, readability: 0.25, clarity: 0.35, objectiveFit: 0.3, brandRisk: -0.2 };
+    } else {
+      w = base;
+    }
+  }
+  const brW = Math.abs(w.brandRisk);
+  const score = r * w.readability + o * w.objectiveFit + c * w.clarity + brW * (1 - br) - brW;
+  return clamp01(score);
 }
 
-var __defProp = Object.defineProperty;
-var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+const HitlUrgencyEnum = z.enum(["low", "normal", "high"]);
+const HitlRequestKindEnum = z.enum(["question", "approval", "choice"]);
+const HitlOriginAgentEnum = z.enum(["strategy", "generation", "qa"]);
+const HitlOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional()
+});
+const HitlRequestPayloadSchema = z.object({
+  question: z.string().min(1),
+  kind: HitlRequestKindEnum.default("question"),
+  options: z.array(HitlOptionSchema).default([]),
+  allowFreeForm: z.boolean().default(false),
+  urgency: HitlUrgencyEnum.default("normal"),
+  additionalContext: z.string().optional()
+});
+const HitlRequestStatusEnum = z.enum(["pending", "resolved", "denied"]);
+const HitlResponseTypeEnum = z.enum(["option", "approval", "rejection", "freeform"]);
+const HitlResponseSchema = z.object({
+  id: z.string(),
+  requestId: z.string(),
+  responseType: HitlResponseTypeEnum,
+  selectedOptionId: z.string().optional(),
+  freeformText: z.string().optional(),
+  approved: z.boolean().optional(),
+  responderId: z.string().optional(),
+  responderDisplayName: z.string().optional(),
+  createdAt: z.coerce.date(),
+  metadata: z.record(z.any()).optional()
+});
+const HitlRequestRecordSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  threadId: z.string().optional(),
+  stepId: z.string().optional(),
+  stepStatusAtRequest: PlanStepStatusEnum.optional(),
+  originAgent: HitlOriginAgentEnum,
+  payload: HitlRequestPayloadSchema,
+  status: HitlRequestStatusEnum.default("pending"),
+  denialReason: z.string().optional(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  metrics: z.object({
+    attempt: z.number().int().nonnegative().optional()
+  }).optional()
+});
+z.object({
+  requests: z.array(HitlRequestRecordSchema).default([]),
+  responses: z.array(HitlResponseSchema).default([]),
+  pendingRequestId: z.string().nullable().optional(),
+  deniedCount: z.number().int().nonnegative().default(0)
+});
+const HitlResponseInputSchema = z.object({
+  requestId: z.string(),
+  responseType: HitlResponseTypeEnum.optional(),
+  selectedOptionId: z.string().optional(),
+  freeformText: z.string().optional(),
+  approved: z.boolean().optional(),
+  responderId: z.string().optional(),
+  responderDisplayName: z.string().optional(),
+  metadata: z.record(z.any()).optional()
+});
+const HitlStateEnvelopeSchema = z.object({
+  responses: z.array(HitlResponseInputSchema).optional()
+});
+
+var __defProp$1 = Object.defineProperty;
+var __defNormalProp$1 = (obj, key, value) => key in obj ? __defProp$1(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField$1 = (obj, key, value) => __defNormalProp$1(obj, typeof key !== "symbol" ? key + "" : key, value);
+function extractResponseText(res) {
+  try {
+    const outputs = res.output || res.outputs || [];
+    for (const o of outputs) {
+      const content = (o == null ? void 0 : o.content) || [];
+      for (const part of content) {
+        if ((part.type === "output_text" || part.type === "text") && typeof part.text === "string") {
+          return part.text;
+        }
+      }
+    }
+  } catch {
+  }
+  return (res == null ? void 0 : res.output_text) || "";
+}
 class AgentRuntime {
   constructor() {
-    __publicField(this, "model", getDefaultModelName());
-    __publicField(this, "tools", []);
+    __publicField$1(this, "model", getDefaultModelName());
+    __publicField$1(this, "tools", []);
     if (!process.env.OPENAI_API_KEY) {
       console.warn("[AgentRuntime] OPENAI_API_KEY not set; SDK calls will fail");
     }
@@ -50,10 +165,31 @@ class AgentRuntime {
         description: t.description,
         parameters: paramsSchema,
         execute: async (input) => {
+          var _a, _b;
           const start = Date.now();
           onEvent == null ? void 0 : onEvent({ type: "tool_call", name: t.name, args: input });
+          let args = input;
+          const schema = t.parameters;
+          if (schema && typeof schema.safeParse === "function") {
+            const parsed = schema.safeParse(input);
+            if (!parsed.success) {
+              const issues = (_b = (_a = parsed.error) == null ? void 0 : _a.issues) == null ? void 0 : _b.map((i) => ({
+                path: i.path,
+                message: i.message,
+                code: i.code
+              }));
+              try {
+                getLogger().warn("tool_invalid_args", { tool: t.name, issues });
+              } catch {
+              }
+              const res = { error: true, code: "INVALID_ARGUMENT", message: "Invalid tool arguments", issues };
+              onEvent == null ? void 0 : onEvent({ type: "tool_result", name: t.name, result: res, durationMs: Date.now() - start });
+              return res;
+            }
+            args = parsed.data;
+          }
           try {
-            const res = await t.handler(input);
+            const res = await t.handler(args);
             onEvent == null ? void 0 : onEvent({ type: "tool_result", name: t.name, result: res, durationMs: Date.now() - start });
             return res;
           } catch (err) {
@@ -79,13 +215,16 @@ class AgentRuntime {
     const { agent, prompt } = this.buildAgentAndPrompt(messages, onEvent, opts);
     const runner = new Runner({ model: this.model });
     const started = Date.now();
-    const stream = await runner.run(agent, prompt, { stream: true });
-    await stream.completed;
-    const result = await stream.finalResult;
+    const result = await runner.run(agent, prompt);
     const durationMs = Date.now() - started;
     const tokens = (((_a = result == null ? void 0 : result.usage) == null ? void 0 : _a.inputTokens) || 0) + (((_b = result == null ? void 0 : result.usage) == null ? void 0 : _b.outputTokens) || 0);
     onEvent == null ? void 0 : onEvent({ type: "metrics", durationMs, tokens: Number.isFinite(tokens) && tokens > 0 ? tokens : void 0 });
-    return { content: typeof (result == null ? void 0 : result.finalOutput) === "string" ? result.finalOutput : JSON.stringify((_c = result == null ? void 0 : result.finalOutput) != null ? _c : "") };
+    const content = typeof (result == null ? void 0 : result.finalOutput) === "string" ? result.finalOutput : extractResponseText(result) || JSON.stringify((_c = result == null ? void 0 : result.finalOutput) != null ? _c : "");
+    return { content };
+  }
+  // Backward-compatible convenience: non-streaming chat that may use tools per policy
+  async runChat(messages, onEvent, opts) {
+    return this.runWithTools(messages, onEvent, opts);
   }
   async runChatStream(messages, onDelta, opts) {
     var _a, _b;
@@ -123,10 +262,36 @@ class AgentRuntime {
         description: t.description,
         parameters: paramsSchema,
         execute: async (input) => {
+          var _a, _b;
           const start = Date.now();
           onEvent == null ? void 0 : onEvent({ type: "tool_call", name: t.name, args: input });
+          let args = input;
+          const schema = t.parameters;
+          if (schema && typeof schema.safeParse === "function") {
+            const parsed = schema.safeParse(input);
+            if (!parsed.success) {
+              const issues = (_b = (_a = parsed.error) == null ? void 0 : _a.issues) == null ? void 0 : _b.map((i) => ({
+                path: i.path,
+                message: i.message,
+                code: i.code
+              }));
+              try {
+                getLogger().warn("tool_invalid_args", { tool: t.name, issues });
+              } catch {
+              }
+              const res = {
+                error: true,
+                code: "INVALID_ARGUMENT",
+                message: "Invalid tool arguments",
+                issues
+              };
+              onEvent == null ? void 0 : onEvent({ type: "tool_result", name: t.name, result: res, durationMs: Date.now() - start });
+              return res;
+            }
+            args = parsed.data;
+          }
           try {
-            const res = await t.handler(input);
+            const res = await t.handler(args);
             onEvent == null ? void 0 : onEvent({ type: "tool_result", name: t.name, result: res, durationMs: Date.now() - start });
             return res;
           } catch (err) {
@@ -150,28 +315,343 @@ class AgentRuntime {
   }
 }
 
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+class InMemoryHitlRepository {
+  constructor() {
+    __publicField(this, "requests", /* @__PURE__ */ new Map());
+    __publicField(this, "responses", /* @__PURE__ */ new Map());
+    __publicField(this, "runSnapshots", /* @__PURE__ */ new Map());
+  }
+  async create(request) {
+    this.requests.set(request.id, request);
+    const state = await this.getRunState(request.runId);
+    const existing = state.requests.filter((r) => r.id !== request.id);
+    const nextState = {
+      ...state,
+      requests: [...existing, request],
+      pendingRequestId: request.status === "pending" ? request.id : state.pendingRequestId,
+      deniedCount: state.deniedCount + (request.status === "denied" ? 1 : 0)
+    };
+    this.runSnapshots.set(request.runId, nextState);
+  }
+  async updateStatus(requestId, status, updates) {
+    var _a;
+    const record = this.requests.get(requestId);
+    if (!record) return;
+    const updated = {
+      ...record,
+      status,
+      denialReason: updates == null ? void 0 : updates.denialReason,
+      updatedAt: /* @__PURE__ */ new Date()
+    };
+    this.requests.set(requestId, updated);
+    const state = await this.getRunState(record.runId);
+    const requests = state.requests.map((req) => req.id === requestId ? updated : req);
+    const deniedCount = requests.filter((req) => req.status === "denied").length;
+    const pendingId = status === "pending" ? requestId : state.pendingRequestId === requestId ? null : (_a = state.pendingRequestId) != null ? _a : null;
+    this.runSnapshots.set(record.runId, { ...state, requests, pendingRequestId: pendingId, deniedCount });
+  }
+  async appendResponse(response) {
+    var _a;
+    const clone = { ...response };
+    const list = this.responses.get(response.requestId) || [];
+    list.push(clone);
+    this.responses.set(response.requestId, list);
+    const req = this.requests.get(response.requestId);
+    if (req) {
+      await this.updateStatus(response.requestId, "resolved");
+      const state = await this.getRunState(req.runId);
+      this.runSnapshots.set(req.runId, {
+        ...state,
+        responses: [...state.responses, clone],
+        pendingRequestId: state.pendingRequestId === req.id ? null : (_a = state.pendingRequestId) != null ? _a : null
+      });
+    }
+  }
+  async getRequestById(requestId) {
+    const record = this.requests.get(requestId);
+    return record ? { ...record } : void 0;
+  }
+  async getRunState(runId) {
+    var _a;
+    const snap = this.runSnapshots.get(runId);
+    if (!snap) {
+      const empty = { requests: [], responses: [], pendingRequestId: null, deniedCount: 0 };
+      this.runSnapshots.set(runId, empty);
+      return empty;
+    }
+    return {
+      requests: snap.requests.map((r) => ({ ...r })),
+      responses: snap.responses.map((r) => ({ ...r })),
+      pendingRequestId: (_a = snap.pendingRequestId) != null ? _a : null,
+      deniedCount: snap.deniedCount
+    };
+  }
+  async setRunState(runId, state) {
+    var _a;
+    this.runSnapshots.set(runId, {
+      requests: state.requests.map((r) => ({ ...r })),
+      responses: state.responses.map((r) => ({ ...r })),
+      pendingRequestId: (_a = state.pendingRequestId) != null ? _a : null,
+      deniedCount: state.deniedCount
+    });
+    for (const req of state.requests) {
+      this.requests.set(req.id, { ...req });
+    }
+    for (const resp of state.responses) {
+      const list = this.responses.get(resp.requestId) || [];
+      list.push({ ...resp });
+      this.responses.set(resp.requestId, list);
+    }
+  }
+}
+let activeRepository = null;
+function getHitlRepository() {
+  if (!activeRepository) {
+    activeRepository = new InMemoryHitlRepository();
+  }
+  return activeRepository;
+}
+
+const storage = new AsyncLocalStorage();
+function withHitlContext(ctx, fn) {
+  return storage.run(ctx, fn);
+}
+function getHitlContext() {
+  return storage.getStore();
+}
+
+const DEFAULT_MAX_REQUESTS = Number.parseInt(process.env.HITL_MAX_REQUESTS || "", 10) || 3;
+class HitlService {
+  constructor(repo = getHitlRepository()) {
+    this.repo = repo;
+  }
+  getMaxRequestsPerRun() {
+    return DEFAULT_MAX_REQUESTS;
+  }
+  async loadRunState(runId) {
+    return this.repo.getRunState(runId);
+  }
+  async persistRunState(runId, state) {
+    await this.repo.setRunState(runId, state);
+  }
+  async raiseRequest(rawPayload) {
+    var _a, _b;
+    const ctx = getHitlContext();
+    if (!ctx) {
+      throw new Error("HITL context unavailable for request");
+    }
+    const payload = HitlRequestPayloadSchema.parse(rawPayload);
+    const originAgent = (_a = ctx.capabilityId) != null ? _a : "strategy";
+    const limitMax = ctx.limit.max;
+    const currentAccepted = ctx.limit.current;
+    const reasonTooMany = "Too many HITL requests";
+    const now = /* @__PURE__ */ new Date();
+    const request = {
+      id: genCorrelationId(),
+      runId: ctx.runId,
+      threadId: ctx.threadId,
+      stepId: ctx.stepId,
+      stepStatusAtRequest: void 0,
+      originAgent,
+      payload,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      metrics: { attempt: currentAccepted + 1 }
+    };
+    if (currentAccepted >= limitMax) {
+      request.status = "denied";
+      request.denialReason = reasonTooMany;
+      await this.repo.create(request);
+      ctx.snapshot = {
+        ...ctx.snapshot,
+        requests: [...ctx.snapshot.requests.filter((r) => r.id !== request.id), request],
+        pendingRequestId: (_b = ctx.snapshot.pendingRequestId) != null ? _b : null,
+        deniedCount: ctx.snapshot.deniedCount + 1
+      };
+      await this.repo.setRunState(ctx.runId, ctx.snapshot);
+      try {
+        getLogger().info("hitl_request_denied", {
+          requestId: request.id,
+          runId: ctx.runId,
+          originAgent,
+          limitMax,
+          limitUsed: currentAccepted,
+          reason: reasonTooMany
+        });
+      } catch {
+      }
+      ctx.onDenied(reasonTooMany, ctx.snapshot);
+      return { status: "denied", reason: reasonTooMany, request };
+    }
+    await this.repo.create(request);
+    ctx.limit.current = currentAccepted + 1;
+    ctx.snapshot = {
+      ...ctx.snapshot,
+      requests: [...ctx.snapshot.requests.filter((r) => r.id !== request.id), request],
+      pendingRequestId: request.id,
+      deniedCount: ctx.snapshot.deniedCount
+    };
+    await this.repo.setRunState(ctx.runId, ctx.snapshot);
+    try {
+      getLogger().info("hitl_request_created", {
+        requestId: request.id,
+        runId: ctx.runId,
+        originAgent,
+        limitUsed: ctx.limit.current,
+        limitMax
+      });
+    } catch {
+    }
+    ctx.onRequest(request, ctx.snapshot);
+    return { status: "pending", request };
+  }
+  async registerDenied(requestId, reason) {
+    await this.repo.updateStatus(requestId, "denied", { denialReason: reason });
+  }
+  async applyResponses(runId, responses) {
+    if (!responses || responses.length === 0) return this.repo.getRunState(runId);
+    const parsed = responses.map((r) => HitlResponseInputSchema.parse(r));
+    for (const response of parsed) {
+      const existing = await this.repo.getRequestById(response.requestId);
+      if (!existing) continue;
+      const record = {
+        id: genCorrelationId(),
+        requestId: response.requestId,
+        responseType: response.responseType || (typeof response.approved === "boolean" ? response.approved ? "approval" : "rejection" : response.selectedOptionId ? "option" : "freeform"),
+        selectedOptionId: response.selectedOptionId,
+        freeformText: response.freeformText,
+        approved: response.approved,
+        responderId: response.responderId,
+        responderDisplayName: response.responderDisplayName,
+        createdAt: /* @__PURE__ */ new Date(),
+        metadata: response.metadata
+      };
+      await this.repo.appendResponse(record);
+      try {
+        getLogger().info("hitl_response_recorded", {
+          requestId: record.requestId,
+          runId,
+          responseType: record.responseType
+        });
+      } catch {
+      }
+    }
+    return this.repo.getRunState(runId);
+  }
+  parseEnvelope(raw) {
+    var _a;
+    if (!raw) return null;
+    const parsed = HitlStateEnvelopeSchema.safeParse(raw);
+    if (!parsed.success) return null;
+    const responses = (_a = parsed.data.responses) != null ? _a : [];
+    return { responses };
+  }
+}
+let singleton = null;
+function getHitlService() {
+  if (!singleton) singleton = new HitlService();
+  return singleton;
+}
+
+const HITL_TOOL_NAME = "hitl_request";
+function registerHitlTools(runtime) {
+  const service = getHitlService();
+  runtime.registerTool({
+    name: HITL_TOOL_NAME,
+    description: "Request human-in-the-loop input (question, approval, or choice).",
+    parameters: HitlRequestPayloadSchema,
+    handler: async (raw) => {
+      const result = await service.raiseRequest(raw);
+      if (result.status === "denied") {
+        return {
+          status: "denied",
+          reason: result.reason,
+          requestId: result.request.id
+        };
+      }
+      return {
+        status: "pending",
+        requestId: result.request.id,
+        originAgent: result.request.originAgent,
+        urgency: result.request.payload.urgency,
+        kind: result.request.payload.kind
+      };
+    }
+  });
+}
+
 class StrategyManagerAgent {
   constructor(runtime) {
     this.runtime = runtime;
   }
 }
 const STRATEGY_TOOLS = [
-  "io_get_brief",
-  "io_list_assets",
-  "io_get_client_profile",
   "strategy_analyze_assets",
-  "strategy_plan_knobs"
+  "strategy_plan_knobs",
+  HITL_TOOL_NAME
 ];
 const STRATEGY_INSTRUCTIONS_APP = [
   "You are the Strategy Manager agent for social content.",
-  "Plan using a 4\u2011knob system: formatType, hookIntensity, expertiseDepth, structure.",
-  "Use available tools to analyze assets and propose knob settings. Respect client policy; never invent assets.",
-  "When asked for a final result in workflow/app mode, produce structured JSON that the caller expects."
+  "Plan using the 4\u2011knob system and enforce strict knob typing.",
+  "Never invent assets or client data. Use tools to analyze assets before choosing a format.",
+  "formatType MUST be achievable with available assets. If a requested format is unachievable, select the closest achievable alternative and explain the tradeoff in rationale.",
+  "",
+  "Knob schema (STRICT):",
+  '- formatType: one of "text" | "single_image" | "multi_image" | "document_pdf" | "video" (must be achievable).',
+  "- hookIntensity: number 0.0\u20131.0 (opening line strength).",
+  "- expertiseDepth: number 0.0\u20131.0 (practitioner\u2011level specificity).",
+  "- structure: { lengthLevel: number 0.0\u20131.0, scanDensity: number 0.0\u20131.0 }.",
+  "",
+  "Use tools:",
+  "- strategy_analyze_assets to determine achievableFormats and recommendations.",
+  "- strategy_plan_knobs to compute a compliant knob configuration given the objective and asset analysis.",
+  "",
+  "Deliverable (APP/WORKFLOW MODE): return ONE JSON object only (no code fences) with fields: rationale, writerBrief (including knob settings), and knobs. Do NOT generate content drafts.",
+  "Align language, tone/voice, hashtags, and cultural context with the client profile and guardrails.",
+  "Output contract (strict JSON, one object only):",
+  "{",
+  '  "rationale": "<short reasoning for the chosen approach and key strategic choices>",',
+  '  "writerBrief": {',
+  '    "clientName": "<exact client/company name>",',
+  '    "objective": "<what the content must achieve>",',
+  '    "audience": "<who we are targeting>",',
+  '    "platform": "<e.g., linkedin | x>",',
+  '    "language": "<e.g., nl | en>",',
+  '    "tone": "<tone/voice guidance>",',
+  '    "angle": "<selected angle>",',
+  '    "hooks": [ "<hook option 1>", "<hook option 2>" ],',
+  '    "cta": "<clear CTA>",',
+  '    "customInstructions": [ "<string>" ],',
+  '    "constraints": { "maxLength?": <number> },',
+  '    "knobs": {',
+  '      "formatType": "text" | "single_image" | "multi_image" | "document_pdf" | "video",',
+  '      "hookIntensity": <number 0.0-1.0>,',
+  '      "expertiseDepth": <number 0.0-1.0>,',
+  '      "structure": { "lengthLevel": <number 0.0-1.0>, "scanDensity": <number 0.0-1.0> }',
+  "    }",
+  "  },",
+  '  "knobs": {',
+  '    "formatType": "text" | "single_image" | "multi_image" | "document_pdf" | "video",',
+  '    "hookIntensity": <number 0.0-1.0>,',
+  '    "expertiseDepth": <number 0.0-1.0>,',
+  '    "structure": { "lengthLevel": <number 0.0-1.0>, "scanDensity": <number 0.0-1.0> }',
+  "  }",
+  "}",
+  "Notes:",
+  "- Use the client/company name from the provided Client Profile (do not invent or translate it).",
+  "- writerBrief.knobs must mirror the top\u2011level knobs exactly.",
+  "- Keep rationale concise (3\u20135 sentences max).",
+  "- Return one JSON object only; do NOT include markdown or code fences."
 ].join("\n");
 const STRATEGY_INSTRUCTIONS_CHAT = [
   "You are the Strategy Manager agent speaking directly with a user.",
-  "Respond conversationally with plain text summaries and recommendations.",
-  "Do NOT return JSON or wrap the answer in code fences."
+  "Respond conversationally with plain\u2011text, actionable recommendations.",
+  "If critical info is missing, ask at most one clarifying question before proposing a safe default.",
+  "Reflect client language, tone/voice, and guardrails when known. Do NOT return JSON or code fences."
 ].join("\n");
 function createStrategyAgent(runtime, onEvent, opts, mode = "app") {
   const tools = runtime.getAgentTools({ allowlist: [...STRATEGY_TOOLS], policy: opts == null ? void 0 : opts.policy, requestAllowlist: opts == null ? void 0 : opts.requestAllowlist }, onEvent);
@@ -186,20 +666,27 @@ class ContentGeneratorAgent {
 }
 const CONTENT_TOOLS = [
   "apply_format_rendering",
-  "optimize_for_platform"
+  "optimize_for_platform",
+  HITL_TOOL_NAME
 ];
 const CONTENT_INSTRUCTIONS_APP = [
   "You are the Content Generator agent.",
-  "Generate multi\u2011platform posts based on the 4\u2011knob configuration and client language.",
+  "Generate or revise a post based on the description of the brief and the guidelines provided in the writer brief.",
+  "A post has the structure: first line is the hook, then a blank line, then the body, then the hashtags (if any).",
+  "Payload contract:",
+  '- "writerBrief" and optional "knobs" describe the target content.',
+  '- If "contentRecommendations" (array of strings) is present, this is a revision task: apply the recommendations with minimal necessary edits.',
+  '- If "previousDraft" is provided, use it as the base and only change what is required to follow the recommendations; otherwise, regenerate while deviating only where needed to satisfy them.',
   "Use tools to apply format\u2011specific rendering and platform optimization while respecting platform rules and client policy.",
-  // Keep structured bias for workflow mode only.
-  "When asked for a final result in workflow/app mode, produce structured JSON that the caller expects."
+  "Output only the final post as plain text (no JSON or code fences)."
 ].join("\n");
 const CONTENT_INSTRUCTIONS_CHAT = [
   "You are the Content Generator agent speaking directly with a user.",
-  "Respond conversationally with the content only.",
-  "Do NOT return JSON, code fences, or wrap the answer in an object.",
-  "When asked to produce a post, return only the post text."
+  "Return plain text only (no JSON/code fences).",
+  "Default to one post unless asked for multiple. If multiple, number variants 1\u2013N separated by blank lines.",
+  "Structure each post: first line hook, blank line, then body.",
+  'If the user provides "contentRecommendations" and/or a previous draft, treat it as a revision: keep the copy intact except changes required to follow the recommendations.',
+  "Use tools to apply format\u2011specific rendering and platform optimization while respecting platform rules and client policy."
 ].join("\n");
 function createContentAgent(runtime, onEvent, opts, mode = "app") {
   const tools = runtime.getAgentTools({ allowlist: [...CONTENT_TOOLS], policy: opts == null ? void 0 : opts.policy, requestAllowlist: opts == null ? void 0 : opts.requestAllowlist }, onEvent);
@@ -213,12 +700,16 @@ class QualityAssuranceAgent {
   }
 }
 const QA_TOOLS = [
-  "qa_evaluate_content"
+  "qa_evaluate_content",
+  HITL_TOOL_NAME
 ];
 const QA_INSTRUCTIONS = [
   "You are the Quality Assurance agent.",
   "Evaluate drafts for readability, clarity, objective fit, brand risk, and compliance.",
-  "Return structured scores and prioritized suggestions as JSON only."
+  "Return one JSON object only (no markdown/code fences).",
+  "Schema (QAReport): { composite?: number(0..1), compliance?: boolean, readability?: number(0..1), clarity?: number(0..1), objectiveFit?: number(0..1), brandRisk?: number(0..1), contentRecommendations?: string[] }",
+  'Normalization: If your analysis or tools produce fields named "suggestedChanges" or "Suggestions", map them to a unified field named "contentRecommendations" as an array of short strings.',
+  'Mapping guidance: for object suggestions, extract the most helpful text (prefer a "suggestion" field; else use "text"). Keep each recommendation concise.'
 ].join("\n");
 function createQaAgent(runtime, onEvent, opts) {
   const tools = runtime.getAgentTools({ allowlist: [...QA_TOOLS], policy: opts == null ? void 0 : opts.policy, requestAllowlist: opts == null ? void 0 : opts.requestAllowlist }, onEvent);
@@ -230,7 +721,7 @@ function registerIOTools(runtime) {
   runtime.registerTool({
     name: "io_get_brief",
     description: "Fetch a brief by id",
-    parameters: z.object({ briefId: z.string() }),
+    parameters: z.object({ briefId: z.string().uuid() }),
     handler: async ({ briefId }) => {
       const [row] = await db.select().from(briefs).where(eq(briefs.id, briefId)).limit(1);
       if (!row) throw new Error("Brief not found");
@@ -241,7 +732,7 @@ function registerIOTools(runtime) {
   runtime.registerTool({
     name: "io_list_assets",
     description: "List assets for a brief",
-    parameters: z.object({ briefId: z.string() }),
+    parameters: z.object({ briefId: z.string().uuid() }),
     handler: async ({ briefId }) => {
       const rows = await db.select().from(assets).where(eq(assets.briefId, briefId));
       return rows;
@@ -250,7 +741,7 @@ function registerIOTools(runtime) {
   runtime.registerTool({
     name: "io_get_client_profile",
     description: "Fetch the client profile for a clientId",
-    parameters: z.object({ clientId: z.string() }),
+    parameters: z.object({ clientId: z.string().uuid() }),
     handler: async ({ clientId }) => {
       const profile = await getClientProfileByClientId(clientId);
       if (!profile) return null;
@@ -540,26 +1031,129 @@ function registerQaTools(runtime) {
     }).strict().catchall(z.never()),
     handler: ({ content, platform, objective, clientPolicy }) => {
       var _a, _b;
-      const length = content.trim().length;
-      const readability = Math.max(0, Math.min(1, 0.9 - Math.max(0, length - 800) / 4e3));
-      const clarity = Math.max(0, Math.min(1, 0.6 + Math.min(0.3, content.split("\n").length / 50)));
-      const objectiveFit = objective && content.toLowerCase().includes((objective || "").toLowerCase()) ? 0.8 : 0.6;
-      const brandRisk = ((_b = (_a = clientPolicy == null ? void 0 : clientPolicy.bannedClaims) == null ? void 0 : _a.some) == null ? void 0 : _b.call(_a, (c) => content.toLowerCase().includes(String(c).toLowerCase()))) ? 0.6 : 0.1;
-      const compliance = brandRisk < 0.5;
+      const text = String(content || "").trim();
+      const lower = text.toLowerCase();
+      const length = text.length;
+      const lines = text.split(/\r?\n/);
+      const words = text.match(/[A-Za-z0-9'’\-]+/g) || [];
+      const wordCount = Math.max(1, words.length);
+      const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+      const sentenceCount = Math.max(1, sentences.length);
+      const avgSentenceLen = wordCount / sentenceCount;
+      const longWordShare = words.filter((w) => w.length >= 7).length / wordCount;
+      const lengthPenalty = length > 1300 ? Math.min(0.3, (length - 1300) / 3e3) : 0;
+      const blockinessPenalty = (() => {
+        const lb = lines.length - 1;
+        const avgPerBlock = length / Math.max(1, lb + 1);
+        return Math.max(0, Math.min(0.1, (avgPerBlock - 220) / 2e3));
+      })();
+      const sentencePenalty = Math.max(0, Math.min(0.4, (avgSentenceLen - 18) / 40));
+      const longWordPenalty = Math.max(0, Math.min(0.3, longWordShare * 0.3 * 10));
+      const readability = Math.max(0, Math.min(1, 0.92 - (sentencePenalty + longWordPenalty + lengthPenalty + blockinessPenalty)));
+      const bulletCount = lines.filter((l) => /^\s*([\-\*•]|\d+\.|\d+\))\s+/.test(l)).length;
+      const posSignals = Math.min(0.15, bulletCount * 0.04) + (length > 0 && length / Math.max(1, lines.length) < 140 ? 0.05 : 0);
+      const capsWords = words.filter((w) => w.length >= 3 && w === w.toUpperCase()).length / wordCount;
+      const capsPenalty = Math.min(0.15, capsWords * 0.4);
+      const punctPenalty = Math.min(0.1, (lower.match(/!{2,}|\?{2,}/g) || []).length * 0.05);
+      const fillerWords = ["very", "really", "just", "actually", "basically", "obviously", "clearly"];
+      const fillerPenalty = Math.min(0.1, fillerWords.reduce((acc, w) => acc + (lower.match(new RegExp(`\\b${w}\\b`, "g")) || []).length, 0) * 0.02);
+      const duplicateLinePenalty = (() => {
+        const seen = /* @__PURE__ */ new Set();
+        for (const l of lines.map((s) => s.trim().toLowerCase()).filter(Boolean)) {
+          if (seen.has(l) && l.length > 8) return 0.05;
+          seen.add(l);
+        }
+        return 0;
+      })();
+      const clarity = Math.max(0, Math.min(1, 0.6 + posSignals - (capsPenalty + punctPenalty + fillerPenalty + duplicateLinePenalty)));
+      const stop = /* @__PURE__ */ new Set(["the", "a", "an", "of", "for", "and", "to", "in", "on", "with", "by", "is", "are", "be", "as", "that", "this", "it", "at", "from"]);
+      const obj = String(objective || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
+      const objTokens = Array.from(new Set(obj.split(/\s+/).filter((t) => t && !stop.has(t))));
+      const contentTokens = new Set(lower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t && !stop.has(t)));
+      const overlap = objTokens.filter((t) => contentTokens.has(t)).length;
+      const coverage = objTokens.length > 0 ? overlap / objTokens.length : 0;
+      const exactPhraseBoost = objTokens.length > 0 && lower.includes(String(objective || "").toLowerCase()) ? 0.05 : 0;
+      const objectiveFit = Math.max(0, Math.min(1, 0.55 + 0.4 * coverage + exactPhraseBoost));
+      const hasPolicyHit = !!((_b = (_a = clientPolicy == null ? void 0 : clientPolicy.bannedClaims) == null ? void 0 : _a.some) == null ? void 0 : _b.call(_a, (c) => lower.includes(String(c || "").toLowerCase())));
+      let brandRisk = hasPolicyHit ? 0.6 : 0.1;
+      const riskyPhrases = [
+        "100%",
+        "guarantee",
+        "guaranteed",
+        "no risk",
+        "get rich",
+        "fastest",
+        "best",
+        "never",
+        "always",
+        "proven",
+        "scientifically proven"
+      ];
+      const regulatedPhrases = [
+        "cure",
+        "diagnose",
+        "treat",
+        "prevent",
+        "investment advice",
+        "financial advice",
+        "returns",
+        "profits",
+        "insider"
+      ];
+      const manipulativePhrases = [
+        "click here",
+        "limited time",
+        "act now",
+        "don't miss",
+        "only today"
+      ];
+      const pctClaims = (lower.match(/\b\d{2,}%\b/g) || []).length;
+      const growthWords = ["increase", "boost", "double", "triple", "explode"];
+      const growthMentions = growthWords.reduce((acc, w) => acc + (lower.match(new RegExp(`\\b${w}\\b`, "g")) || []).length, 0);
+      const catHits = [
+        riskyPhrases.some((p) => lower.includes(p)),
+        regulatedPhrases.some((p) => lower.includes(p)),
+        manipulativePhrases.some((p) => lower.includes(p)),
+        pctClaims > 0 || growthMentions > 0
+      ].filter(Boolean).length;
+      brandRisk = Math.max(0, Math.min(1, brandRisk + (catHits > 0 ? 0.12 : 0) + Math.max(0, catHits - 1) * 0.06 + Math.min(0.1, (pctClaims + growthMentions) * 0.02) + (hasPolicyHit ? 0.15 : 0)));
+      const compliance = brandRisk <= agentThresholds.maxBrandRisk;
+      const firstLine = (text.split(/\r?\n/, 1)[0] || "").trim();
+      const hookLower = firstLine.toLowerCase();
+      let hookStrength = 0.5;
+      if (/\d/.test(firstLine)) hookStrength += 0.15;
+      if (firstLine.includes("?")) hookStrength += 0.1;
+      if (firstLine.includes("!")) hookStrength += 0.05;
+      const imperativeStarters = ["imagine", "consider", "stop", "learn", "meet", "introducing", "announce", "announcing", "discover", "try"];
+      if (imperativeStarters.some((s) => hookLower.startsWith(s))) hookStrength += 0.1;
+      if (firstLine.length < 8 || firstLine.length > 140) hookStrength -= 0.1;
+      if (firstLine === firstLine.toUpperCase() && firstLine.replace(/[^A-Za-z]/g, "").length >= 3) hookStrength -= 0.1;
+      hookStrength = Math.max(0, Math.min(1, hookStrength));
+      const ctaPresence = /(learn more|sign up|follow|comment|share|download|try|register|join us|contact us|get started|read more|dm me|send me a dm)/i.test(text) ? 1 : 0;
+      let composite = computeCompositeScore({ readability, clarity, objectiveFit, brandRisk }, { platform });
+      if (!compliance) composite = Math.min(composite, 0.4);
       const feedback = [];
-      if (length < 80) feedback.push("Content may be too short; consider adding a concrete insight or example.");
-      if (length > 1200) feedback.push("Content may be too long; tighten for scannability.");
-      if (brandRisk >= 0.5) feedback.push("Remove claims that conflict with client policy.");
-      const composite = Math.max(0, Math.min(1, readability * 0.35 + clarity * 0.2 + objectiveFit * 0.35 - brandRisk * 0.2));
+      if (length < 80) feedback.push("Content may be too short; add a concrete insight or example.");
+      if (length > 1200) feedback.push("Content may be too long; tighten for scannability and focus.");
+      if (avgSentenceLen > 22) feedback.push("Shorten long sentences to improve readability.");
+      if (capsWords > 0.08) feedback.push("Avoid ALL\u2011CAPS words; use emphasis sparingly.");
+      if (bulletCount === 0 && length > 600) feedback.push("Add bullets or short paragraphs to improve clarity.");
+      if (!ctaPresence) feedback.push("Add a clear CTA aligned with the objective.");
+      if (hasPolicyHit) feedback.push("Remove or rewrite claims that conflict with client policy.");
+      if (brandRisk > agentThresholds.maxBrandRisk) feedback.push("Reduce brand risk: avoid absolute promises and regulated claims.");
       const revisionPriority = composite > 0.8 && compliance ? "low" : composite > 0.6 ? "medium" : "high";
+      const contentRecommendations = [...feedback];
       return {
         readability,
         clarity,
         objectiveFit,
         brandRisk,
         compliance,
+        hookStrength,
+        ctaPresence,
         feedback: feedback.join(" "),
         suggestedChanges: feedback,
+        contentRecommendations,
         revisionPriority,
         composite
       };
@@ -572,6 +1166,7 @@ function getAgents() {
   if (cached) return cached;
   const runtime = new AgentRuntime();
   registerIOTools(runtime);
+  registerHitlTools(runtime);
   registerStrategyTools(runtime);
   registerContentTools(runtime);
   registerQaTools(runtime);
@@ -583,11 +1178,34 @@ function getAgents() {
   };
   return cached;
 }
+function getCapabilityRegistry() {
+  return [
+    {
+      id: "strategy",
+      name: "Strategy Manager",
+      description: "Plans rationale and writer brief using client profile and assets.",
+      create: createStrategyAgent
+    },
+    {
+      id: "generation",
+      name: "Content Generator",
+      description: "Generates or revises content drafts from a writer brief.",
+      create: createContentAgent
+    },
+    {
+      id: "qa",
+      name: "Quality Assurance",
+      description: "Evaluates drafts for readability, clarity, fit, and compliance.",
+      create: createQaAgent
+    }
+  ];
+}
 
 const agentsContainer = /*#__PURE__*/Object.freeze({
-  __proto__: null,
-  getAgents: getAgents
+    __proto__: null,
+    getAgents: getAgents,
+    getCapabilityRegistry: getCapabilityRegistry
 });
 
-export { createContentAgent as a, createQaAgent as b, createStrategyAgent as c, analyzeAssetsLocal as d, agentsContainer as e, getAgents as g };;globalThis.__timing__.logEnd('Load chunks/_/agents-container');
+export { getHitlService as a, agentThresholds as b, getAgents as c, agentsContainer as d, getCapabilityRegistry as g, withHitlContext as w };
 //# sourceMappingURL=agents-container.mjs.map

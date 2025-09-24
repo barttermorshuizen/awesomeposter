@@ -1,4 +1,4 @@
-import process from 'node:process';globalThis._importMeta_=globalThis._importMeta_||{url:"file:///_entry.js",env:process.env};globalThis.__timing__.logStart('Load chunks/nitro/nitro');import http, { Server as Server$1 } from 'node:http';
+import process from 'node:process';globalThis._importMeta_=globalThis._importMeta_||{url:"file:///_entry.js",env:process.env};import http, { Server as Server$1 } from 'node:http';
 import https, { Server } from 'node:https';
 import { EventEmitter } from 'node:events';
 import { Buffer as Buffer$1 } from 'node:buffer';
@@ -255,7 +255,7 @@ function parseURL(input = "", defaultProto) {
     };
   }
   if (!hasProtocol(input, { acceptRelative: true })) {
-    return defaultProto ? parseURL(defaultProto + input) : parsePath(input);
+    return parsePath(input);
   }
   const [, protocol = "", auth, hostAndPath = ""] = input.replace(/\\/g, "/").match(/^[\s\0]*([\w+.-]{2,}:)?\/\/([^/@]+@)?(.*)/) || [];
   let [, host = "", path = ""] = hostAndPath.match(/([^#/?]*)(.*)?/) || [];
@@ -702,6 +702,9 @@ function isError(input) {
 
 function getQuery(event) {
   return getQuery$1(event.path || "");
+}
+function getMethod(event, defaultMethod = "GET") {
+  return (event.node.req.method || defaultMethod).toUpperCase();
 }
 function isMethod(event, expected, allowHead) {
   if (typeof expected === "string") {
@@ -2113,53 +2116,6 @@ class Hookable {
 }
 function createHooks() {
   return new Hookable();
-}
-
-const isBrowser = "undefined" !== "undefined";
-function createDebugger(hooks, _options = {}) {
-  const options = {
-    inspect: isBrowser,
-    group: isBrowser,
-    filter: () => true,
-    ..._options
-  };
-  const _filter = options.filter;
-  const filter = typeof _filter === "string" ? (name) => name.startsWith(_filter) : _filter;
-  const _tag = options.tag ? `[${options.tag}] ` : "";
-  const logPrefix = (event) => _tag + event.name + "".padEnd(event._id, "\0");
-  const _idCtr = {};
-  const unsubscribeBefore = hooks.beforeEach((event) => {
-    if (filter !== void 0 && !filter(event.name)) {
-      return;
-    }
-    _idCtr[event.name] = _idCtr[event.name] || 0;
-    event._id = _idCtr[event.name]++;
-    console.time(logPrefix(event));
-  });
-  const unsubscribeAfter = hooks.afterEach((event) => {
-    if (filter !== void 0 && !filter(event.name)) {
-      return;
-    }
-    if (options.group) {
-      console.groupCollapsed(event.name);
-    }
-    if (options.inspect) {
-      console.timeLog(logPrefix(event), event.args);
-    } else {
-      console.timeEnd(logPrefix(event));
-    }
-    if (options.group) {
-      console.groupEnd();
-    }
-    _idCtr[event.name]--;
-  });
-  return {
-    /** Stop debugging and remove listeners */
-    close: () => {
-      unsubscribeBefore();
-      unsubscribeAfter();
-    }
-  };
 }
 
 const s$1=globalThis.Headers,i=globalThis.AbortController,l=globalThis.fetch||(()=>{throw new Error("[node-fetch-native] Failed to fetch: `globalThis.fetch` is not available!")});
@@ -4331,45 +4287,8 @@ async function errorHandler(error, event) {
   // H3 will handle fallback
 }
 
-function defineNitroPlugin(def) {
-  return def;
-}
-
-const _vI517F2NDt8QAhOwpwJI5KiTydSuhfIPgQ9jSRNch8 = defineNitroPlugin((nitro) => {
-  createDebugger(nitro.hooks, { tag: "nitro-runtime" });
-});
-
-const globalTiming = globalThis.__timing__ || {
-  start: () => 0,
-  end: () => 0,
-  metrics: []
-};
-const timingMiddleware = eventHandler((event) => {
-  const start = globalTiming.start();
-  const _end = event.node.res.end;
-  event.node.res.end = function(chunk, encoding, cb) {
-    const metrics = [
-      ["Generate", globalTiming.end(start)],
-      ...globalTiming.metrics
-    ];
-    const serverTiming = metrics.map((m) => `-;dur=${m[1]};desc="${encodeURIComponent(m[0])}"`).join(", ");
-    if (!event.node.res.headersSent) {
-      event.node.res.setHeader("Server-Timing", serverTiming);
-    }
-    _end.call(event.node.res, chunk, encoding, cb);
-    return this;
-  }.bind(event.node.res);
-});
-const _CsOlreLg8XKGNrByKSkPpJtu3ocwaaiaDebIKQFCgAg = defineNitroPlugin((nitro) => {
-  nitro.h3App.stack.unshift({
-    route: "/",
-    handler: timingMiddleware
-  });
-});
-
 const plugins = [
-  _vI517F2NDt8QAhOwpwJI5KiTydSuhfIPgQ9jSRNch8,
-_CsOlreLg8XKGNrByKSkPpJtu3ocwaaiaDebIKQFCgAg
+  
 ];
 
 const assets = {};
@@ -5001,5 +4920,5 @@ trapUnhandledNodeErrors();
 setupGracefulShutdown(listener, nitroApp);
 const nodeServer = {};
 
-export { setHeader as a, getQuery as b, createError$1 as c, defineEventHandler as d, getHeader as g, nodeServer as n, readBody as r, sendRedirect as s, useRuntimeConfig as u };;globalThis.__timing__.logEnd('Load chunks/nitro/nitro');
+export { setHeader as a, getMethod as b, sendNoContent as c, defineEventHandler as d, createError$1 as e, getQuery as f, getHeader as g, nodeServer as n, readBody as r, sendRedirect as s, useRuntimeConfig as u };
 //# sourceMappingURL=nitro.mjs.map

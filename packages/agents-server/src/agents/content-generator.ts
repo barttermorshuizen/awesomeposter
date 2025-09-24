@@ -1,5 +1,6 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
+import { HITL_TOOL_NAME } from '../tools/hitl'
 
 export class ContentGeneratorAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -8,7 +9,8 @@ export class ContentGeneratorAgent {
 // Agents SDK configuration for the Content specialist
 export const CONTENT_TOOLS = [
   'apply_format_rendering',
-  'optimize_for_platform'
+  'optimize_for_platform',
+  HITL_TOOL_NAME
 ] as const
 
 // Default (app/workflow) instructions – used when the agent is called inside

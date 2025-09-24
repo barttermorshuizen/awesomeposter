@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/workflow/execute-with-progress.post');import { d as defineEventHandler, r as readBody, g as getHeader, a as setHeader, c as createError } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, r as readBody, g as getHeader, a as setHeader, e as createError } from '../../../../nitro/nitro.mjs';
 import { i as isBacklogFull, b as backlogSnapshot, c as createSse, s as sseSemaphore, w as withSseConcurrency } from '../../../../_/concurrency.mjs';
 import { W as WorkflowRequestSchema } from '../../../../_/agent-types.mjs';
 import 'node:http';
@@ -25,7 +25,7 @@ const executeWithProgress_post = defineEventHandler(async (event) => {
       getLogger().warn("sse_backlog_reject", { ...snap, correlationId: cid });
     } catch {
     }
-    setHeader(event, "Retry-After", "2");
+    setHeader(event, "Retry-After", 2);
     setHeader(event, "Cache-Control", "no-store");
     setHeader(event, "X-Backlog-Pending", String(snap.pending));
     setHeader(event, "X-Backlog-Limit", String(snap.limit));
@@ -41,7 +41,7 @@ const executeWithProgress_post = defineEventHandler(async (event) => {
       }
     }
     await withSseConcurrency(async () => {
-      const { getAgents } = await import('../../../../_/agents-container.mjs').then(function (n) { return n.e; });
+      const { getAgents } = await import('../../../../_/agents-container.mjs').then(function (n) { return n.d; });
       const { strategy, generator, qa } = getAgents();
       const orchestrator = new (await import('../../../../_/workflow-orchestrator.mjs')).WorkflowOrchestrator(
         strategy,
@@ -62,5 +62,5 @@ const executeWithProgress_post = defineEventHandler(async (event) => {
   }
 });
 
-export { executeWithProgress_post as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/workflow/execute-with-progress.post');
+export { executeWithProgress_post as default };
 //# sourceMappingURL=execute-with-progress.post.mjs.map

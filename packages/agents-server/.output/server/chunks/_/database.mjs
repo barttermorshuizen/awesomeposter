@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/database');import { g as getDb, b as briefs, a as assets } from './index.mjs';
+import { g as getDb, b as briefs, a as assets } from './index.mjs';
 import { eq } from 'drizzle-orm';
 import '../nitro/nitro.mjs';
 import 'node:http';
@@ -48,5 +48,5 @@ class AgentsDatabaseService {
   }
 }
 
-export { AgentsDatabaseService };;globalThis.__timing__.logEnd('Load chunks/_/database');
+export { AgentsDatabaseService };
 //# sourceMappingURL=database.mjs.map

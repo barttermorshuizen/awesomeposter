@@ -1,10 +1,10 @@
-import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport, agentThresholds } from '@awesomeposter/shared';
+import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, StepResult, RunReport, agentThresholds, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared';
 import { AgentRuntime } from './agent-runtime';
 import { getCapabilityRegistry } from './agents-container';
 import { Runner } from '@openai/agents';
-import { createStrategyAgent } from '../agents/strategy-manager';
-import { createContentAgent } from '../agents/content-generator';
-import { createQaAgent } from '../agents/quality-assurance';
+import { getHitlService } from './hitl-service';
+import { withHitlContext } from './hitl-context';
+import { genCorrelationId, getLogger } from './logger';
 
 type SpecialistId = 'strategy' | 'generation' | 'qa';
 
@@ -265,6 +265,20 @@ export async function runOrchestratorEngine(
     }
   }
 
+  const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
+  const hitlService = getHitlService();
+  const runId = resumeKey || cid || genCorrelationId();
+  let hitlState: HitlRunState = await hitlService.loadRunState(runId);
+  const envelope = hitlService.parseEnvelope((req.state as any)?.hitl);
+  if (envelope?.responses?.length) {
+    hitlState = await hitlService.applyResponses(runId, envelope.responses);
+  }
+  const hitlMax = hitlService.getMaxRequestsPerRun();
+  let hitlPending: HitlRequestRecord | null = hitlState.pendingRequestId
+    ? hitlState.requests.find((r) => r.id === hitlState.pendingRequestId!) || null
+    : null;
+  let hitlAcceptedCount = hitlState.requests.filter((r) => r.status !== 'denied').length;
+
   const plan: Plan = { version: 0, steps: [] };
 
   // Aggregate step results for consolidation (RunReport)
@@ -276,23 +290,65 @@ export async function runOrchestratorEngine(
     qa?: { result?: any; rawText?: string };
   } = {};
 
-  // Future: threadId should be preferred over briefId for resumability; briefId kept only as legacy fallback when present.
-  const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
+  let hitlAwaiting: HitlRequestRecord | null = hitlPending;
 
+  const writeResumeSnapshot = (updates: Partial<{ plan: Plan; history: StepResult[]; runReport?: RunReport; hitl: HitlRunState }>) => {
+    if (!resumeKey) return;
+    const existing = RESUME_STORE.get(resumeKey) || {};
+    const next: any = { ...existing, updatedAt: Date.now() };
+    if (updates.plan) next.plan = JSON.parse(JSON.stringify(updates.plan));
+    if (updates.history) next.history = JSON.parse(JSON.stringify(updates.history));
+    if (updates.runReport) next.runReport = JSON.parse(JSON.stringify(updates.runReport));
+    if (updates.hitl) next.hitl = JSON.parse(JSON.stringify(updates.hitl));
+    RESUME_STORE.set(resumeKey, next);
+  };
+
+  const refreshHitlDerivedState = (state: HitlRunState) => {
+    hitlState = state;
+    hitlAcceptedCount = state.requests.filter((r) => r.status !== 'denied').length;
+    hitlPending = state.pendingRequestId ? state.requests.find((r) => r.id === state.pendingRequestId) || null : null;
+    if (!hitlPending) {
+      hitlAwaiting = null;
+    }
+  };
+
+  const signalHitlRequest = (record: HitlRequestRecord, state: HitlRunState) => {
+    refreshHitlDerivedState(state);
+    hitlAwaiting = record.status === 'pending' ? record : null;
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    try {
+      getLogger().info('hitl_request_pending', {
+        requestId: record.id,
+        runId,
+        originAgent: record.originAgent,
+        urgency: record.payload.urgency,
+        pendingCount: hitlState.requests.filter((r) => r.status === 'pending').length,
+        limitMax: hitlMax
+      });
+    } catch {}
+    onEvent({ type: 'message', message: 'hitl_request', data: { requestId: record.id, originAgent: record.originAgent, payload: record.payload }, correlationId: cid });
+    onEvent({ type: 'metrics', data: { hitlPending: true, hitlTotal: hitlState.requests.length }, correlationId: cid });
+  };
+
+  const signalHitlDenied = (reason: string, state: HitlRunState) => {
+    refreshHitlDerivedState(state);
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    onEvent({ type: 'message', message: 'hitl_request_denied', data: { reason, limit: hitlMax }, correlationId: cid });
+  };
+
+  refreshHitlDerivedState(hitlState);
+
+  if (hitlPending) {
+    signalHitlRequest(hitlPending, hitlState);
+  }
+
+  // Future: threadId should be preferred over briefId for resumability; briefId kept only as legacy fallback when present.
   const emitPlanUpdate = (patch: any) => {
     plan.version += 1;
     onEvent({ type: 'plan_update' as any, data: { patch, planVersion: plan.version, plan }, correlationId: cid });
-    if (resumeKey) {
-      try {
-        const snapshot = {
-          plan: JSON.parse(JSON.stringify(plan)),
-          history: [...stepResults],
-          runReport: { steps: [...stepResults] } as RunReport,
-          updatedAt: Date.now(),
-        };
-        RESUME_STORE.set(resumeKey, snapshot as any);
-      } catch {}
-    }
+    try {
+      writeResumeSnapshot({ plan, history: [...stepResults], runReport: { steps: [...stepResults] } as RunReport, hitl: hitlState });
+    } catch {}
   };
 
   const ensureFinalizeStep = () => {
@@ -314,6 +370,16 @@ export async function runOrchestratorEngine(
     emitPlanUpdate({ stepsUpdate: [{ id, status, note }] });
   };
 
+  const attachHitlContext = (payload: any = {}) => {
+    if (hitlState.responses.length > 0) {
+      payload.hitlResponses = hitlState.responses.map((r) => ({ ...r }));
+    }
+    if (hitlPending) {
+      payload.pendingHitlRequest = { ...hitlPending };
+    }
+    return payload;
+  };
+
   const buildPayloadForCapability = (capabilityId?: string) => {
     if (capabilityId === 'generation') {
       const payload: any = { writerBrief: artifacts.strategy?.writerBrief, knobs: artifacts.strategy?.knobs };
@@ -321,12 +387,12 @@ export async function runOrchestratorEngine(
       const qaRec = (artifacts.qa?.result as any)?.contentRecommendations;
       if (Array.isArray(qaRec) && qaRec.length > 0) payload.contentRecommendations = qaRec;
       if (typeof artifacts.generation?.draftText === 'string' && artifacts.generation!.draftText!.trim().length > 0) payload.previousDraft = artifacts.generation!.draftText;
-      return payload;
+      return attachHitlContext(payload);
     }
     if (capabilityId === 'qa') {
-      return { draftText: artifacts.generation?.draftText };
+      return attachHitlContext({ draftText: artifacts.generation?.draftText });
     }
-    return {};
+    return attachHitlContext({});
   };
 
   const executeSpecialistStep = async (stepId: string, capabilityId?: string, payload?: any) => {
@@ -451,6 +517,7 @@ export async function runOrchestratorEngine(
       `CurrentPlan:\n${JSON.stringify(activePlan)}`,
       `ArtifactsSummary:\n${JSON.stringify({ hasDraft: genHasDraft, qa: qaObj ? { compliance: qaObj.compliance, composite: qaObj.composite, issues: (qaObj.contentRecommendations || qaObj.suggestedChanges || [])?.length } : null })}`,
       `Constraints:\n${JSON.stringify(constraints)}`,
+      `HumanInput:\n${JSON.stringify({ pendingRequestId: hitlPending?.id ?? null, pendingQuestion: hitlPending?.payload?.question, responses: hitlState.responses.slice(-5).map((r) => ({ requestId: r.requestId, responseType: r.responseType, selectedOptionId: r.selectedOptionId, approved: r.approved })) })}`,
       'Rules:\n- Only create an initial plan once.\n- On replanning, only add [generation, qa] if QA indicates revision is needed and cycles remain.\n- Never duplicate existing steps.'
     ].join('\n\n');
     const messages = [
@@ -589,14 +656,54 @@ export async function runOrchestratorEngine(
       if (next.capabilityId === 'strategy') onEvent({ type: 'phase', phase: 'analysis' as any, message: 'Strategy Manager', correlationId: cid });
       else if (next.capabilityId === 'generation') onEvent({ type: 'phase', phase: 'generation' as any, message: 'Content Generator', correlationId: cid });
       else if (next.capabilityId === 'qa') onEvent({ type: 'phase', phase: 'qa' as any, message: 'Quality Assurance', correlationId: cid });
-      await executeSpecialistStep(next.id, next.capabilityId as string, buildPayloadForCapability(next.capabilityId));
+      await withHitlContext(
+        {
+          runId,
+          threadId: resumeKey,
+          stepId: next.id,
+          capabilityId: next.capabilityId as string | undefined,
+          hitlService,
+          limit: { current: hitlAcceptedCount, max: hitlMax },
+          onRequest: signalHitlRequest,
+          onDenied: signalHitlDenied,
+          snapshot: hitlState
+        },
+        async () => {
+          await executeSpecialistStep(next.id, next.capabilityId as string, buildPayloadForCapability(next.capabilityId));
+        }
+      );
+      refreshHitlDerivedState(hitlState);
       setStepStatusById(next.id, 'done');
+      if (hitlAwaiting) {
+        onEvent({ type: 'phase', phase: 'idle' as any, message: 'Awaiting human input', correlationId: cid });
+        finished = true;
+        break;
+      }
       state = 'replan';
     } else if (state === 'replan') {
       // On replan, only extend the plan for revisions if QA indicates
       addRevisionIfNeeded();
       state = 'plan';
     }
+  }
+
+  if (hitlAwaiting) {
+    const pendingSummary = {
+      status: 'pending_hitl',
+      pendingRequestId: hitlAwaiting.id,
+      originAgent: hitlAwaiting.originAgent,
+      question: hitlAwaiting.payload.question
+    };
+    try {
+      getLogger().info('hitl_run_pending', {
+        runId,
+        requestId: hitlAwaiting.id,
+        pendingCount: hitlState.requests.filter((r) => r.status === 'pending').length
+      });
+    } catch {}
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    onEvent({ type: 'complete', data: pendingSummary as any, correlationId: cid });
+    return { final: pendingSummary, metrics: { hitlPending: true } };
   }
 
   // Build FinalBundle: { result, quality, acceptance-report }
@@ -663,12 +770,7 @@ export async function runOrchestratorEngine(
       durationMs: stepResults.reduce((acc, s) => acc + (Number((s.metrics as any)?.durationMs) || 0), 0)
     }
   };
-  if (resumeKey) {
-    try {
-      const existing = RESUME_STORE.get(resumeKey) || ({} as any);
-      RESUME_STORE.set(resumeKey, { ...existing, plan: JSON.parse(JSON.stringify(plan)), history: [...stepResults], runReport, updatedAt: Date.now() } as any);
-    } catch {}
-  }
+  writeResumeSnapshot({ plan, history: [...stepResults], runReport, hitl: hitlState });
   onEvent({ type: 'metrics', data: runReport.summary, correlationId: cid });
   // Emit full run report for UI/clients (message type with structured data)
   onEvent({ type: 'message', message: 'run_report', data: runReport as any, correlationId: cid });

@@ -1,5 +1,6 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
+import { HITL_TOOL_NAME } from '../tools/hitl'
 
 export class StrategyManagerAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -8,7 +9,8 @@ export class StrategyManagerAgent {
 // Agents SDK configuration for the Strategy specialist
 export const STRATEGY_TOOLS = [
   'strategy_analyze_assets',
-  'strategy_plan_knobs'
+  'strategy_plan_knobs',
+  HITL_TOOL_NAME
 ] as const
 
 // Default (app/workflow) instructions – structured output preferred

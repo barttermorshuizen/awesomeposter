@@ -229,7 +229,14 @@ The orchestrator emits **Server‑Sent Events (SSE)** throughout a run. Clients 
   - `message` for informational or reasoning text not belonging to deltas.
   - `warning` for anomalies (e.g., no content/QA involvement).
   - `error` on any error conditions.
-  - `complete` when orchestration finalizes, with the final bundle.
+  - `complete` when orchestration finalizes, with the final bundle. When a human-in-the-loop escalation is raised, `complete` carries `{ status: 'pending_hitl', pendingRequestId }` so the caller can pause and collect operator input.
+
+### 5.3 Human-in-the-loop Escalations
+
+- Specialists can invoke the shared `hitl_request` tool to escalate a question, approval, or choice to an operator. Payloads include the originating capability, urgency, and optional options/notes.
+- Each run enforces `HITL_MAX_REQUESTS` (default `3`). Requests beyond the cap are recorded as denied with reason `Too many HITL requests`, and the specialist agent is expected to proceed automatically.
+- Accepted requests emit `message:"hitl_request"` and transition the orchestrator to an idle phase. The SSE stream ends with a `complete` payload indicating `pending_hitl` status until an operator responds.
+- HITL snapshots (requests, responses, pending identifiers) are stored alongside the plan/history resume data so a subsequent run can rehydrate state and feed recent operator answers back into planner payloads.
 
 ---
 

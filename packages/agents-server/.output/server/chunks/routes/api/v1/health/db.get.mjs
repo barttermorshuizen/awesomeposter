@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/health/db.get');import { d as defineEventHandler } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler } from '../../../../nitro/nitro.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -18,5 +18,5 @@ const db_get = defineEventHandler(async () => {
   }
 });
 
-export { db_get as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/health/db.get');
+export { db_get as default };
 //# sourceMappingURL=db.get.mjs.map

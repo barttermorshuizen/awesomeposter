@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/concurrency');import { a as setHeader } from '../nitro/nitro.mjs';
+import { a as setHeader } from '../nitro/nitro.mjs';
 import { getLogger } from './logger.mjs';
 
 function createSse(event, opts = {}) {
@@ -131,5 +131,5 @@ function backlogSnapshot() {
   return { used: sseSemaphore.used, pending: sseSemaphore.pending, limit: SSE_MAX_PENDING };
 }
 
-export { backlogSnapshot as b, createSse as c, isBacklogFull as i, sseSemaphore as s, withSseConcurrency as w };;globalThis.__timing__.logEnd('Load chunks/_/concurrency');
+export { backlogSnapshot as b, createSse as c, isBacklogFull as i, sseSemaphore as s, withSseConcurrency as w };
 //# sourceMappingURL=concurrency.mjs.map

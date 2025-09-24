@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/workflow-orchestrator');class WorkflowOrchestrator {
+class WorkflowOrchestrator {
   constructor(strategy, generator, qa) {
     this.strategy = strategy;
     this.generator = generator;
@@ -41,5 +41,5 @@ globalThis.__timing__.logStart('Load chunks/_/workflow-orchestrator');class Work
   }
 }
 
-export { WorkflowOrchestrator };;globalThis.__timing__.logEnd('Load chunks/_/workflow-orchestrator');
+export { WorkflowOrchestrator };
 //# sourceMappingURL=workflow-orchestrator.mjs.map

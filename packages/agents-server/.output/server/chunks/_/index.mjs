@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/index');import { u as useRuntimeConfig } from '../nitro/nitro.mjs';
+import { u as useRuntimeConfig } from '../nitro/nitro.mjs';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { pgTable, timestamp, uuid, text, jsonb, integer, primaryKey, boolean, numeric } from 'drizzle-orm/pg-core';
@@ -152,6 +152,17 @@ const postTelemetry = pgTable("post_telemetry", {
   // Content analysis
   capturedAt: timestamp("captured_at", { withTimezone: true }).defaultNow()
 });
+const approvalCheckpoints = pgTable("approval_checkpoints", {
+  checkpointId: text("checkpoint_id").primaryKey(),
+  threadId: text("thread_id").notNull(),
+  payloadJson: jsonb("payload_json").$type().notNull(),
+  status: text("status").$type().notNull(),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).defaultNow(),
+  decidedBy: text("decided_by"),
+  decisionNotes: text("decision_notes"),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow()
+});
 const tasks = pgTable("tasks", {
   id: uuid("id").primaryKey(),
   clientId: uuid("client_id"),
@@ -165,6 +176,7 @@ const tasks = pgTable("tasks", {
 
 const schema = /*#__PURE__*/Object.freeze({
     __proto__: null,
+    approvalCheckpoints: approvalCheckpoints,
     assets: assets,
     briefVersions: briefVersions,
     briefs: briefs,
@@ -211,5 +223,5 @@ async function getClientProfileByClientId(clientId) {
   return row != null ? row : null;
 }
 
-export { assets as a, briefs as b, clients as c, getClientProfileByClientId as d, getDb as g };;globalThis.__timing__.logEnd('Load chunks/_/index');
+export { assets as a, briefs as b, clients as c, getClientProfileByClientId as d, getDb as g };
 //# sourceMappingURL=index.mjs.map

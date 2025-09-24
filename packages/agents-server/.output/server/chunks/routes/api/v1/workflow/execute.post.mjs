@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/workflow/execute.post');import { d as defineEventHandler, r as readBody } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, r as readBody } from '../../../../nitro/nitro.mjs';
 import { W as WorkflowRequestSchema } from '../../../../_/agent-types.mjs';
 import 'node:http';
 import 'node:https';
@@ -13,7 +13,7 @@ import 'zod';
 const execute_post = defineEventHandler(async (event) => {
   const body = await readBody(event);
   const request = WorkflowRequestSchema.parse(body);
-  const { getAgents } = await import('../../../../_/agents-container.mjs').then(function (n) { return n.e; });
+  const { getAgents } = await import('../../../../_/agents-container.mjs').then(function (n) { return n.d; });
   const { strategy, generator, qa } = getAgents();
   const orchestrator = new (await import('../../../../_/workflow-orchestrator.mjs')).WorkflowOrchestrator(
     strategy,
@@ -29,5 +29,5 @@ const execute_post = defineEventHandler(async (event) => {
   };
 });
 
-export { execute_post as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/workflow/execute.post');
+export { execute_post as default };
 //# sourceMappingURL=execute.post.mjs.map

@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/agent/run.stream.post');import { d as defineEventHandler, r as readBody, g as getHeader, a as setHeader, c as createError } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, b as getMethod, g as getHeader, a as setHeader, c as sendNoContent, r as readBody, e as createError } from '../../../../nitro/nitro.mjs';
 import { i as isBacklogFull, b as backlogSnapshot, c as createSse, s as sseSemaphore, w as withSseConcurrency } from '../../../../_/concurrency.mjs';
 import { A as AgentRunRequestSchema } from '../../../../_/agent-run.mjs';
 import 'node:http';
@@ -14,17 +14,37 @@ import 'winston';
 import 'zod';
 
 const run_stream_post = defineEventHandler(async (event) => {
-  var _a, _b, _c;
+  var _a, _b, _c, _d, _e, _f;
+  const method = getMethod(event);
+  if (method === "OPTIONS") {
+    const origin2 = getHeader(event, "origin");
+    if (origin2) {
+      setHeader(event, "Vary", "Origin");
+      setHeader(event, "Access-Control-Allow-Origin", origin2);
+    }
+    setHeader(event, "Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    setHeader(event, "Access-Control-Allow-Headers", getHeader(event, "access-control-request-headers") || "content-type,accept,authorization,x-correlation-id");
+    setHeader(event, "Access-Control-Max-Age", "600");
+    return sendNoContent(event, 204);
+  }
+  const origin = getHeader(event, "origin");
+  if (origin) {
+    setHeader(event, "Vary", "Origin");
+    setHeader(event, "Access-Control-Allow-Origin", origin);
+    setHeader(event, "Access-Control-Allow-Credentials", "true");
+  }
+  setHeader(event, "Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  setHeader(event, "Access-Control-Allow-Headers", "content-type,accept,authorization,x-correlation-id");
+  setHeader(event, "Access-Control-Expose-Headers", "content-type,x-correlation-id");
   const body = (_b = (_a = event.context) == null ? void 0 : _a.body) != null ? _b : await readBody(event);
   const req = AgentRunRequestSchema.parse(body);
   const rawOptions = typeof body === "object" && body && "options" in body ? body.options : void 0;
   const finalReq = { ...req, options: { ...rawOptions || {}, ...req.options || {} } };
   try {
-    const origin = getHeader(event, "origin") || "*";
-    setHeader(event, "Vary", "Origin");
-    setHeader(event, "Access-Control-Allow-Origin", origin);
-    setHeader(event, "Access-Control-Allow-Headers", "content-type,authorization,x-correlation-id");
-    setHeader(event, "Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    if (!finalReq.threadId) {
+      const { genCorrelationId } = await import('../../../../_/logger.mjs');
+      finalReq.threadId = genCorrelationId();
+    }
   } catch {
   }
   if (req.mode === "chat") {
@@ -34,6 +54,17 @@ const run_stream_post = defineEventHandler(async (event) => {
     }
   }
   const cid = getHeader(event, "x-correlation-id") || ((_c = event.context) == null ? void 0 : _c.correlationId) || void 0;
+  try {
+    const { getLogger } = await import('../../../../_/logger.mjs');
+    getLogger().info("run_stream_request", {
+      mode: req.mode,
+      targetAgentId: (_d = finalReq == null ? void 0 : finalReq.options) == null ? void 0 : _d.targetAgentId,
+      toolPolicy: (_e = finalReq == null ? void 0 : finalReq.options) == null ? void 0 : _e.toolPolicy,
+      trace: (_f = finalReq == null ? void 0 : finalReq.options) == null ? void 0 : _f.trace,
+      correlationId: cid
+    });
+  } catch {
+  }
   if (isBacklogFull()) {
     const snap = backlogSnapshot();
     try {
@@ -70,5 +101,5 @@ const run_stream_post = defineEventHandler(async (event) => {
   }
 });
 
-export { run_stream_post as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/agent/run.stream.post');
+export { run_stream_post as default };
 //# sourceMappingURL=run.stream.post.mjs.map

@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/agent/smoke.get');import { d as defineEventHandler, b as getQuery } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, f as getQuery } from '../../../../nitro/nitro.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -28,5 +28,5 @@ const smoke_get = defineEventHandler(async (event) => {
   };
 });
 
-export { smoke_get as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/agent/smoke.get');
+export { smoke_get as default };
 //# sourceMappingURL=smoke.get.mjs.map

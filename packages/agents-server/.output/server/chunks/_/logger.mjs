@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/logger');import winston from 'winston';
+import winston from 'winston';
 
 let logger = null;
 function getLogger() {
@@ -12,6 +12,13 @@ function getLogger() {
   });
   return logger;
 }
+function genCorrelationId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `cid_${Math.random().toString(36).slice(2)}`;
+  }
+}
 
-export { getLogger };;globalThis.__timing__.logEnd('Load chunks/_/logger');
+export { genCorrelationId, getLogger };
 //# sourceMappingURL=logger.mjs.map

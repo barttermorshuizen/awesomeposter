@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/routes/api/v1/agent/run.stream.options');import { d as defineEventHandler, g as getHeader, a as setHeader } from '../../../../nitro/nitro.mjs';
+import { d as defineEventHandler, g as getHeader, a as setHeader } from '../../../../nitro/nitro.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -21,5 +21,5 @@ const run_stream_options = defineEventHandler((event) => {
   }
 });
 
-export { run_stream_options as default };;globalThis.__timing__.logEnd('Load chunks/routes/api/v1/agent/run.stream.options');
+export { run_stream_options as default };
 //# sourceMappingURL=run.stream.options.mjs.map

@@ -5,6 +5,9 @@ const RESOLVED_DEFAULT_MODEL = (process.env.OPENAI_DEFAULT_MODEL || process.env.
 export default defineNitroConfig({
   compatibilityDate: '2025-09-02',
   srcDir: '.',
+  imports: {
+    dirs: ['server/middleware']
+  },
   future: { nativeSWR: true },
   runtimeConfig: {
     DATABASE_URL: process.env.DATABASE_URL,

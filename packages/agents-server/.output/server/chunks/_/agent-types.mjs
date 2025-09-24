@@ -1,4 +1,4 @@
-globalThis.__timing__.logStart('Load chunks/_/agent-types');import { z } from 'zod';
+import { z } from 'zod';
 
 const WorkflowRequestSchema = z.object({
   briefId: z.string(),
@@ -21,5 +21,5 @@ const WorkflowRequestSchema = z.object({
   }).optional()
 });
 
-export { WorkflowRequestSchema as W };;globalThis.__timing__.logEnd('Load chunks/_/agent-types');
+export { WorkflowRequestSchema as W };
 //# sourceMappingURL=agent-types.mjs.map
