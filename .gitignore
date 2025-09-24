@@ -55,3 +55,6 @@ coverage
 
 # Mail poller runtime artifacts
 tokens/
+# BMAD (local only)
+.bmad-core/
+.bmad-*/

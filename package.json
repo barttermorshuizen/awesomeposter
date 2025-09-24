@@ -23,7 +23,10 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "lint": "eslint . --fix",
-    "imap:poller": "node scripts/imap-poller.mjs"
+    "imap:poller": "node scripts/imap-poller.mjs",
+    "bmad:refresh": "bmad-method install -f -i codex",
+    "bmad:list": "bmad-method list:agents",
+    "bmad:validate": "bmad-method validate"
   },
   "dependencies": {
     "@awesomeposter/db": "file:./packages/db",
