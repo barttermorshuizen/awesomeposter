@@ -9,13 +9,6 @@ vi.stubGlobal('createError', (opts: any) => {
   return err
 })
 vi.stubGlobal('readBody', (e: any) => Promise.resolve(e?.context?.body))
-vi.stubGlobal('getHeader', (e: any, name: string) => e.headers?.[String(name || '').toLowerCase()] || '')
-
-// Mock h3 for header setting in 503 path
-vi.mock('h3', () => ({
-  setHeader: (event: any, name: string, value: string) => event?.setHeader?.(name, value)
-}))
-
 describe('backlog guard', () => {
   beforeEach(() => {
     process.env.SSE_MAX_PENDING = '0' // force immediate rejection
@@ -26,9 +19,16 @@ describe('backlog guard', () => {
     const handler = (mod as any).default as (e: any) => Promise<any>
 
     const event: any = {
-      headers: { 'x-correlation-id': 'cid-test' },
-      context: { body: { mode: 'app', objective: 'x' } },
-      setHeader: () => {}
+      node: {
+        req: {
+          method: 'POST',
+          headers: { 'x-correlation-id': 'cid-test' }
+        },
+        res: {
+          setHeader: vi.fn()
+        }
+      },
+      context: { body: { mode: 'app', objective: 'x' } }
     }
 
     await expect(handler(event)).rejects.toHaveProperty('statusCode', 503)

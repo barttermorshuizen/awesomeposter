@@ -42,8 +42,8 @@ export * from './schema.js'
 
 
 
-import { eq } from 'drizzle-orm'
-export { eq } from 'drizzle-orm'
+import { eq, and, isNotNull } from 'drizzle-orm'
+export { eq, and, isNotNull } from 'drizzle-orm'
 
 export async function getClientProfileByClientId(clientId: string) {
   const db = getDb()

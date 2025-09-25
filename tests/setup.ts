@@ -54,3 +54,6 @@ if (!g.requestAnimationFrame) {
 if (!g.cancelAnimationFrame) {
   g.cancelAnimationFrame = (id: number) => clearTimeout(id as unknown as any)
 }
+
+// Ensure orchestrator persistence uses in-memory implementation during tests
+process.env.ORCHESTRATOR_PERSISTENCE = process.env.ORCHESTRATOR_PERSISTENCE || 'memory'

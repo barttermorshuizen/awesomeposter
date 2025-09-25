@@ -5,10 +5,9 @@ import { Runner } from '@openai/agents';
 import { getHitlService } from './hitl-service';
 import { withHitlContext } from './hitl-context';
 import { genCorrelationId, getLogger } from './logger';
+import { getOrchestratorPersistence, type OrchestratorRunStatus } from './orchestrator-persistence';
 
 type SpecialistId = 'strategy' | 'generation' | 'qa';
-
-const RESUME_STORE = new Map<string, { plan: Plan; history: any[]; runReport?: RunReport; updatedAt: number }>();
 
 function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' } | undefined {
   const s = String(value || '').toLowerCase().trim();
@@ -268,10 +267,31 @@ export async function runOrchestratorEngine(
   const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
   const hitlService = getHitlService();
   const runId = resumeKey || cid || genCorrelationId();
+  const persistence = getOrchestratorPersistence();
+  let resumeSnapshot = await persistence.load(runId);
+  const executionContext: Record<string, unknown> = {
+    ...(resumeSnapshot.executionContext ?? {}),
+    request: {
+      mode: req.mode,
+      objective: req.objective,
+      threadId: (req as any).threadId ?? null,
+      briefId: req.briefId ?? null,
+      options: req.options ?? null
+    },
+    initialState: (req as any).state ?? null
+  };
+  const runnerMetadata: Record<string, unknown> = {
+    ...(resumeSnapshot.runnerMetadata ?? {}),
+    correlationId: cid,
+    runId,
+    runtimeModel: runtime.getModel(),
+    startedAt: (resumeSnapshot.runnerMetadata?.startedAt as string | undefined) ?? new Date().toISOString()
+  };
   let hitlState: HitlRunState = await hitlService.loadRunState(runId);
   const envelope = hitlService.parseEnvelope((req.state as any)?.hitl);
   if (envelope?.responses?.length) {
     hitlState = await hitlService.applyResponses(runId, envelope.responses);
+    resumeSnapshot = await persistence.load(runId);
   }
   const hitlMax = hitlService.getMaxRequestsPerRun();
   let hitlPending: HitlRequestRecord | null = hitlState.pendingRequestId
@@ -279,10 +299,19 @@ export async function runOrchestratorEngine(
     : null;
   let hitlAcceptedCount = hitlState.requests.filter((r) => r.status !== 'denied').length;
 
-  const plan: Plan = { version: 0, steps: [] };
+  const persistedSteps = Array.isArray(resumeSnapshot.plan?.steps) ? (resumeSnapshot.plan!.steps as any[]) : [];
+  const plan: Plan = {
+    version: resumeSnapshot.plan?.version ?? 0,
+    steps: persistedSteps.map((step) => ({ ...step }))
+  };
 
   // Aggregate step results for consolidation (RunReport)
-  const stepResults: StepResult[] = [];
+  const persistedHistory = Array.isArray(resumeSnapshot.runReport?.steps)
+    ? (resumeSnapshot.runReport!.steps as StepResult[])
+    : Array.isArray(resumeSnapshot.history)
+    ? (resumeSnapshot.history as StepResult[])
+    : [];
+  const stepResults: StepResult[] = persistedHistory.map((res) => ({ ...res }));
 
   const artifacts: {
     strategy?: { rationale?: string; writerBrief?: any; knobs?: any; rawText?: string };
@@ -292,15 +321,41 @@ export async function runOrchestratorEngine(
 
   let hitlAwaiting: HitlRequestRecord | null = hitlPending;
 
-  const writeResumeSnapshot = (updates: Partial<{ plan: Plan; history: StepResult[]; runReport?: RunReport; hitl: HitlRunState }>) => {
-    if (!resumeKey) return;
-    const existing = RESUME_STORE.get(resumeKey) || {};
-    const next: any = { ...existing, updatedAt: Date.now() };
-    if (updates.plan) next.plan = JSON.parse(JSON.stringify(updates.plan));
-    if (updates.history) next.history = JSON.parse(JSON.stringify(updates.history));
-    if (updates.runReport) next.runReport = JSON.parse(JSON.stringify(updates.runReport));
-    if (updates.hitl) next.hitl = JSON.parse(JSON.stringify(updates.hitl));
-    RESUME_STORE.set(resumeKey, next);
+  const writeResumeSnapshot = (
+    updates: Partial<{ plan: Plan; history: StepResult[]; runReport?: RunReport | null; hitl: HitlRunState; status?: OrchestratorRunStatus }>
+  ) => {
+    const payload: Partial<{
+      plan: Plan
+      history: StepResult[]
+      runReport: RunReport | null
+      hitlState: HitlRunState
+      pendingRequestId: string | null
+      status: OrchestratorRunStatus
+      threadId: string | null
+      briefId: string | null
+      executionContext: Record<string, unknown>
+      runnerMetadata: Record<string, unknown>
+    }> = {
+      threadId: resumeKey ?? null,
+      briefId: req.briefId ?? null,
+      executionContext,
+      runnerMetadata
+    };
+    if (updates.plan) payload.plan = updates.plan;
+    if (updates.history) payload.history = updates.history;
+    if (updates.hitl) {
+      payload.hitlState = updates.hitl;
+      payload.pendingRequestId = updates.hitl.pendingRequestId ?? null;
+    }
+    if (updates.runReport !== undefined) payload.runReport = updates.runReport ?? null;
+    if (updates.status) payload.status = updates.status;
+    try {
+      void persistence.save(runId, payload);
+    } catch (err) {
+      try {
+        getLogger().warn('persistence_snapshot_failed', { runId, error: String((err as Error)?.message ?? err) });
+      } catch {}
+    }
   };
 
   const refreshHitlDerivedState = (state: HitlRunState) => {
@@ -315,7 +370,7 @@ export async function runOrchestratorEngine(
   const signalHitlRequest = (record: HitlRequestRecord, state: HitlRunState) => {
     refreshHitlDerivedState(state);
     hitlAwaiting = record.status === 'pending' ? record : null;
-    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: 'awaiting_hitl' });
     try {
       getLogger().info('hitl_request_pending', {
         requestId: record.id,
@@ -332,11 +387,12 @@ export async function runOrchestratorEngine(
 
   const signalHitlDenied = (reason: string, state: HitlRunState) => {
     refreshHitlDerivedState(state);
-    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: 'running' });
     onEvent({ type: 'message', message: 'hitl_request_denied', data: { reason, limit: hitlMax }, correlationId: cid });
   };
 
   refreshHitlDerivedState(hitlState);
+  writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: hitlPending ? 'awaiting_hitl' : 'running' });
 
   if (hitlPending) {
     signalHitlRequest(hitlPending, hitlState);
@@ -346,9 +402,13 @@ export async function runOrchestratorEngine(
   const emitPlanUpdate = (patch: any) => {
     plan.version += 1;
     onEvent({ type: 'plan_update' as any, data: { patch, planVersion: plan.version, plan }, correlationId: cid });
-    try {
-      writeResumeSnapshot({ plan, history: [...stepResults], runReport: { steps: [...stepResults] } as RunReport, hitl: hitlState });
-    } catch {}
+    writeResumeSnapshot({
+      plan,
+      history: [...stepResults],
+      runReport: { steps: [...stepResults] } as RunReport,
+      hitl: hitlState,
+      status: hitlAwaiting ? 'awaiting_hitl' : 'running'
+    });
   };
 
   const ensureFinalizeStep = () => {
@@ -558,6 +618,19 @@ export async function runOrchestratorEngine(
       }
     }
     ensureFinalizeStep();
+    const hasCapabilitySteps = plan.steps.some((s) => !!s.capabilityId);
+    if (!hasCapabilitySteps) {
+      const fallback = {
+        stepsAdd: [
+          { id: `strategy_${plan.version + 1}`, capabilityId: 'strategy', status: 'pending' as PlanStepStatus, note: 'Initial strategy' },
+          { id: `generation_${plan.version + 1}`, capabilityId: 'generation', status: 'pending' as PlanStepStatus, note: 'Initial draft' },
+          { id: `qa_${plan.version + 1}`, capabilityId: 'qa', status: 'pending' as PlanStepStatus, note: 'Initial QA' }
+        ]
+      };
+      applyPlanPatch(plan, fallback);
+      emitPlanUpdate(fallback);
+      ensureFinalizeStep();
+    }
   };
 
   const addRevisionIfNeeded = () => {
@@ -594,17 +667,12 @@ export async function runOrchestratorEngine(
   };
 
   // Resume previous plan/history if available
-  if (resumeKey && RESUME_STORE.has(resumeKey)) {
-    try {
-      const snap = RESUME_STORE.get(resumeKey)!;
-      if (snap?.plan) {
-        plan.version = snap.plan.version || 0;
-        plan.steps = Array.isArray(snap.plan.steps) ? [...snap.plan.steps] : [];
-      }
-      if (Array.isArray(snap?.runReport?.steps)) stepResults.push(...(snap!.runReport!.steps as StepResult[]));
-      else if (Array.isArray(snap?.history)) stepResults.push(...(snap!.history as any[]));
-      onEvent({ type: 'message', message: 'Resuming existing thread state', correlationId: cid });
-    } catch {}
+  if (plan.steps.length > 0) {
+    if (resumeKey) {
+      try {
+        onEvent({ type: 'message', message: 'Resuming existing thread state', correlationId: cid });
+      } catch {}
+    }
   } else {
     try {
       await planWithLLM();
@@ -701,7 +769,7 @@ export async function runOrchestratorEngine(
         pendingCount: hitlState.requests.filter((r) => r.status === 'pending').length
       });
     } catch {}
-    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState });
+    writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: 'awaiting_hitl' });
     onEvent({ type: 'complete', data: pendingSummary as any, correlationId: cid });
     return { final: pendingSummary, metrics: { hitlPending: true } };
   }
@@ -770,7 +838,8 @@ export async function runOrchestratorEngine(
       durationMs: stepResults.reduce((acc, s) => acc + (Number((s.metrics as any)?.durationMs) || 0), 0)
     }
   };
-  writeResumeSnapshot({ plan, history: [...stepResults], runReport, hitl: hitlState });
+  runnerMetadata.completedAt = new Date().toISOString();
+  writeResumeSnapshot({ plan, history: [...stepResults], runReport, hitl: hitlState, status: 'completed' });
   onEvent({ type: 'metrics', data: runReport.summary, correlationId: cid });
   // Emit full run report for UI/clients (message type with structured data)
   onEvent({ type: 'message', message: 'run_report', data: runReport as any, correlationId: cid });
@@ -778,7 +847,6 @@ export async function runOrchestratorEngine(
   return { final: finalBundle, metrics: runReport.summary };
 }
 
-export { RESUME_STORE };
 // Local normalization to avoid cross-package type dependency issues at dev time.
 // Accepts any object and returns a sanitized QA report-like object.
 function normalizeQaReport(input: any): any {

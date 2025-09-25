@@ -168,3 +168,47 @@ export const tasks = pgTable('tasks', {
 })
 
 
+export const orchestratorRuns = pgTable('orchestrator_runs', {
+  runId: text('run_id').primaryKey(),
+  threadId: text('thread_id'),
+  briefId: uuid('brief_id').references(() => briefs.id, { onDelete: 'set null' }),
+  status: text('status').$type<'pending' | 'running' | 'awaiting_hitl' | 'completed' | 'cancelled' | 'removed' | 'failed'>().default('pending'),
+  planSnapshotJson: jsonb('plan_snapshot_json').$type<Record<string, unknown>>().default({ version: 0, steps: [] }),
+  stepHistoryJson: jsonb('step_history_json').$type<Array<Record<string, unknown>>>().default([]),
+  runReportJson: jsonb('run_report_json').$type<Record<string, unknown> | null>().default(null),
+  hitlStateJson: jsonb('hitl_state_json').$type<Record<string, unknown>>().default({ requests: [], responses: [], pendingRequestId: null, deniedCount: 0 }),
+  executionContextJson: jsonb('execution_context_json').$type<Record<string, unknown>>().default({}),
+  runnerMetadataJson: jsonb('runner_metadata_json').$type<Record<string, unknown>>().default({}),
+  pendingRequestId: text('pending_request_id'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+})
+
+export const hitlRequests = pgTable('hitl_requests', {
+  id: text('id').primaryKey(),
+  runId: text('run_id').references(() => orchestratorRuns.runId, { onDelete: 'cascade' }),
+  briefId: uuid('brief_id').references(() => briefs.id, { onDelete: 'set null' }),
+  threadId: text('thread_id'),
+  stepId: text('step_id'),
+  originAgent: text('origin_agent').$type<'strategy' | 'generation' | 'qa'>(),
+  status: text('status').$type<'pending' | 'resolved' | 'denied'>().default('pending'),
+  payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().notNull(),
+  denialReason: text('denial_reason'),
+  metricsJson: jsonb('metrics_json').$type<Record<string, unknown>>().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+})
+
+export const hitlResponses = pgTable('hitl_responses', {
+  id: text('id').primaryKey(),
+  requestId: text('request_id').references(() => hitlRequests.id, { onDelete: 'cascade' }),
+  responseType: text('response_type').$type<'option' | 'approval' | 'rejection' | 'freeform'>(),
+  selectedOptionId: text('selected_option_id'),
+  freeformText: text('freeform_text'),
+  approved: boolean('approved'),
+  responderId: text('responder_id'),
+  responderDisplayName: text('responder_display_name'),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
+})

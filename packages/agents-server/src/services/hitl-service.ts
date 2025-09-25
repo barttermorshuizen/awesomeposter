@@ -156,3 +156,7 @@ export function getHitlService() {
   if (!singleton) singleton = new HitlService()
   return singleton
 }
+
+export function resetHitlService() {
+  singleton = null
+}

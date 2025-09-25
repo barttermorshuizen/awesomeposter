@@ -43,6 +43,13 @@
       "when": 1756390041446,
       "tag": "0005_steady_zzzax",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1758745197000,
+      "tag": "0008_hitl_persistence",
+      "breakpoints": true
     }
   ]
 }
