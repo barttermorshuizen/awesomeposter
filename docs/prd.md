@@ -118,7 +118,8 @@ Apply current typography, spacing, and button styles. Reuse existing status chip
 **File Structure Approach**: Place HITL-specific orchestrator logic in `packages/agents-server/src/orchestrator/hitl/`, Nitro handlers under `server/api/hitl/`, and Vue components in `src/components/hitl/`.
 **Naming Conventions**: Follow existing kebab-case route naming, PascalCase components, and camelCase service functions.
 **Coding Standards**: Adhere to repo ESLint/Prettier rules; maintain TypeScript strictness.
-**Documentation Standards**: Document new endpoints and orchestration flows in `docs/orchestrator_requirements.md` appendix and update README quickstart as needed.
+**Documentation Standards**: Document new endpoints and orchestration flows in `docs/orchestrator_requirements.md` appendix and update README quickstart as needed. Capture an internal handoff note linking to `docs/orchestrator-hitl-runbook.md`, naming operational owners for orchestrator/Nitro/UI, and listing the local dev steps to validate resume/remove before enabling the flag.
+**Handoff Note**: `docs/internal/hitl-handoff.md` records the owners, validation checklist, enable/disable procedure, and reporting expectations for dev HITL toggles.
 
 ### Deployment and Operations
 **Build Process Integration**: Ensure new packages compile via existing `npm run build` pipeline; no additional build steps required.
