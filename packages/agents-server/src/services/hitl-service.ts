@@ -12,6 +12,7 @@ import type { HitlStateEnvelope } from '@awesomeposter/shared'
 import { getHitlRepository } from './hitl-repository'
 import { getHitlContext } from './hitl-context'
 import { genCorrelationId, getLogger } from './logger'
+import { DEFAULT_FALLBACK_QUESTION } from '../tools/hitl'
 
 const DEFAULT_MAX_REQUESTS = Number.parseInt(process.env.HITL_MAX_REQUESTS || '', 10) || 3
 
@@ -40,6 +41,11 @@ export class HitlService {
       throw new Error('HITL context unavailable for request')
     }
     const payload = HitlRequestPayloadSchema.parse(rawPayload)
+    if (payload.question === DEFAULT_FALLBACK_QUESTION) {
+      try {
+        getLogger().warn('hitl_request_fallback_used', { runId: ctx.runId, capabilityId: ctx.capabilityId })
+      } catch {}
+    }
     const originAgent = (ctx.capabilityId ?? 'strategy') as HitlOriginAgent
     const limitMax = ctx.limit.max
     const currentAccepted = ctx.limit.current

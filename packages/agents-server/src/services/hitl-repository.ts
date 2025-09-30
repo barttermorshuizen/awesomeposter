@@ -157,7 +157,10 @@ export class DatabaseHitlRepository implements HitlRepository {
     const responses = responseRows.map((row) => this.mapResponse(row))
 
     const pendingFromRequests = requests.find((req) => req.status === 'pending')?.id ?? null
-    const pendingRequestId = pendingFromRequests ?? (snapshot.pendingRequestId && requests.some((r) => r.id === snapshot.pendingRequestId) ? snapshot.pendingRequestId : null)
+    const fallbackPending = snapshot.pendingRequestId
+      ? requests.find((req) => req.id === snapshot.pendingRequestId && req.status === 'pending')?.id ?? null
+      : null
+    const pendingRequestId = pendingFromRequests ?? fallbackPending ?? null
 
     return {
       requests,

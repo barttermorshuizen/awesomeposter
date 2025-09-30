@@ -41,8 +41,11 @@ export class AgentRuntime {
 
   constructor() {
     if (!process.env.OPENAI_API_KEY) {
-       
-      console.warn('[AgentRuntime] OPENAI_API_KEY not set; SDK calls will fail')
+      try {
+        getLogger().warn('openai_api_key_missing')
+      } catch {
+        console.warn('[AgentRuntime] OPENAI_API_KEY not set; SDK calls will fail')
+      }
     }
   }
 

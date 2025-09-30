@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
     }
     setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
     setHeader(event, 'Access-Control-Allow-Headers', getHeader(event, 'access-control-request-headers') || 'content-type,accept,authorization,x-correlation-id')
-    setHeader(event, 'Access-Control-Max-Age', '600')
+    setHeader(event, 'Access-Control-Max-Age', 600)
     return sendNoContent(event, 204)
   }
 
@@ -85,6 +85,16 @@ export default defineEventHandler(async (event) => {
         getLogger().info('sse_queue', { used: sseSemaphore.used, pending: sseSemaphore.pending, correlationId: cid })
       } catch {}
     }
+    try {
+      const { getLogger } = await import('../../../../src/services/logger')
+      getLogger().info('orchestrator_run_begin', {
+        correlationId: cid,
+        threadId: finalReq.threadId,
+        mode: finalReq.mode,
+        hasObjective: typeof finalReq.objective === 'string' && finalReq.objective.length > 0,
+        options: finalReq.options
+      })
+    } catch {}
     await withSseConcurrency(async () => {
       const injected = (event as any).context?.orch
       const orch = injected || (await import('../../../../src/services/orchestrator-agent')).getOrchestrator()

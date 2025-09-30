@@ -1,0 +1,26 @@
+# Epic HITL-1 Architecture — Human-in-the-Loop Orchestration
+
+## Table of Contents
+
+- [Epic HITL-1 Architecture — Human-in-the-Loop Orchestration](#table-of-contents)
+  - [1. Purpose & Scope](./1-purpose-scope.md)
+  - [2. Guiding Principles & Constraints](./2-guiding-principles-constraints.md)
+  - [3. Current State Summary](./3-current-state-summary.md)
+  - [4. Target Component Architecture](./4-target-component-architecture.md)
+    - [4.1 Agents Server Responsibilities](./4-target-component-architecture.md#41-agents-server-responsibilities)
+    - [4.2 Nitro API Layer](./4-target-component-architecture.md#42-nitro-api-layer)
+    - [4.3 Front-End Integration](./4-target-component-architecture.md#43-front-end-integration)
+    - [4.4 Persistence & Data Model](./4-target-component-architecture.md#44-persistence-data-model)
+  - [5. Key Data Flows](./5-key-data-flows.md)
+    - [5.1 Specialist raises HITL request](./5-key-data-flows.md#51-specialist-raises-hitl-request)
+    - [5.2 Operator responds (resume)](./5-key-data-flows.md#52-operator-responds-resume)
+    - [5.3 Operator cancels (remove)](./5-key-data-flows.md#53-operator-cancels-remove)
+    - [5.4 Restart recovery](./5-key-data-flows.md#54-restart-recovery)
+  - [6. API Surface](./6-api-surface.md)
+  - [7. Front-End State & UX Contract](./7-front-end-state-ux-contract.md)
+  - [8. Configuration & Feature Flagging](./8-configuration-feature-flagging.md)
+  - [9. Observability & Telemetry](./9-observability-telemetry.md)
+  - [10. Security & Compliance](./10-security-compliance.md)
+  - [11. Rollout Strategy](./11-rollout-strategy.md)
+  - [12. Risks & Mitigations](./12-risks-mitigations.md)
+  - [13. Decisions on Deferred Scope](./13-decisions-on-deferred-scope.md)

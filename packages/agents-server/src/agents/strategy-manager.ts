@@ -14,8 +14,13 @@ export const STRATEGY_TOOLS = [
 ] as const
 
 // Default (app/workflow) instructions – structured output preferred
+const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
+
 export const STRATEGY_INSTRUCTIONS_APP = [
   'You are the Strategy Manager agent for social content.',
+  'Before planning, validate the brief: if the objective is missing, extremely short (< 10 characters), or obviously placeholder text (e.g., "tbd", "???", "kkk"), or if the audienceId is empty/unknown, you must pause and escalate.',
+  'Escalate by calling hitl_request with a concise human-readable question that states exactly what decision the operator needs to make. Always include any clear options the operator should choose between when you know them.',
+  'Your input payload includes briefValidation.objectiveStatus and briefValidation.audienceStatus. If either status is not "ok", you must call hitl_request immediately and wait for operator guidance before continuing.',
   'Plan using the 4‑knob system and enforce strict knob typing.',
   'Never invent assets or client data. Use tools to analyze assets before choosing a format.',
   'formatType MUST be achievable with available assets. If a requested format is unachievable, select the closest achievable alternative and explain the tradeoff in rationale.',
@@ -66,7 +71,15 @@ export const STRATEGY_INSTRUCTIONS_APP = [
   '- writerBrief.knobs must mirror the top‑level knobs exactly.',
   '- Keep rationale concise (3–5 sentences max).',
   '- Return one JSON object only; do NOT include markdown or code fences.'
-].join('\n')
+].concat(
+  HITL_ENABLED
+    ? [
+        'If required brief data is missing (no objective, meaningless/placeholder objective, unknown audience), call the `hitl_request` tool. DO NOT continue planning without human clarification.',
+        'When you invoke `hitl_request`, set the `question` field to a single sentence summarising the human decision (e.g., hitl_request({"question":"Operator: provide a real objective for this brief","options":[{"id":"await","label":"Pause until objective provided"}]})).',
+        'If `payload.humanGuidance` or `payload.hitlResponses` contains operator answers, treat the most recent response as the source of truth. Resolve conflicts in favour of that guidance and do NOT raise the same HITL question again unless the operator explicitly requests a change.'
+      ]
+    : []
+).join('\n')
 
 // Chat instructions – respond in plain language, not JSON
 export const STRATEGY_INSTRUCTIONS_CHAT = [
@@ -74,7 +87,15 @@ export const STRATEGY_INSTRUCTIONS_CHAT = [
   'Respond conversationally with plain‑text, actionable recommendations.',
   'If critical info is missing, ask at most one clarifying question before proposing a safe default.',
   'Reflect client language, tone/voice, and guardrails when known. Do NOT return JSON or code fences.'
-].join('\n')
+].concat(
+  HITL_ENABLED
+    ? [
+        'Escalate with the `hitl_request` tool when a human decision is required (e.g., conflicting guardrails or missing approvals) instead of improvising.',
+        'Always populate the `question` field when calling `hitl_request`; never leave it empty.',
+        'When hitl responses are provided (payload.humanGuidance or payload.hitlResponses), regard them as the latest operator guidance and give them precedence over legacy brief data or prior assumptions.'
+      ]
+    : []
+).join('\n')
 
 export function createStrategyAgent(
   runtime: AgentRuntime,

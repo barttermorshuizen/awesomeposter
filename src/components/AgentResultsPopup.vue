@@ -4,6 +4,9 @@ import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality } fr
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
+import HitlPromptPanel from './HitlPromptPanel.vue'
+import { useHitlStore } from '@/stores/hitl'
+import { storeToRefs } from 'pinia'
 
 type BriefInput = {
   id: string
@@ -40,6 +43,7 @@ const frames = ref<Array<{ id?: string; type: AgentEvent['type']; data: AgentEve
 const correlationId = ref<string | undefined>(undefined)
 const errorMsg = ref<string | null>(null)
 const backlog = ref<{ busy: boolean; retryAfter: number; pending: number; limit: number }>({ busy: false, retryAfter: 0, pending: 0, limit: 0 })
+const runThreadId = ref<string | null>(null)
 
 // Plan state (from plan_update frames)
 type PlanStep = { id: string; capabilityId?: string; action?: string; label?: string; status: 'pending'|'in_progress'|'done'|'skipped'; note?: string }
@@ -48,6 +52,7 @@ const plan = ref<PlanState | null>(null)
 
 // Streaming handle
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
+let resumeHandleInFlight = false
 
 // Final result payload (FinalBundle mapped to legacy AppResult-like shape for this view)
 type AppResultView = {
@@ -57,6 +62,9 @@ type AppResultView = {
   ['quality-report']?: unknown
 }
 const appResult = ref<AppResultView | null>(null)
+
+const hitlStore = useHitlStore()
+const { pendingRun } = storeToRefs(hitlStore)
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
@@ -77,6 +85,8 @@ function reset() {
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
   appResult.value = null
   plan.value = null
+  runThreadId.value = null
+  hitlStore.resetAll()
 }
 
 function close() {
@@ -87,6 +97,7 @@ function stopRun() {
   running.value = false
   try { streamHandle?.abort() } catch {}
   streamHandle = null
+  hitlStore.resetAll()
 }
 
 function genCid(): string {
@@ -153,6 +164,10 @@ async function startRun() {
   }
   running.value = true
   const cid = genCid()
+  hitlStore.resetAll()
+  if (props.brief?.id) {
+    hitlStore.setThreadId(props.brief.id)
+  }
 
   try {
     // 1) Load client profile
@@ -195,7 +210,7 @@ async function startRun() {
     }
 
     // 4) Build complete objective (no briefId)
-    const objective = buildCompleteObjective({
+    const completeObjective = buildCompleteObjective({
       brief: {
         id: briefFull.id,
         title: (briefFull.title ?? props.brief.title) || '',
@@ -225,13 +240,26 @@ async function startRun() {
         fileSize: a.fileSize
       }))
     })
+    const primaryObjective = pickBriefObjective({
+      objective: briefFull.objective ?? props.brief.objective,
+      description: briefFull.description ?? props.brief.description
+    } as any)
 
     const body: AgentRunRequest = {
       mode: 'app',
-      objective,
+      objective: primaryObjective,
       options: {
         schemaName: 'AppResult'
+      },
+      state: {
+        brief: briefFull,
+        clientProfile: profData.profile ?? null,
+        assets: briefAssets,
+        contextObjective: completeObjective
       }
+    }
+    if (props.brief?.id) {
+      body.threadId = props.brief.id
     }
 
     const url = `${AGENTS_BASE_URL}/api/v1/agent/run.stream`
@@ -255,6 +283,16 @@ async function startRun() {
           correlationId.value = evt.correlationId
         }
         switch (evt.type) {
+          case 'start': {
+            const data = evt.data as Record<string, unknown> | undefined
+            const thread = typeof data?.threadId === 'string' ? data.threadId : null
+            if (thread) {
+              runThreadId.value = thread
+              hitlStore.setThreadId(thread)
+              void hitlStore.hydrateFromPending()
+            }
+            break
+          }
           case 'plan_update': {
             try {
               const d = evt.data as unknown
@@ -272,6 +310,28 @@ async function startRun() {
             } catch {}
             break
           }
+          case 'message': {
+            if (evt.message === 'hitl_request' && evt.data) {
+              const data = evt.data as Record<string, unknown>
+              const requestId = typeof data?.requestId === 'string' ? data.requestId : undefined
+              const payload = data?.payload as any
+              const originAgent = data?.originAgent as any
+              if (requestId && payload && originAgent) {
+                hitlStore.startTrackingRequest({
+                  requestId,
+                  payload,
+                  originAgent,
+                  receivedAt: new Date(),
+                  threadId: runThreadId.value ?? pendingRun.value.threadId ?? null
+                })
+                void hitlStore.hydrateFromPending()
+              }
+            } else if (evt.message === 'hitl_request_denied') {
+              const reason = typeof (evt.data as any)?.reason === 'string' ? (evt.data as any).reason : undefined
+              hitlStore.handleDenial(reason)
+            }
+            break
+          }
           case 'warning':
             // keep running
             break
@@ -282,6 +342,17 @@ async function startRun() {
           case 'complete': {
             running.value = false
             const dUnknown = evt.data as unknown
+            if (isRecord(dUnknown) && 'status' in dUnknown) {
+              if (dUnknown.status === 'pending_hitl') {
+                const pendingId = typeof dUnknown.pendingRequestId === 'string' ? dUnknown.pendingRequestId : null
+                hitlStore.markAwaiting(pendingId)
+                void hitlStore.hydrateFromPending()
+              } else {
+                hitlStore.clearRequest('resolved')
+              }
+            } else {
+              hitlStore.clearRequest('resolved')
+            }
             // If FinalBundle, map to AppResult-like shape for this UI
             if (isFinalBundle(dUnknown)) {
               const rRaw = dUnknown.result as unknown
@@ -347,7 +418,32 @@ function retry() {
   if (running.value) return
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
   appResult.value = null
+  hitlStore.resetAll()
   startRun()
+}
+
+async function handleHitlResume() {
+  if (!isOpen.value) return
+  if (running.value || resumeHandleInFlight) return
+  resumeHandleInFlight = true
+  try {
+    backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
+    errorMsg.value = null
+    if (pendingRun.value.threadId) {
+      runThreadId.value = pendingRun.value.threadId
+      hitlStore.setThreadId(pendingRun.value.threadId)
+    }
+    if (pendingRun.value.runId) {
+      hitlStore.setRunId(pendingRun.value.runId)
+    }
+    if (streamHandle) {
+      try { streamHandle.abort() } catch {}
+      streamHandle = null
+    }
+    await startRun()
+  } finally {
+    resumeHandleInFlight = false
+  }
 }
 
 function downloadJson() {
@@ -515,6 +611,7 @@ function planStepNote(step: PlanStep) {
         <!-- Live plan, timeline and result two-column layout -->
         <v-row align="stretch" dense>
           <v-col cols="12" md="6">
+            <HitlPromptPanel @resume="handleHitlResume" />
             <!-- Planning view (mirrors Sandbox plan table) -->
             <v-card class="mb-3">
               <v-card-title class="d-flex align-center">

@@ -246,6 +246,8 @@ export async function runOrchestratorEngine(
   const capabilityEntries = getCapabilityRegistry();
   const policy = (req.options as any)?.toolPolicy as 'auto' | 'required' | 'off' | undefined;
   const requestAllowlist = (req.options as any)?.toolsAllowlist as string[] | undefined;
+  const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
+  const runId = resumeKey || cid || genCorrelationId();
 
   const toolEventForwarder = (ev: any) => {
     const name = String(ev?.name || '');
@@ -259,16 +261,56 @@ export async function runOrchestratorEngine(
     try {
       const instance = (entry.create as any)(runtime, toolEventForwarder, { policy, requestAllowlist }, 'app');
       (registry as any)[entry.id] = { name: entry.name, instance };
-    } catch {
+      try { getLogger().info('capability_agent_ready', { runId, capabilityId: entry.id, hasInstance: Boolean(instance) }); } catch {}
+    } catch (err) {
       // If creation fails, keep registry slot absent; planner may replan/finalize
+      try { getLogger().error('capability_agent_failed', { runId, capabilityId: entry.id, error: String((err as Error)?.message || err) }); } catch {}
     }
   }
+  try {
+    getLogger().info('capability_registry', {
+      runId,
+      entries: Object.entries(registry).map(([id, value]) => ({ id, hasInstance: Boolean(value?.instance) }))
+    })
+  } catch {}
 
-  const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
   const hitlService = getHitlService();
-  const runId = resumeKey || cid || genCorrelationId();
   const persistence = getOrchestratorPersistence();
   let resumeSnapshot = await persistence.load(runId);
+  try {
+    getLogger().info('orchestrator_resume_snapshot', {
+      runId,
+      planSteps: resumeSnapshot.plan?.steps?.length ?? 0,
+      status: resumeSnapshot.status,
+      pendingRequestId: resumeSnapshot.pendingRequestId,
+      threadId: resumeSnapshot.threadId,
+      briefId: resumeSnapshot.briefId
+    });
+  } catch {}
+
+  const planStepsArray = Array.isArray(resumeSnapshot.plan?.steps) ? resumeSnapshot.plan.steps : [];
+  const hasActiveSteps = planStepsArray.some((s) => s.status === 'pending' || s.status === 'in_progress');
+  const isFinalStatus = ['completed', 'cancelled', 'removed', 'failed'].includes(resumeSnapshot.status);
+
+  if (!hasActiveSteps) {
+    try {
+      getLogger().info('orchestrator_resume_reset', { runId, previousStatus: resumeSnapshot.status, stepCount: planStepsArray.length });
+    } catch {}
+    resumeSnapshot.plan = { version: 0, steps: [] };
+    resumeSnapshot.history = [];
+    resumeSnapshot.runReport = null;
+    resumeSnapshot.hitlState = { requests: [], responses: [], pendingRequestId: null, deniedCount: 0 };
+    resumeSnapshot.pendingRequestId = null;
+    resumeSnapshot.status = 'running';
+    await persistence.save(runId, {
+      plan: resumeSnapshot.plan,
+      history: resumeSnapshot.history,
+      runReport: resumeSnapshot.runReport,
+      hitlState: resumeSnapshot.hitlState,
+      pendingRequestId: null,
+      status: 'running'
+    });
+  }
   const executionContext: Record<string, unknown> = {
     ...(resumeSnapshot.executionContext ?? {}),
     request: {
@@ -320,6 +362,69 @@ export async function runOrchestratorEngine(
   } = {};
 
   let hitlAwaiting: HitlRequestRecord | null = hitlPending;
+
+  const resetArtifactsForCapability = (capabilityId?: string) => {
+    switch (capabilityId) {
+      case 'strategy':
+        delete artifacts.strategy;
+        break;
+      case 'generation':
+        delete artifacts.generation;
+        break;
+      case 'qa':
+        delete artifacts.qa;
+        break;
+      default:
+        break;
+    }
+  };
+
+  const toEpochMs = (value: unknown) => {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  };
+
+  const buildHumanGuidance = (input: { request: HitlRequestRecord; responses: HitlRunState['responses'] }) => {
+    const options = Array.isArray(input.request.payload?.options) ? input.request.payload!.options : [];
+    return {
+      question: typeof input.request.payload?.question === 'string' ? input.request.payload!.question : null,
+      responses: input.responses.map((res) => ({
+        id: res.id,
+        responseType: res.responseType,
+        selectedOptionId: res.selectedOptionId ?? null,
+        selectedOptionLabel: res.selectedOptionId
+          ? options.find((opt) => opt.id === res.selectedOptionId)?.label ?? null
+          : null,
+        freeformText: res.freeformText ?? null,
+        approved: typeof res.approved === 'boolean' ? res.approved : null,
+        createdAt: res.createdAt,
+        responderId: res.responderId ?? null,
+        responderDisplayName: res.responderDisplayName ?? null
+      })),
+      respondedAt: input.responses[input.responses.length - 1]?.createdAt ?? null
+    };
+  };
+
+  const getLatestResolvedGuidanceFor = (capabilityId?: string) => {
+    if (!capabilityId) return null;
+    const resolved = hitlState.requests.filter((req) => req.status === 'resolved' && req.originAgent === capabilityId);
+    if (!resolved.length) return null;
+    resolved.sort((a, b) => toEpochMs(b.updatedAt ?? b.createdAt) - toEpochMs(a.updatedAt ?? a.createdAt));
+    for (const request of resolved) {
+      const responses = hitlState.responses
+        .filter((res) => res.requestId === request.id)
+        .slice()
+        .sort((a, b) => toEpochMs(a.createdAt) - toEpochMs(b.createdAt));
+      if (!responses.length) continue;
+      return buildHumanGuidance({ request, responses });
+    }
+    return null;
+  };
 
   const writeResumeSnapshot = (
     updates: Partial<{ plan: Plan; history: StepResult[]; runReport?: RunReport | null; hitl: HitlRunState; status?: OrchestratorRunStatus }>
@@ -401,6 +506,9 @@ export async function runOrchestratorEngine(
   // Future: threadId should be preferred over briefId for resumability; briefId kept only as legacy fallback when present.
   const emitPlanUpdate = (patch: any) => {
     plan.version += 1;
+    try {
+      getLogger().info('plan_update_emit', { runId, version: plan.version, added: Array.isArray(patch?.stepsAdd) ? patch.stepsAdd.length : 0, updated: Array.isArray(patch?.stepsUpdate) ? patch.stepsUpdate.length : 0 })
+    } catch {}
     onEvent({ type: 'plan_update' as any, data: { patch, planVersion: plan.version, plan }, correlationId: cid });
     writeResumeSnapshot({
       plan,
@@ -430,16 +538,52 @@ export async function runOrchestratorEngine(
     emitPlanUpdate({ stepsUpdate: [{ id, status, note }] });
   };
 
-  const attachHitlContext = (payload: any = {}) => {
-    if (hitlState.responses.length > 0) {
-      payload.hitlResponses = hitlState.responses.map((r) => ({ ...r }));
+  const attachHitlContext = (payload: any = {}, capabilityId?: string) => {
+    const relevantRequests = capabilityId
+      ? hitlState.requests.filter((req) => req.originAgent === capabilityId)
+      : hitlState.requests;
+    const relevantRequestIds = new Set(relevantRequests.map((req) => req.id));
+
+    const relevantResponses = capabilityId
+      ? hitlState.responses.filter((res) => relevantRequestIds.has(res.requestId))
+      : hitlState.responses;
+
+    if (relevantResponses.length > 0) {
+      payload.hitlResponses = relevantResponses.map((r) => ({ ...r }));
     }
-    if (hitlPending) {
+
+    if (hitlPending && (!capabilityId || hitlPending.originAgent === capabilityId)) {
       payload.pendingHitlRequest = { ...hitlPending };
     }
+
     return payload;
   };
 
+  const requestContext = (executionContext.request || {}) as Record<string, any>;
+  const initialState = (executionContext.initialState || {}) as Record<string, any>;
+  const briefFromState = (initialState.brief || {}) as Record<string, any>;
+  const clientProfile = (initialState.clientProfile || requestContext.clientProfile || {}) as Record<string, any>;
+  const contextObjective = typeof initialState.contextObjective === 'string' ? initialState.contextObjective : undefined;
+
+  const assessBrief = () => {
+    const objectiveRaw = String(briefFromState.objective || requestContext.objective || '').trim();
+    const audienceIdRaw = String(briefFromState.audienceId || requestContext.audienceId || '').trim();
+    const placeholderPattern = /^(tbd|todo|n\/a|na|none|placeholder|sample|xxx|kkk|\?+|fill\s?me\s?in)$/i;
+    const objectiveStatus = !objectiveRaw || objectiveRaw.length < 10 || placeholderPattern.test(objectiveRaw)
+      ? 'placeholder'
+      : 'ok';
+    const audienceStatus = !audienceIdRaw || audienceIdRaw.toLowerCase() === 'unknown'
+      ? 'missing'
+      : 'ok';
+    return {
+      objectiveStatus,
+      audienceStatus,
+      objective: objectiveRaw || null,
+      audienceId: audienceIdRaw || null
+    };
+  };
+
+  const briefAssessment = assessBrief();
   const buildPayloadForCapability = (capabilityId?: string) => {
     if (capabilityId === 'generation') {
       const payload: any = { writerBrief: artifacts.strategy?.writerBrief, knobs: artifacts.strategy?.knobs };
@@ -447,24 +591,79 @@ export async function runOrchestratorEngine(
       const qaRec = (artifacts.qa?.result as any)?.contentRecommendations;
       if (Array.isArray(qaRec) && qaRec.length > 0) payload.contentRecommendations = qaRec;
       if (typeof artifacts.generation?.draftText === 'string' && artifacts.generation!.draftText!.trim().length > 0) payload.previousDraft = artifacts.generation!.draftText;
-      return attachHitlContext(payload);
+      const withHitl = attachHitlContext(payload, 'generation');
+      const guidance = getLatestResolvedGuidanceFor('generation');
+      if (guidance) withHitl.humanGuidance = guidance;
+      return withHitl;
     }
     if (capabilityId === 'qa') {
-      return attachHitlContext({ draftText: artifacts.generation?.draftText });
+      const withHitl = attachHitlContext({ draftText: artifacts.generation?.draftText }, 'qa');
+      const guidance = getLatestResolvedGuidanceFor('qa');
+      if (guidance) withHitl.humanGuidance = guidance;
+      return withHitl;
     }
-    return attachHitlContext({});
+    if (capabilityId === 'strategy') {
+      const withHitl = attachHitlContext({
+        clientProfile,
+        brief: briefFromState,
+        briefValidation: briefAssessment,
+        contextObjective
+      }, 'strategy');
+      const guidance = getLatestResolvedGuidanceFor('strategy');
+      if (guidance) withHitl.humanGuidance = guidance;
+      return withHitl;
+    }
+    const withHitl = attachHitlContext({}, capabilityId);
+    const guidance = capabilityId ? getLatestResolvedGuidanceFor(capabilityId) : null;
+    if (guidance) withHitl.humanGuidance = guidance;
+    return withHitl;
   };
 
   const executeSpecialistStep = async (stepId: string, capabilityId?: string, payload?: any) => {
     const sid = capabilityId as SpecialistId;
     const agentInstance = registry[sid]?.instance;
-    if (!agentInstance) return;
+    if (!agentInstance) {
+      try { getLogger().error('specialist_instance_missing', { runId, capabilityId: sid }); } catch {}
+      return;
+    }
     onEvent({ type: 'handoff', message: 'occurred', data: { from: 'orchestrator', to: registry[sid]!.name }, correlationId: cid });
     const runner = new Runner({ model: runtime.getModel() });
+    const payloadObj = (payload && typeof payload === 'object') ? payload : {};
     const payloadText = (() => {
-      try { return JSON.stringify(payload ?? {}, null, 2); } catch { return String(payload ?? ''); }
+      try { return JSON.stringify(payloadObj, null, 2); } catch { return String(payloadObj ?? ''); }
     })();
-    const prompt = [`Objective:\n${req.objective}`, `Payload:\n${payloadText}`, `Follow your role instructions and use tools as needed.`].join('\n\n');
+    const humanGuidance = payloadObj && typeof payloadObj === 'object' ? (payloadObj as any).humanGuidance : null;
+    const needsEscalation = sid === 'strategy' && (briefAssessment.objectiveStatus !== 'ok' || briefAssessment.audienceStatus !== 'ok');
+    const escalationHint = needsEscalation && !humanGuidance
+      ? 'Brief validation indicates required brief data is still missing. Call hitl_request with a single clear question before continuing.'
+      : null;
+    const guidanceBlock = humanGuidance && Array.isArray(humanGuidance.responses) && humanGuidance.responses.length > 0
+      ? (() => {
+          const lines: string[] = ['Latest operator guidance via HITL:'];
+          if (typeof humanGuidance.question === 'string' && humanGuidance.question.trim().length > 0) {
+            lines.push(`Question: ${humanGuidance.question}`);
+          }
+          lines.push('Responses:');
+          for (const entry of humanGuidance.responses as Array<any>) {
+            const parts: string[] = [];
+            if (entry?.selectedOptionLabel) parts.push(`Option: ${entry.selectedOptionLabel}`);
+            if (entry?.selectedOptionId && !entry?.selectedOptionLabel) parts.push(`Option ID: ${entry.selectedOptionId}`);
+            if (typeof entry?.freeformText === 'string' && entry.freeformText.trim().length > 0) parts.push(entry.freeformText.trim());
+            if (parts.length === 0 && typeof entry?.responseType === 'string') parts.push(entry.responseType);
+            lines.push(`- ${parts.join(' — ')}`);
+          }
+          lines.push('---');
+          lines.push('Operator guidance overrides earlier brief data. Apply it before requesting another hitl_request.');
+          return lines.join('\n');
+        })()
+      : null;
+    const promptParts = [
+      guidanceBlock,
+      escalationHint,
+      payloadText ? `Payload:\n${payloadText}` : null,
+      'Follow your role instructions and use tools as needed.'
+    ].filter(Boolean) as string[];
+    const prompt = promptParts.join('\n\n');
     const startedAt = Date.now();
 
     // Per-step reliability: timeout + limited retries (strategy tends to take longer)
@@ -584,14 +783,29 @@ export async function runOrchestratorEngine(
       { role: 'system' as const, content: plannerSystem },
       { role: 'user' as const, content: context }
     ];
-    const res = await runtime.runChat(messages, undefined, { toolPolicy: 'off' });
-    const text = res.content || '';
-    try { onEvent({ type: 'message', message: 'planner_text', data: { preview: String(text).slice(0, 400) }, correlationId: cid }); } catch {}
+    let text = '';
+    try {
+      const res = await runtime.runChat(messages, undefined, { toolPolicy: 'off' });
+      try {
+        getLogger().info('plan_with_llm_result', { runId, hasContent: Boolean(res?.content), type: typeof res?.content });
+      } catch {}
+      text = res?.content ? String(res.content) : '';
+    } catch (err) {
+      try {
+        getLogger().error('plan_with_llm_run_error', { runId, error: String((err as Error)?.message || err) });
+      } catch {}
+      throw err;
+    }
+    try {
+      getLogger().info('plan_with_llm_raw', { runId, length: text.length, preview: String(text).slice(0, 120) });
+      onEvent({ type: 'message', message: 'planner_text', data: { preview: String(text).slice(0, 400) }, correlationId: cid });
+    } catch {}
     let patch: any = null;
     const candidates = extractJsonCandidates(text);
     try { onEvent({ type: 'message', message: 'planner_candidates', data: { count: candidates.length }, correlationId: cid }); } catch {}
     for (const cand of candidates) {
       try {
+        getLogger().info('plan_with_llm_candidate', { runId, length: cand.length, preview: cand.slice(0, 120) });
         const obj = JSON.parse(cand);
         const candidate = (obj as any).planPatch ?? obj;
         const parsed = PlanPatchSchema.safeParse(candidate);
@@ -618,6 +832,7 @@ export async function runOrchestratorEngine(
       }
     }
     ensureFinalizeStep();
+    try { getLogger().info('plan_with_llm_after', { runId, version: plan.version, stepCount: plan.steps.length }); } catch {}
     const hasCapabilitySteps = plan.steps.some((s) => !!s.capabilityId);
     if (!hasCapabilitySteps) {
       const fallback = {
@@ -693,6 +908,10 @@ export async function runOrchestratorEngine(
   };
   // Use an infinite loop + explicit break to avoid TS literal-union narrowing warnings
   for (;;) {
+    try {
+      const planSnapshot = plan.steps.map((s) => ({ id: s.id, status: s.status, capabilityId: s.capabilityId, action: s.action }));
+      getLogger().debug('orchestrator_state_loop', { runId, state, planSteps: planSnapshot.length, pendingSteps: planSnapshot.filter((s) => s.status === 'pending').length });
+    } catch {}
     if (finished) break;
     if (state === 'plan') {
       const next = getNextPendingStep();
@@ -741,12 +960,14 @@ export async function runOrchestratorEngine(
         }
       );
       refreshHitlDerivedState(hitlState);
-      setStepStatusById(next.id, 'done');
       if (hitlAwaiting) {
+        resetArtifactsForCapability(next.capabilityId as string | undefined);
+        setStepStatusById(next.id, 'pending');
         onEvent({ type: 'phase', phase: 'idle' as any, message: 'Awaiting human input', correlationId: cid });
         finished = true;
         break;
       }
+      setStepStatusById(next.id, 'done');
       state = 'replan';
     } else if (state === 'replan') {
       // On replan, only extend the plan for revisions if QA indicates

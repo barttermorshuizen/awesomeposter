@@ -2,6 +2,8 @@ import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
 
+const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
+
 export class ContentGeneratorAgent {
   constructor(private runtime: AgentRuntime) {}
 }
@@ -25,7 +27,15 @@ export const CONTENT_INSTRUCTIONS_APP = [
   '- If "previousDraft" is provided, use it as the base and only change what is required to follow the recommendations; otherwise, regenerate while deviating only where needed to satisfy them.',
   'Use tools to apply format‑specific rendering and platform optimization while respecting platform rules and client policy.',
   'Output only the final post as plain text (no JSON or code fences).'
-].join('\n')
+].concat(
+  HITL_ENABLED
+    ? [
+        'If brand, legal, or tone decisions cannot be resolved safely, pause and call the `hitl_request` tool with the question and any viable draft options instead of publishing uncertain copy.',
+        'When you invoke `hitl_request`, ensure the `question` field clearly states the decision the operator must make and include any draft alternatives as options.',
+        'Whenever `payload.humanGuidance` or `payload.hitlResponses` is present, treat those operator answers as the highest-priority guidance. Apply them before relying on legacy brief data, and do not escalate the same question again unless new clarification is required.'
+      ]
+    : []
+).join('\n')
 
 // Chat instructions – used when the user is conversing directly with this agent.
 // In chat mode we want plain text, not JSON wrappers.
@@ -36,7 +46,15 @@ export const CONTENT_INSTRUCTIONS_CHAT = [
   'Structure each post: first line hook, blank line, then body.',
   'If the user provides "contentRecommendations" and/or a previous draft, treat it as a revision: keep the copy intact except changes required to follow the recommendations.',
   'Use tools to apply format‑specific rendering and platform optimization while respecting platform rules and client policy.'
-].join('\n')
+].concat(
+  HITL_ENABLED
+    ? [
+        'If the user requests content that conflicts with policy or needs human approval, invoke the `hitl_request` tool to escalate rather than guessing.',
+        'Always populate the `question` field when calling `hitl_request`; describe the decision in one concise sentence.',
+        'When you receive humanGuidance or hitlResponses in the payload, assume those operator directives outrank earlier instructions and incorporate them immediately.'
+      ]
+    : []
+).join('\n')
 
 export function createContentAgent(
   runtime: AgentRuntime,
