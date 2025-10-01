@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import AgentResultsPopup from '@/components/AgentResultsPopup.vue'
+import { useHitlStore } from '@/stores/hitl'
 
 type Brief = {
   id: string
@@ -24,9 +25,138 @@ const router = useRouter()
 const approvingId = ref<string | null>(null)
 const deletingId = ref<string | null>(null)
 
+const hitlStore = useHitlStore()
+const resumeLoadingId = ref<string | null>(null)
+const removeLoadingId = ref<string | null>(null)
+type PendingMenuEntry = {
+  runId: string | null
+  pendingRequestId: string | null
+  status: 'pending' | 'running' | 'awaiting_hitl' | 'completed' | 'cancelled' | 'removed' | 'failed' | null
+}
+const pendingMenuState = ref<Record<string, PendingMenuEntry>>({})
+
 const createPostOpen = ref(false)
 const selectedBrief = ref<Brief | null>(null)
 function onCreatePost(row: Brief): void { selectedBrief.value = row; createPostOpen.value = true }
+
+function menuEntryForBrief(briefId: string): PendingMenuEntry | undefined {
+  return briefId ? pendingMenuState.value[briefId] : undefined
+}
+
+function canResumeRun(briefId: string): boolean {
+  const entry = menuEntryForBrief(briefId)
+  if (!entry) return false
+  return Boolean(entry.pendingRequestId) || entry.status === 'awaiting_hitl' || entry.status === 'pending'
+}
+
+function canRemoveRun(briefId: string): boolean {
+  const entry = menuEntryForBrief(briefId)
+  if (!entry) return false
+  return Boolean(entry.runId || entry.pendingRequestId)
+}
+
+async function refreshPendingMenuState() {
+  try {
+    const res = await fetch('/api/hitl/pending', { headers: { accept: 'application/json' } })
+    if (!res.ok) {
+      pendingMenuState.value = {}
+      return
+    }
+    const payload = await res.json().catch(() => ({}))
+    const runs = Array.isArray(payload?.runs) ? payload.runs : []
+    const nextState: Record<string, PendingMenuEntry> = {}
+    for (const run of runs) {
+      const runId = typeof run?.runId === 'string' ? run.runId : null
+      const status = typeof run?.status === 'string' ? run.status : null
+      const pendingRequestId = typeof run?.pendingRequestId === 'string'
+        ? run.pendingRequestId
+        : typeof run?.pendingRequest?.id === 'string'
+          ? run.pendingRequest.id
+          : null
+      const entry: PendingMenuEntry = {
+        runId,
+        pendingRequestId,
+        status
+      }
+      const keys = new Set<string>()
+      if (typeof run?.briefId === 'string') keys.add(run.briefId)
+      if (typeof run?.threadId === 'string') keys.add(run.threadId)
+      for (const key of keys) {
+        nextState[key] = entry
+      }
+    }
+    pendingMenuState.value = nextState
+  } catch (err) {
+    console.warn('Unable to load pending HITL runs', err)
+    pendingMenuState.value = {}
+  }
+}
+
+async function hydrateRunForBrief(row: Brief): Promise<void> {
+  hitlStore.setThreadId(row.id)
+  hitlStore.setBriefId(row.id)
+  const entry = menuEntryForBrief(row.id)
+  if (entry?.runId) {
+    hitlStore.setRunId(entry.runId)
+  }
+  await hitlStore.hydrateFromPending({ threadId: row.id, briefId: row.id, force: true })
+}
+
+async function onResumeRun(row: Brief): Promise<void> {
+  if (resumeLoadingId.value === row.id) return
+  resumeLoadingId.value = row.id
+  try {
+    await refreshPendingMenuState()
+    if (!canResumeRun(row.id)) {
+      alert('No suspended create-post run detected for this brief.')
+      return
+    }
+    await hydrateRunForBrief(row)
+    selectedBrief.value = row
+    createPostOpen.value = true
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to resume the suspended run.'
+    alert(message)
+  } finally {
+    resumeLoadingId.value = null
+  }
+}
+
+async function onRemoveRun(row: Brief): Promise<void> {
+  if (removeLoadingId.value === row.id) return
+  removeLoadingId.value = row.id
+  try {
+    await refreshPendingMenuState()
+    if (!canRemoveRun(row.id)) {
+      alert('No running create post to remove for this brief.')
+      return
+    }
+    await hydrateRunForBrief(row)
+    const confirmed = confirm('Remove the running create post? This clears the suspended run so you can start fresh.')
+    if (!confirmed) return
+    await hitlStore.removePendingRun({ reason: 'Operator removed run from brief action menu' })
+    alert('Running create post removed.')
+    await refreshPendingMenuState()
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to remove the running create post.'
+    alert(message)
+  } finally {
+    removeLoadingId.value = null
+  }
+}
+
+async function onMenuToggle(open: boolean, row: Brief): Promise<void> {
+  if (!open) return
+  await refreshPendingMenuState()
+  if (!canResumeRun(row.id) && !canRemoveRun(row.id)) {
+    return
+  }
+  try {
+    await hydrateRunForBrief(row)
+  } catch {
+    // Ignore hydration errors for menu previews; action handlers surface issues.
+  }
+}
 
 const headers = [
   { title: 'Title', key: 'title' },
@@ -69,7 +199,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await refreshPendingMenuState()
+})
 
 // No-op handlers for now
 function onNewBrief(): void { router.push({ name: 'briefs-new' }) }
@@ -210,7 +343,7 @@ function statusColor(status?: string | null): string {
           </template>
 
           <template #[`item.actions`]="{ item }">
-            <v-menu>
+            <v-menu @update:modelValue="(open) => onMenuToggle(open, item as Brief)">
               <template #activator="{ props }">
                 <v-btn v-bind="props" icon variant="text" size="small">
                   <v-icon icon="mdi-dots-vertical" />
@@ -218,9 +351,26 @@ function statusColor(status?: string | null): string {
               </template>
               <v-list density="comfortable">
                 <v-list-item
+                  v-if="!canResumeRun((item as any).id)"
                   prepend-icon="mdi-robot-outline"
                   title="Create post"
                   @click="onCreatePost(item as any)"
+                />
+                <v-list-item
+                  v-if="canResumeRun((item as any).id)"
+                  :prepend-icon="resumeLoadingId === (item as any).id ? 'mdi-progress-clock' : 'mdi-refresh'"
+                  :disabled="Boolean(resumeLoadingId) || Boolean(removeLoadingId === (item as any).id)"
+                  title="Resume creating post"
+                  subtitle="Continue suspended HITL run"
+                  @click="onResumeRun(item as any)"
+                />
+                <v-list-item
+                  v-if="canRemoveRun((item as any).id)"
+                  :prepend-icon="removeLoadingId === (item as any).id ? 'mdi-progress-clock' : 'mdi-delete-alert-outline'"
+                  :disabled="Boolean(removeLoadingId) || Boolean(resumeLoadingId === (item as any).id)"
+                  title="Remove running create post"
+                  subtitle="Clear stalled run and unlock the brief"
+                  @click="onRemoveRun(item as any)"
                 />
                 <v-list-item
                   prepend-icon="mdi-pencil-outline"

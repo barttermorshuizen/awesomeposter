@@ -63,6 +63,9 @@ describe('useHitlStore', () => {
     expect(pendingRun.value.briefId).toBe('brief-789')
     expect(pendingRun.value.status).toBe('awaiting_hitl')
     expect(pendingRun.value.isSuspended).toBe(true)
+    expect(store.isPendingForBrief('brief-789')).toBe(true)
+    expect(store.isPendingForBrief('thread-123')).toBe(true)
+    expect(store.isPendingForBrief('brief-other')).toBe(false)
     expect(store.activeRequest?.createdAt?.toISOString()).toBe('2025-01-01T01:00:00.000Z')
     expect(store.activeRequest?.originAgent).toBe('qa')
     expect(store.activeRequest?.question).toBe('Updated question')
@@ -151,6 +154,7 @@ describe('useHitlStore', () => {
     const store = useHitlStore()
     const { pendingRun } = storeToRefs(store)
     store.setThreadId('thread-remove')
+    store.setBriefId('brief-remove')
     store.setRunId('run-remove')
     store.startTrackingRequest({
       requestId: 'req-remove',
@@ -186,6 +190,25 @@ describe('useHitlStore', () => {
       }
     })
     expect(pendingRun.value.pendingRequestId).toBeNull()
+  })
+
+  it('matches pending runs by assigned brief id or thread id', () => {
+    const store = useHitlStore()
+    store.setThreadId('thread-alpha')
+    store.setBriefId('brief-alpha')
+    const { pendingRun } = storeToRefs(store)
+    pendingRun.value.isSuspended = true
+    pendingRun.value.pendingRequestId = 'req-alpha'
+
+    expect(store.isPendingForBrief('thread-alpha')).toBe(true)
+    expect(store.isPendingForBrief('brief-alpha')).toBe(true)
+
+    pendingRun.value.isSuspended = false
+    pendingRun.value.pendingRequestId = null
+
+    expect(store.isPendingForBrief('thread-alpha')).toBe(false)
+    expect(store.isPendingForBrief('brief-beta')).toBe(false)
+    expect(store.isPendingForBrief(null)).toBe(false)
   })
 
   it('preserves submitted state when hydrating same request after success', async () => {

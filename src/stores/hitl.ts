@@ -123,8 +123,19 @@ export const useHitlStore = defineStore('hitl', () => {
     pendingRun.value.threadId = threadId
   }
 
+  function setBriefId(briefId: string | null) {
+    pendingRun.value.briefId = briefId
+  }
+
   function setRunId(runId: string | null) {
     pendingRun.value.runId = runId
+  }
+
+  function isPendingForBrief(briefId: string | null | undefined) {
+    if (!briefId) return false
+    const matches = pendingRun.value.briefId === briefId || pendingRun.value.threadId === briefId
+    if (!matches) return false
+    return pendingRun.value.isSuspended || Boolean(pendingRun.value.pendingRequestId)
   }
 
   function startTrackingRequest(input: {
@@ -441,7 +452,9 @@ export const useHitlStore = defineStore('hitl', () => {
     operatorProfile,
     resetAll,
     setThreadId,
+    setBriefId,
     setRunId,
+    isPendingForBrief,
     startTrackingRequest,
     markAwaiting,
     clearRequest,
