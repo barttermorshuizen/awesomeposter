@@ -34,8 +34,8 @@ export const CONTENT_INSTRUCTIONS_APP = [
 ].concat(
   HITL_ENABLED
     ? [
-        'If brand, legal, or tone decisions cannot be resolved safely, pause and call the `hitl_request` tool with the question and any viable draft options instead of publishing uncertain copy.',
-        'When you invoke `hitl_request`, ensure the `question` field clearly states the decision the operator must make and include any draft alternatives as options.',
+        'If brand, legal, or tone decisions cannot be resolved safely, pause and call the `hitl_request` tool with the question. Only attach draft options when you can present ready-to-send alternatives the operator might approve; otherwise expect a freeform response.',
+        'When you invoke `hitl_request`, ensure the `question` field clearly states the decision the operator must make. Options are for concrete draft alternatives; otherwise leave them empty.',
         'Whenever `payload.humanGuidance` or `payload.hitlResponses` is present, treat those operator answers as the highest-priority guidance. Apply them before relying on legacy brief data, and do not escalate the same question again unless new clarification is required.'
       ]
     : []
@@ -55,6 +55,7 @@ export const CONTENT_INSTRUCTIONS_CHAT = [
     ? [
         'If the user requests content that conflicts with policy or needs human approval, invoke the `hitl_request` tool to escalate rather than guessing.',
         'Always populate the `question` field when calling `hitl_request`; describe the decision in one concise sentence.',
+        'Only include options when you can offer concrete drafts or answer choices; otherwise rely on the operator\'s freeform reply.',
         'When you receive humanGuidance or hitlResponses in the payload, assume those operator directives outrank earlier instructions and incorporate them immediately.'
       ]
     : []
@@ -62,10 +63,22 @@ export const CONTENT_INSTRUCTIONS_CHAT = [
 
 export function createContentAgent(
   runtime: AgentRuntime,
-  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+  onEvent?: (
+    e: {
+      type: 'tool_call' | 'tool_result' | 'metrics';
+      name?: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK emits arbitrary tool arguments
+      args?: any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool outputs are passthrough from agents runtime
+      result?: any;
+      tokens?: number;
+      durationMs?: number;
+    }
+  ) => void,
   opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] },
   mode: 'chat' | 'app' = 'app'
 ) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK returns untyped tool map; casting for OpenAI agent constructor
   const tools = runtime.getAgentTools({ allowlist: [...CONTENT_TOOLS], policy: opts?.policy, requestAllowlist: opts?.requestAllowlist }, onEvent) as any
   const instructions = mode === 'chat' ? CONTENT_INSTRUCTIONS_CHAT : CONTENT_INSTRUCTIONS_APP
   return new OAAgent({ name: 'Content Generator', instructions, tools })

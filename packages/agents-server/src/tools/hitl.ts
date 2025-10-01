@@ -16,6 +16,16 @@ function coerceString(value: unknown): string | undefined {
   return undefined
 }
 
+function coerceBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true
+    if (['false', '0', 'no', 'n'].includes(normalized)) return false
+  }
+  return undefined
+}
+
 function normalizeOptions(raw: unknown): Array<{ id: string; label: string; description?: string }> | undefined {
   if (!Array.isArray(raw)) return undefined
   const items: Array<{ id: string; label: string; description?: string }> = []
@@ -50,8 +60,27 @@ function normalizeHitlPayload(raw: unknown) {
   if (!input.additionalContext && input.context) input.additionalContext = input.context
 
   const normalizedOptions = normalizeOptions(input.options ?? input.choices)
-  if (normalizedOptions) {
+  const coercedAllowFreeForm = coerceBoolean(input.allowFreeForm)
+  if (coercedAllowFreeForm !== undefined) {
+    input.allowFreeForm = coercedAllowFreeForm
+  }
+
+  const optionCount = normalizedOptions?.length ?? 0
+  if (optionCount >= 2) {
     input.options = normalizedOptions
+    if (input.kind !== 'approval') {
+      input.kind = 'choice'
+    }
+    input.allowFreeForm = input.allowFreeForm !== false
+  } else {
+    if (optionCount === 1) {
+      fallbackReason = fallbackReason ?? 'dropped_single_option'
+    }
+    input.options = []
+    input.allowFreeForm = true
+    if (input.kind === 'choice') {
+      input.kind = 'question'
+    }
   }
 
   // Determine question fallback if still missing.
@@ -80,7 +109,7 @@ function normalizeHitlPayload(raw: unknown) {
       getLogger().warn('hitl_request_autofix', {
         reason: fallbackReason,
         providedKeys: Object.keys(raw as Record<string, unknown>),
-        hasOptions: Boolean(normalizedOptions && normalizedOptions.length)
+        hasOptions: optionCount > 0
       })
     } catch {}
   }

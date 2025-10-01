@@ -24,8 +24,8 @@ export const QA_INSTRUCTIONS = [
 ].concat(
   HITL_ENABLED
     ? [
-        'If you cannot pass/fail without a human decision (policy conflict, missing approval, unclear legal risk), call the `hitl_request` tool with the specific question and any relevant options so an operator can decide.',
-        'When invoking `hitl_request`, explicitly set the `question` field to the human decision you need and supply any options or contextual notes.',
+        'If you cannot pass/fail without a human decision (policy conflict, missing approval, unclear legal risk), call the `hitl_request` tool with the specific question. Only include options when you can list realistic operator choices; otherwise rely on freeform.',
+        'When invoking `hitl_request`, explicitly set the `question` field to the human decision you need and add contextual notes. Options are reserved for concrete answer choices.',
         'When `payload.humanGuidance` or `payload.hitlResponses` exists, treat those operator answers as authoritative overrides—apply them to your evaluation and avoid re-escalating the same issue unless new contradictions appear.'
       ]
     : []
@@ -34,9 +34,21 @@ export const QA_INSTRUCTIONS = [
 
 export function createQaAgent(
   runtime: AgentRuntime,
-  onEvent?: (e: { type: 'tool_call' | 'tool_result' | 'metrics'; name?: string; args?: any; result?: any; tokens?: number; durationMs?: number }) => void,
+  onEvent?: (
+    e: {
+      type: 'tool_call' | 'tool_result' | 'metrics';
+      name?: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK emits arbitrary tool arguments
+      args?: any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool outputs are passthrough from agents runtime
+      result?: any;
+      tokens?: number;
+      durationMs?: number;
+    }
+  ) => void,
   opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] }
 ) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK returns untyped tool map; casting for OpenAI agent constructor
   const tools = runtime.getAgentTools({ allowlist: [...QA_TOOLS], policy: opts?.policy, requestAllowlist: opts?.requestAllowlist }, onEvent) as any
   return new OAAgent({ name: 'Quality Assurance', instructions: QA_INSTRUCTIONS, tools })
 }
