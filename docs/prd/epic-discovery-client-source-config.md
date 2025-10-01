@@ -1,7 +1,7 @@
 # Epic: Client Source Configuration
 
 ## Epic Goal
-Give marketing operators per-client control over which HTTP web sources and topic keywords feed the discovery agent, ensuring configuration is fast, safe, and auditable.
+Give marketing operators per-client control over which web pages, RSS feeds, and YouTube channels (plus topic keywords) feed the discovery agent, ensuring configuration is fast, safe, and auditable.
 
 ## Problem Statement
 - Today operators lack a structured way to register sources, leading to ad-hoc ingestion lists and accuracy issues.
@@ -13,19 +13,20 @@ Give marketing operators per-client control over which HTTP web sources and topi
 - Diagnostic KPIs: number of configured sources per client, configuration error rate (<5%).
 
 ## Scope (In)
-- UI flows for adding, editing, and removing HTTP web sources tied to a client.
+- UI flows for adding, editing, and removing HTTP web pages, RSS feeds, and YouTube channels/playlists tied to a client.
 - Keyword/topic management with duplication prevention and input guidance.
-- Validation of source reachability and URL format during configuration.
+- Automatic detection of supported source types with validation of canonical identifiers and reachability.
 - Immediate persistence of configuration changes with optimistic UI feedback.
 
 ## Scope (Out)
-- Non-HTTP sources (e.g., social APIs, PDF uploads).
+- Unsupported social APIs beyond the indirect YouTube channel data (e.g., TikTok, Instagram), PDF uploads.
 - Automated source recommendations or discovery.
 - Role-based access control (all authenticated users can edit for MVP).
 
 ## Functional Requirements
 - Source form accepts HTTP/HTTPS URLs only; reject other protocols with clear error messages.
-- Deduplicate sources and keywords on save; highlight conflicts inline.
+- Detect RSS feeds and YouTube channel/playlist IDs, persist canonical source metadata, and surface type to downstream services.
+- Deduplicate sources and keywords on save (including canonicalized RSS/YouTube identifiers); highlight conflicts inline.
 - Provide status indicators for last successful fetch per source once ingestion runs.
 - Configuration changes emit SSE events for the dashboard to refresh.
 
@@ -36,12 +37,12 @@ Give marketing operators per-client control over which HTTP web sources and topi
 
 ## Dependencies & Assumptions
 - Reuses existing auth/session management to identify client context.
-- Persists to shared datastore modeled alongside briefs.
-- Ingestion service consumes configuration instantly or on next scheduled run.
+- Persists to shared datastore modeled alongside briefs with source-type metadata.
+- Ingestion service consumes configuration instantly or on next scheduled run, selecting the appropriate fetch adapter.
 
 ## Risks & Mitigations
-- Invalid URLs slipping through → enforce server-side validation and scheduled health checks.
-- Configuration thrash causing ingestion instability → queue changes and apply with idempotent updates.
+- Invalid URLs or unsupported feeds slipping through → enforce server-side validation, try-feed discovery, and scheduled health checks.
+- Configuration thrash causing ingestion instability → queue changes and apply with idempotent updates plus per-source rate-limit defaults.
 
 ## Definition of Done
 - Operators can manage sources/keywords end to end with validation and persistence.

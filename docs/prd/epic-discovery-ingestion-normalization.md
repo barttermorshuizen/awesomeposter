@@ -13,10 +13,10 @@ Build a resilient ingestion pipeline that pulls configured sources on schedule, 
 - Maintain pipeline availability with MTTR < 1 hour for common transient failures.
 
 ## Scope (In)
-- Scheduled jobs fetching HTTP web pages/RSS feeds per client configuration.
-- Content extraction and normalization (title, source, timestamp, summary body, URL, raw text hash).
-- Storage of normalized items with metadata linking back to source configuration.
-- Retry/backoff strategy for temporary failures; health status collection.
+- Scheduled jobs fetching HTTP web pages, RSS feeds, and YouTube channels/playlists per client configuration.
+- Content extraction and normalization (title, source, timestamp, summary body/description, URL, raw text hash, source type metadata).
+- Storage of normalized items with metadata linking back to source configuration and traction signals.
+- Retry/backoff strategy for temporary failures; health status collection and rate-limit awareness.
 
 ## Scope (Out)
 - Real-time streaming ingestion or push-based integrations.
@@ -24,10 +24,10 @@ Build a resilient ingestion pipeline that pulls configured sources on schedule, 
 - Complex content parsing (e.g., sentiment, topic classification) beyond baseline extraction.
 
 ## Functional Requirements
-- Scheduler respects per-source cadence and avoids overlapping fetches for the same source.
-- Normalization handles UTF-8 encoding, strips boilerplate, and records publication timestamp when available.
-- Persist ingestion results with status flags (success, transient failure, permanent failure).
-- Expose ingestion status to telemetry and SSE events for UI visibility.
+- Scheduler respects per-source cadence, selects appropriate adapters per source type, and avoids overlapping fetches for the same source.
+- Normalization handles UTF-8 encoding, strips boilerplate, conforms RSS and YouTube payloads into shared fields, and records publication timestamp when available.
+- Persist ingestion results with status flags (success, transient failure, permanent failure) and include source-type metadata for downstream scoring.
+- Expose ingestion status to telemetry and SSE events for UI visibility, including rate-limit and provider error details.
 
 ## Non-Functional Requirements
 - Pipeline must handle at least 100 sources per client without major latency increases.
@@ -35,13 +35,13 @@ Build a resilient ingestion pipeline that pulls configured sources on schedule, 
 - Logging at each stage to support debugging and accuracy audits.
 
 ## Dependencies & Assumptions
-- Depends on client configuration epic for source lists.
-- Utilizes existing datastore and background job infrastructure.
-- Access to HTTP content is permitted by client agreements.
+- Depends on client configuration epic for source lists and source-type metadata.
+- Utilizes existing datastore and background job infrastructure with pluggable fetch adapters.
+- Access to HTTP content, RSS feeds, and YouTube APIs (indirect as needed) is permitted by client agreements.
 
 ## Risks & Mitigations
-- Source blocking due to aggressive crawling → respect robots.txt and configurable rate limits.
-- HTML changes breaking extraction → modular extractor with graceful degradation and alerts.
+- Source blocking or API quotas due to aggressive crawling → respect robots.txt, YouTube quota, and configurable rate limits with caching/backoff.
+- HTML/feed schema changes breaking extraction → modular extractor with graceful degradation and alerts.
 
 ## Definition of Done
 - Configured sources ingest on schedule and produce normalized items ready for scoring.
