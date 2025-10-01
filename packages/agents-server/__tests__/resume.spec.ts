@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { InMemoryOrchestratorPersistence, setOrchestratorPersistence } from '../src/services/orchestrator-persistence'
+import { InMemoryOrchestratorPersistence, setOrchestratorPersistence, getOrchestratorPersistence } from '../src/services/orchestrator-persistence'
 import { InMemoryHitlRepository, setHitlRepository, resetHitlRepository } from '../src/services/hitl-repository'
 import { resetHitlService } from '../src/services/hitl-service'
 
@@ -28,6 +28,17 @@ describe('threadId-based resume restores plan/history', () => {
 
     const events1: any[] = []
     await orch.run({ mode: 'app', objective: 'First run', threadId } as any, (e) => events1.push(e), 'cid_r1')
+
+    const persistence = getOrchestratorPersistence() as InMemoryOrchestratorPersistence
+    await persistence.save(threadId, {
+      plan: {
+        version: 1,
+        steps: [
+          { id: 'resume_step', capabilityId: 'strategy', status: 'pending', note: 'Resume pending' }
+        ]
+      },
+      status: 'running'
+    })
 
     const events2: any[] = []
     await orch.run({ mode: 'app', objective: 'Second run', threadId } as any, (e) => events2.push(e), 'cid_r2')
