@@ -20,7 +20,11 @@ export const CONTENT_TOOLS = [
 export const CONTENT_INSTRUCTIONS_APP = [
   'You are the Content Generator agent.',
   'Generate or revise a post based on the description of the brief and the guidelines provided in the writer brief.',
-  'A post has the structure: first line is the hook, then a blank line, then the body, then the hashtags (if any).',
+  'A post has the structure: first line is the hook, then a blank line, then the body, then the CTA (if any), and then the hashtags (if any).',
+  'The writer brief contains a description. This is the source information from the client brief - make certain the created content reflects this.',
+  'The writerBrief contains hooks and CTAs - choose one of each and adapt it to fit the tone of voice, audience, objective, and the body of the post.',
+  'The writerBrief may contain special instructions that must be followed exactly, so always check for those.',
+  'If a special instruction in the writerBrief conflicts with other information in the writerBrief, the special instruction takes precedence.',
   'Payload contract:',
   '- "writerBrief" and optional "knobs" describe the target content.',
   '- If "contentRecommendations" (array of strings) is present, this is a revision task: apply the recommendations with minimal necessary edits.',

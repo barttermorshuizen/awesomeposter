@@ -24,10 +24,43 @@ export interface HitlRequestView {
   status: 'pending' | 'submitted'
 }
 
+type OrchestratorStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_hitl'
+  | 'completed'
+  | 'cancelled'
+  | 'removed'
+  | 'failed'
+  | null
+
 interface PendingRunSummary {
   runId: string | null
   threadId: string | null
   pendingRequestId: string | null
+  status: OrchestratorStatus
+  briefId: string | null
+  updatedAt: string | null
+  isSuspended: boolean
+}
+
+export interface OperatorProfile {
+  id?: string
+  displayName?: string
+  email?: string
+}
+
+function readOperatorProfileFromStorage(): OperatorProfile | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem('hitl.operator')
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as OperatorProfile
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
 }
 
 interface SubmitPayload {
@@ -53,11 +86,21 @@ export const useHitlStore = defineStore('hitl', () => {
   const submissionState = ref<SubmissionState>('idle')
   const submissionError = ref<string | null>(null)
   const submissionNotice = ref<string | null>(null)
-  const pendingRun = ref<PendingRunSummary>({ runId: null, threadId: null, pendingRequestId: null })
+  const pendingRun = ref<PendingRunSummary>({
+    runId: null,
+    threadId: null,
+    pendingRequestId: null,
+    status: null,
+    briefId: null,
+    updatedAt: null,
+    isSuspended: false
+  })
   const denialNotice = ref<string | null>(null)
+  const operatorProfile = ref<OperatorProfile | null>(readOperatorProfileFromStorage())
 
   const hasActiveRequest = computed(() => activeRequest.value !== null)
   const submitting = computed(() => submissionState.value === 'submitting')
+  const hasSuspendedRun = computed(() => pendingRun.value.isSuspended && Boolean(pendingRun.value.threadId || pendingRun.value.runId))
 
   function resetAll() {
     activeRequest.value = null
@@ -65,7 +108,15 @@ export const useHitlStore = defineStore('hitl', () => {
     submissionError.value = null
     submissionNotice.value = null
     denialNotice.value = null
-    pendingRun.value = { runId: null, threadId: null, pendingRequestId: null }
+    pendingRun.value = {
+      runId: null,
+      threadId: null,
+      pendingRequestId: null,
+      status: null,
+      briefId: null,
+      updatedAt: null,
+      isSuspended: false
+    }
   }
 
   function setThreadId(threadId: string | null) {
@@ -88,6 +139,8 @@ export const useHitlStore = defineStore('hitl', () => {
     if (typeof input.threadId === 'string') {
       pendingRun.value.threadId = input.threadId
     }
+    pendingRun.value.status = 'awaiting_hitl'
+    pendingRun.value.isSuspended = true
     denialNotice.value = null
     submissionError.value = null
     submissionNotice.value = null
@@ -118,6 +171,8 @@ export const useHitlStore = defineStore('hitl', () => {
 
   function clearRequest(reason?: 'resolved' | 'reset') {
     pendingRun.value.pendingRequestId = null
+    pendingRun.value.isSuspended = false
+    pendingRun.value.status = reason === 'reset' ? pendingRun.value.status : null
     if (reason === 'resolved' && submissionState.value === 'success') {
       submissionNotice.value = submissionNotice.value || 'Response submitted successfully.'
     }
@@ -127,11 +182,16 @@ export const useHitlStore = defineStore('hitl', () => {
   function handleDenial(reason: string | undefined) {
     denialNotice.value = reason || 'Request denied by orchestrator.'
     pendingRun.value.pendingRequestId = null
+    pendingRun.value.isSuspended = false
+    pendingRun.value.status = 'cancelled'
     activeRequest.value = null
   }
 
-  async function hydrateFromPending() {
-    if (!pendingRun.value.pendingRequestId && !pendingRun.value.threadId) return
+  async function hydrateFromPending(options?: { threadId?: string | null; briefId?: string | null; force?: boolean }) {
+    const targetThreadId = options?.threadId ?? pendingRun.value.threadId
+    const targetBriefId = options?.briefId ?? pendingRun.value.briefId
+    const hasIdentifiers = Boolean(pendingRun.value.pendingRequestId || targetThreadId || targetBriefId)
+    if (!hasIdentifiers && !options?.force) return
     try {
       const res = await fetch('/api/hitl/pending', {
         headers: buildHeaders()
@@ -141,7 +201,10 @@ export const useHitlStore = defineStore('hitl', () => {
       const runs: Array<{
         runId: string
         threadId: string | null
+        briefId?: string | null
         pendingRequestId: string | null
+        status?: OrchestratorStatus
+        updatedAt?: string | Date | null
         pendingRequest?: {
           id: string
           createdAt?: string
@@ -152,25 +215,54 @@ export const useHitlStore = defineStore('hitl', () => {
 
       const match = runs.find((run) => {
         if (pendingRun.value.pendingRequestId && run.pendingRequestId === pendingRun.value.pendingRequestId) return true
-        if (pendingRun.value.threadId && run.threadId === pendingRun.value.threadId) return true
+        if (targetThreadId && run.threadId === targetThreadId) return true
+        if (targetBriefId && run.briefId === targetBriefId) return true
         return false
       })
 
-      if (!match) return
+      if (!match) {
+        if (options?.force) {
+          pendingRun.value = {
+            runId: null,
+            threadId: targetThreadId ?? null,
+            pendingRequestId: null,
+            status: null,
+            briefId: targetBriefId ?? null,
+            updatedAt: null,
+            isSuspended: false
+          }
+          activeRequest.value = null
+        }
+        return
+      }
 
       pendingRun.value.runId = match.runId ?? null
       pendingRun.value.threadId = match.threadId ?? null
+      pendingRun.value.briefId = match.briefId ?? pendingRun.value.briefId ?? null
       pendingRun.value.pendingRequestId = match.pendingRequestId ?? match.pendingRequest?.id ?? pendingRun.value.pendingRequestId
+      pendingRun.value.status = (match.status as OrchestratorStatus) ?? pendingRun.value.status ?? null
+      pendingRun.value.updatedAt = typeof match.updatedAt === 'string'
+        ? match.updatedAt
+        : match.updatedAt instanceof Date
+          ? match.updatedAt.toISOString()
+          : pendingRun.value.updatedAt
+      pendingRun.value.isSuspended = pendingRun.value.status === 'awaiting_hitl'
 
       if (match.pendingRequest) {
         const createdAtValue = match.pendingRequest.createdAt ? new Date(match.pendingRequest.createdAt) : undefined
         const payload = match.pendingRequest.payload
         const existing = activeRequest.value
-        if (!existing || existing.id !== match.pendingRequest.id) {
+        const sameRequest = existing && existing.id === match.pendingRequest.id
+        const preserveSubmission = sameRequest && submissionState.value === 'success'
+
+        if (!preserveSubmission) {
           submissionState.value = 'idle'
           submissionError.value = null
-          submissionNotice.value = null
+          submissionNotice.value = preserveSubmission ? submissionNotice.value : null
           denialNotice.value = null
+        }
+
+        if (!existing || !sameRequest) {
           activeRequest.value = {
             id: match.pendingRequest.id,
             question: payload?.question ?? existing?.question ?? '',
@@ -182,7 +274,7 @@ export const useHitlStore = defineStore('hitl', () => {
             additionalContext: payload?.additionalContext,
             receivedAt: createdAtValue ?? new Date(),
             createdAt: createdAtValue,
-            status: 'pending'
+            status: preserveSubmission ? 'submitted' : 'pending'
           }
         } else {
           if (createdAtValue) {
@@ -199,7 +291,7 @@ export const useHitlStore = defineStore('hitl', () => {
           if (match.pendingRequest.originAgent) {
             existing.originAgent = match.pendingRequest.originAgent
           }
-          existing.status = 'pending'
+          existing.status = preserveSubmission ? 'submitted' : 'pending'
         }
       }
     } catch (err) {
@@ -211,7 +303,7 @@ export const useHitlStore = defineStore('hitl', () => {
     if (!activeRequest.value) return
     if (!pendingRun.value.pendingRequestId) return
     if (!pendingRun.value.threadId && !pendingRun.value.runId) {
-      await hydrateFromPending()
+      await hydrateFromPending({ force: true })
     }
 
     submissionError.value = null
@@ -219,6 +311,7 @@ export const useHitlStore = defineStore('hitl', () => {
     submissionState.value = 'submitting'
 
     try {
+      const operator = buildOperator()
       const body = {
         requestId: activeRequest.value.id,
         runId: pendingRun.value.runId ?? undefined,
@@ -231,10 +324,11 @@ export const useHitlStore = defineStore('hitl', () => {
             selectedOptionId: payload.selectedOptionId,
             freeformText: payload.freeformText,
             metadata: payload.metadata,
-            responderId: payload.responderId,
-            responderDisplayName: payload.responderDisplayName
+            responderId: payload.responderId ?? operator?.id,
+            responderDisplayName: payload.responderDisplayName ?? operator?.displayName
           }
-        ]
+        ],
+        operator: operator ?? undefined
       }
 
       const res = await fetch('/api/hitl/resume', {
@@ -269,15 +363,82 @@ export const useHitlStore = defineStore('hitl', () => {
     return headers
   }
 
+  function buildOperator(): OperatorProfile | null {
+    const profile = operatorProfile.value
+    if (!profile) return null
+    const { id, displayName, email } = profile
+    if (!id && !displayName && !email) return null
+    return { id, displayName, email }
+  }
+
+  function setOperatorProfile(profile: OperatorProfile | null) {
+    operatorProfile.value = profile
+    if (typeof window === 'undefined') return
+    try {
+      if (!profile || (!profile.id && !profile.displayName && !profile.email)) {
+        window.localStorage.removeItem('hitl.operator')
+      } else {
+        window.localStorage.setItem('hitl.operator', JSON.stringify(profile))
+      }
+    } catch {
+      // ignore persistence errors (private browsing, etc.)
+    }
+  }
+
+  async function removePendingRun(input: { reason: string; note?: string }) {
+    const { reason, note } = input
+    if (!reason || reason.trim().length === 0) {
+      throw new Error('Removal reason is required')
+    }
+
+    if (!pendingRun.value.runId && !pendingRun.value.threadId) {
+      await hydrateFromPending({ force: true })
+    }
+
+    if (!pendingRun.value.runId && !pendingRun.value.threadId) {
+      throw new Error('No suspended run detected for removal')
+    }
+
+    const operator = buildOperator()
+    const body = {
+      runId: pendingRun.value.runId ?? undefined,
+      threadId: pendingRun.value.threadId ?? undefined,
+      requestId: pendingRun.value.pendingRequestId ?? undefined,
+      reason: reason.trim(),
+      note,
+      operator: operator ?? undefined
+    }
+
+    const res = await fetch('/api/hitl/remove', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildHeaders()
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => null)
+      const msg = errBody?.statusMessage || errBody?.error || `Removal failed (${res.status})`
+      throw new Error(msg)
+    }
+
+    resetAll()
+    return res.json().catch(() => ({ ok: true }))
+  }
+
   return {
     activeRequest,
     hasActiveRequest,
     submitting,
+    hasSuspendedRun,
     submissionState,
     submissionError,
     submissionNotice,
     denialNotice,
     pendingRun,
+    operatorProfile,
     resetAll,
     setThreadId,
     setRunId,
@@ -286,6 +447,8 @@ export const useHitlStore = defineStore('hitl', () => {
     clearRequest,
     handleDenial,
     hydrateFromPending,
-    submitResponse
+    submitResponse,
+    setOperatorProfile,
+    removePendingRun
   }
 })

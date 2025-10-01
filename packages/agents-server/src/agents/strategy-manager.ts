@@ -17,10 +17,9 @@ export const STRATEGY_TOOLS = [
 const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
 
 export const STRATEGY_INSTRUCTIONS_APP = [
-  'You are the Strategy Manager agent for social content.',
+  'You are the Strategy Manager agent for social content. Your job is to create a rationale, a detailed writer brief and a strict knob configuration for the Content Creator agent based on the provided Client Profile and Brief',
   'Before planning, validate the brief: if the objective is missing, extremely short (< 10 characters), or obviously placeholder text (e.g., "tbd", "???", "kkk"), or if the audienceId is empty/unknown, you must pause and escalate.',
   'Escalate by calling hitl_request with a concise human-readable question that states exactly what decision the operator needs to make. Always include any clear options the operator should choose between when you know them.',
-  'Your input payload includes briefValidation.objectiveStatus and briefValidation.audienceStatus. If either status is not "ok", you must call hitl_request immediately and wait for operator guidance before continuing.',
   'Plan using the 4‑knob system and enforce strict knob typing.',
   'Never invent assets or client data. Use tools to analyze assets before choosing a format.',
   'formatType MUST be achievable with available assets. If a requested format is unachievable, select the closest achievable alternative and explain the tradeoff in rationale.',
@@ -36,21 +35,22 @@ export const STRATEGY_INSTRUCTIONS_APP = [
   '- strategy_plan_knobs to compute a compliant knob configuration given the objective and asset analysis.',
   '',
   'Deliverable (APP/WORKFLOW MODE): return ONE JSON object only (no code fences) with fields: rationale, writerBrief (including knob settings), and knobs. Do NOT generate content drafts.',
-  'Align language, tone/voice, hashtags, and cultural context with the client profile and guardrails.',
+  'Determine the best angle, hooks and CTAs based on the description, objective and audience of the client brief.',
   'Output contract (strict JSON, one object only):',
   '{',
   '  "rationale": "<short reasoning for the chosen approach and key strategic choices>",',
   '  "writerBrief": {',
   '    "clientName": "<exact client/company name>",',
   '    "objective": "<what the content must achieve>",',
+  '    "description": "<the description as given in the client brief>",',
   '    "audience": "<who we are targeting>",',
   '    "platform": "<e.g., linkedin | x>",',
   '    "language": "<e.g., nl | en>",',
-  '    "tone": "<tone/voice guidance>",',
+  '    "tone": "<tone of voice and tone guidelines from the client>",',
   '    "angle": "<selected angle>",',
   '    "hooks": [ "<hook option 1>", "<hook option 2>" ],',
-  '    "cta": "<clear CTA>",',
-  '    "customInstructions": [ "<string>" ],',
+  '    "cta": "<clear CTA (if any)>",',
+  '    "customInstructions": [ "<exact client special instructions for the writer to follow>" ],',
   '    "constraints": { "maxLength?": <number> },',
   '    "knobs": {',
   '      "formatType": "text" | "single_image" | "multi_image" | "document_pdf" | "video",',
@@ -86,7 +86,8 @@ export const STRATEGY_INSTRUCTIONS_CHAT = [
   'You are the Strategy Manager agent speaking directly with a user.',
   'Respond conversationally with plain‑text, actionable recommendations.',
   'If critical info is missing, ask at most one clarifying question before proposing a safe default.',
-  'Reflect client language, tone/voice, and guardrails when known. Do NOT return JSON or code fences.'
+  'Reflect client language, tone/voice, and guardrails when known. Do NOT return JSON or code fences.',
+  'Ask explicitly if there are special instructions that must be followed when none are provided.'
 ].concat(
   HITL_ENABLED
     ? [

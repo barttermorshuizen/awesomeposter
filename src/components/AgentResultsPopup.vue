@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick, reactive } from 'vue'
 import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
@@ -64,21 +64,118 @@ type AppResultView = {
 const appResult = ref<AppResultView | null>(null)
 
 const hitlStore = useHitlStore()
-const { pendingRun } = storeToRefs(hitlStore)
+const { pendingRun, operatorProfile, hasSuspendedRun, hasActiveRequest } = storeToRefs(hitlStore)
+
+const DEFAULT_REMOVAL_REASON = 'Stale run cleared by operator'
+const awaitingRecovery = ref(false)
+const recoveryStatus = ref<'idle' | 'checking' | 'resume' | 'remove'>('idle')
+const recoveryMessage = ref<string | null>(null)
+const recoveryError = ref<string | null>(null)
+const resumeInFlight = ref(false)
+const resumeAcknowledged = ref(false)
+const removeInFlight = ref(false)
+const removalReason = ref(DEFAULT_REMOVAL_REASON)
+const removalNote = ref('')
+
+const operatorDraft = reactive({ id: '', displayName: '', email: '' })
+const operatorSyncing = ref(false)
+
+watch(operatorProfile, (profile) => {
+  operatorSyncing.value = true
+  operatorDraft.id = profile?.id ?? ''
+  operatorDraft.displayName = profile?.displayName ?? ''
+  operatorDraft.email = profile?.email ?? ''
+  nextTick(() => { operatorSyncing.value = false })
+}, { immediate: true })
+
+watch(operatorDraft, () => {
+  if (operatorSyncing.value) return
+  const id = operatorDraft.id.trim()
+  const displayName = operatorDraft.displayName.trim()
+  const email = operatorDraft.email.trim()
+  if (id || displayName || email) {
+    hitlStore.setOperatorProfile({
+      id: id || undefined,
+      displayName: displayName || undefined,
+      email: email || undefined
+    })
+  } else {
+    hitlStore.setOperatorProfile(null)
+  }
+}, { deep: true })
+
+const recoveryUpdatedAt = computed(() => {
+  if (!pendingRun.value.updatedAt) return null
+  try {
+    return new Date(pendingRun.value.updatedAt)
+  } catch {
+    return null
+  }
+})
+
+const recoveryUpdatedLabel = computed(() => {
+  const ts = recoveryUpdatedAt.value
+  if (!ts) return null
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    month: 'short',
+    day: '2-digit'
+  }).format(ts)
+})
+
+const hasOperatorIdentity = computed(() => Boolean(operatorDraft.displayName.trim() || operatorDraft.id.trim() || operatorDraft.email.trim()))
+const removalBlocked = computed(() => !hasOperatorIdentity.value || removalReason.value.trim().length === 0)
 
 // Watch dialog open/close
 watch(isOpen, async (open) => {
   if (open) {
-    reset()
-    await startRun()
+    await handleDialogOpened()
   } else {
     stopRun()
   }
 })
 
+async function handleDialogOpened() {
+  reset()
+  recoveryStatus.value = 'checking'
+  if (props.brief?.id) {
+    hitlStore.setThreadId(props.brief.id)
+  }
+
+  try {
+    await hitlStore.hydrateFromPending({
+      threadId: props.brief?.id ?? null,
+      briefId: props.brief?.id ?? null,
+      force: true
+    })
+  } catch (err) {
+    recoveryError.value = err instanceof Error ? err.message : 'Failed to inspect suspended runs.'
+  }
+
+  if (hasSuspendedRun.value) {
+    awaitingRecovery.value = true
+    resumeAcknowledged.value = false
+    recoveryStatus.value = 'idle'
+    return
+  }
+
+  recoveryStatus.value = 'idle'
+  await startRun()
+}
+
 onBeforeUnmount(() => stopRun())
 
 function reset() {
+  awaitingRecovery.value = false
+  recoveryStatus.value = 'idle'
+  recoveryMessage.value = null
+  recoveryError.value = null
+  resumeInFlight.value = false
+  removeInFlight.value = false
+  removalReason.value = DEFAULT_REMOVAL_REASON
+  removalNote.value = ''
   frames.value = []
   correlationId.value = undefined
   errorMsg.value = null
@@ -87,6 +184,7 @@ function reset() {
   plan.value = null
   runThreadId.value = null
   hitlStore.resetAll()
+  resumeAcknowledged.value = false
 }
 
 function close() {
@@ -325,6 +423,8 @@ async function startRun() {
                   threadId: runThreadId.value ?? pendingRun.value.threadId ?? null
                 })
                 void hitlStore.hydrateFromPending()
+                awaitingRecovery.value = true
+                resumeAcknowledged.value = false
               }
             } else if (evt.message === 'hitl_request_denied') {
               const reason = typeof (evt.data as any)?.reason === 'string' ? (evt.data as any).reason : undefined
@@ -347,6 +447,8 @@ async function startRun() {
                 const pendingId = typeof dUnknown.pendingRequestId === 'string' ? dUnknown.pendingRequestId : null
                 hitlStore.markAwaiting(pendingId)
                 void hitlStore.hydrateFromPending()
+                awaitingRecovery.value = true
+                resumeAcknowledged.value = false
               } else {
                 hitlStore.clearRequest('resolved')
               }
@@ -416,10 +518,75 @@ async function startRun() {
 
 function retry() {
   if (running.value) return
+  if (awaitingRecovery.value) {
+    recoveryError.value = 'Resolve the suspended run before starting a new one.'
+    return
+  }
   backlog.value = { busy: false, retryAfter: 0, pending: 0, limit: 0 }
   appResult.value = null
   hitlStore.resetAll()
   startRun()
+}
+
+async function handleRecoveryResume() {
+  if (resumeInFlight.value) return
+  recoveryError.value = null
+  recoveryMessage.value = null
+  resumeInFlight.value = true
+  recoveryStatus.value = 'resume'
+  try {
+    const threadId = pendingRun.value.threadId ?? props.brief?.id ?? null
+    const briefId = pendingRun.value.briefId ?? props.brief?.id ?? null
+    await hitlStore.hydrateFromPending({ threadId, briefId, force: true })
+    if (!hasActiveRequest.value) {
+      await handleHitlResume()
+      return
+    }
+    resumeAcknowledged.value = true
+    recoveryMessage.value = 'Resume acknowledged. Submit the HITL response below to continue the run.'
+  } catch (err) {
+    recoveryError.value = err instanceof Error ? err.message : 'Failed to resume run.'
+    resumeAcknowledged.value = false
+  } finally {
+    resumeInFlight.value = false
+    recoveryStatus.value = 'idle'
+  }
+}
+
+async function handleRecoveryRemove() {
+  if (removeInFlight.value) return
+  recoveryError.value = null
+  recoveryMessage.value = null
+  if (!hasOperatorIdentity.value) {
+    recoveryError.value = 'Please provide operator details before removing the run.'
+    return
+  }
+  const reason = removalReason.value.trim()
+  if (!reason) {
+    recoveryError.value = 'Provide a reason before removing the run.'
+    return
+  }
+
+  removeInFlight.value = true
+  recoveryStatus.value = 'remove'
+  try {
+    await hitlStore.removePendingRun({
+      reason,
+      note: removalNote.value.trim().length ? removalNote.value.trim() : undefined
+    })
+    recoveryMessage.value = 'Suspended run removed. Starting a new run.'
+    awaitingRecovery.value = false
+    removalReason.value = DEFAULT_REMOVAL_REASON
+    removalNote.value = ''
+    await startRun()
+  } catch (err) {
+    recoveryError.value = err instanceof Error ? err.message : 'Failed to remove run.'
+    awaitingRecovery.value = true
+    resumeAcknowledged.value = false
+  } finally {
+    removeInFlight.value = false
+    recoveryStatus.value = 'idle'
+  }
 }
 
 async function handleHitlResume() {
@@ -441,6 +608,10 @@ async function handleHitlResume() {
       streamHandle = null
     }
     await startRun()
+    awaitingRecovery.value = false
+    resumeAcknowledged.value = false
+    recoveryMessage.value = null
+    recoveryError.value = null
   } finally {
     resumeHandleInFlight = false
   }
@@ -611,6 +782,117 @@ function planStepNote(step: PlanStep) {
         <!-- Live plan, timeline and result two-column layout -->
         <v-row align="stretch" dense>
           <v-col cols="12" md="6">
+            <v-card v-if="awaitingRecovery" class="mb-3" variant="outlined">
+              <v-card-title class="d-flex align-center">
+                <v-icon icon="mdi-progress-clock" class="me-2" />
+                Suspended run detected
+                <v-spacer />
+                <v-tooltip location="bottom">
+                  <template #activator="{ props: tooltipProps }">
+                    <v-btn icon variant="text" density="comfortable" v-bind="tooltipProps">
+                      <v-icon icon="mdi-information-outline" />
+                    </v-btn>
+                  </template>
+                  <span>Resume continues the previous orchestration from its last successful step. Remove clears the stale run when it is obsolete or wedged so you can start fresh.</span>
+                </v-tooltip>
+              </v-card-title>
+              <v-divider />
+              <v-card-text class="d-flex flex-column ga-3">
+                <div class="text-body-2">
+                  Last activity {{ recoveryUpdatedLabel || 'unknown' }} · Request ID: {{ pendingRun?.pendingRequestId || 'n/a' }}
+                </div>
+                <v-alert type="info" variant="tonal" density="comfortable">
+                  Provide your operator details so the action is audited, then choose resume when the run should continue or remove when it should be discarded.
+                </v-alert>
+                <div class="d-flex flex-column ga-2">
+                  <v-text-field
+                    v-model="operatorDraft.displayName"
+                    label="Operator name"
+                    density="compact"
+                    required
+                  />
+                  <v-text-field
+                    v-model="operatorDraft.id"
+                    label="Operator ID (optional)"
+                    density="compact"
+                  />
+                  <v-text-field
+                    v-model="operatorDraft.email"
+                    label="Operator email (optional)"
+                    density="compact"
+                  />
+                  <v-text-field
+                    v-model="removalReason"
+                    label="Removal reason"
+                    density="compact"
+                    hint="Required before removing"
+                    persistent-hint
+                  />
+                  <v-textarea
+                    v-model="removalNote"
+                    label="Operator note (optional)"
+                    auto-grow
+                    density="compact"
+                    min-rows="2"
+                  />
+                </div>
+                <v-alert
+                  v-if="!hasOperatorIdentity"
+                  type="warning"
+                  variant="outlined"
+                  border="start"
+                  density="comfortable"
+                >
+                  Add your name or ID so the action is attributed in the audit log.
+                </v-alert>
+                <v-alert v-if="recoveryError" type="error" variant="tonal" border="start">
+                  {{ recoveryError }}
+                </v-alert>
+                <v-alert v-if="!recoveryError && recoveryMessage" type="success" variant="tonal" border="start">
+                  {{ recoveryMessage }}
+                </v-alert>
+              </v-card-text>
+              <v-card-actions class="justify-end ga-2">
+                <v-btn
+                  color="primary"
+                  @click="handleRecoveryResume"
+                  :loading="resumeInFlight"
+                  :disabled="resumeInFlight || removeInFlight || resumeAcknowledged"
+                >
+                  <v-icon icon="mdi-refresh" class="me-1" /> Resume creating post
+                </v-btn>
+                <v-btn
+                  color="error"
+                  variant="tonal"
+                  @click="handleRecoveryRemove"
+                  :loading="removeInFlight"
+                  :disabled="resumeInFlight || removalBlocked"
+                >
+                  <v-icon icon="mdi-delete-alert-outline" class="me-1" /> Remove running create post
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+
+            <v-alert
+              v-else-if="recoveryMessage"
+              type="success"
+              variant="tonal"
+              border="start"
+              class="mb-3"
+            >
+              {{ recoveryMessage }}
+            </v-alert>
+
+            <v-alert
+              v-else-if="recoveryError"
+              type="error"
+              variant="tonal"
+              border="start"
+              class="mb-3"
+            >
+              {{ recoveryError }}
+            </v-alert>
+
             <HitlPromptPanel @resume="handleHitlResume" />
             <!-- Planning view (mirrors Sandbox plan table) -->
             <v-card class="mb-3">
