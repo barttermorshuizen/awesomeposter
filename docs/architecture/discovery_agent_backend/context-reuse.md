@@ -1,0 +1,2 @@
+# Context & Reuse
+The discovery agent rides on the same Nitro + Agents Server stack that already powers AwesomePoster. We stay inside the monorepo, keeping a single Postgres database (`packages/db`), the Nitropack API (`server/`), and the OpenAI Agents orchestrator (`packages/agents-server`). Existing utilities—Drizzle migrations, shared type contracts, SSE envelopes, feature flag helpers, and logging—are reused wholesale. New work is limited to additive tables, endpoints, and orchestrator capabilities required by the six discovery epics.

@@ -1,0 +1,17 @@
+# Responsibilities by Layer
+## Nitro API (`server/`)
+- **`/api/discovery/sources`** (GET/POST/PATCH/DELETE) extends existing controller pattern (see `server/api/clients`). Uses shared Zod validators housed at `packages/shared/src/schemas/discovery.ts` to enforce URL canonicalization and keyword dedupe. Responses mirror the structures consumed by the frontend Pinia stores.
+- **`/api/discovery/briefs`** exposes list/detail actions for reviewer workflow. It reads from the new `discovery_items` table and surfaces scoring metadata (`score`, `rationale`, duplicate cluster). Promote/archive operations call shared command helpers that update status plus append audit notes.
+- **`/api/discovery/events.stream`** is a Nitro SSE handler built the same way as `/api/hitl/pending` fallback: it wraps `eventHandler` + `sendStream` to push telemetry frames published on a Node `EventEmitter`. Nitro already runs in long-lived mode so no infra change is needed.
+- **Feature flags**: reuse `requireDiscoveryEnabled(event)` middleware that mirrors the `requireHitlEnabled` helper—flag values come from `packages/shared/src/config.ts` and environment variables populated at bootstrap.
+
+## Scheduled Jobs (`server/jobs/discovery/*`)
+- **`ingest-sources.ts`** is a Nitropack job triggered via our existing `npm run dev:api` scheduler hook (use `nitro-cron` in production). It batches per-client source lists, fetches feeds with `node-fetch`, and normalizes to our in-house schema using adapters in `packages/shared/src/discovery/ingestion.ts`.
+- **`hydrate-health.ts`** (follow-up job) pings configured sources asynchronously and writes freshness/latency metrics into `discovery_sources.health_json`, enabling the UI health badges without a new service.
+- Jobs enqueue “needs scoring” items by inserting into `discovery_items` with status `pending_scoring`; the agents server polls this table via the shared repository.
+
+## Agents Server (`packages/agents-server`)
+- **New capability: `DiscoveryScoringAgent`** lives under `src/agents/discovery-scoring.ts`. It reuses the existing OpenAI Agent runtime: register a tool that consumes normalized item payloads and emits score, rationale, topic tags, and dedupe signature. The orchestrator runs it as an asynchronous worker loop started alongside the existing app runner.
+- **Duplicate detection** is handled in a deterministic TypeScript utility `calculateDedupHash` under `packages/shared`, but conflict resolution (merge vs. suppress) is orchestrated by an agent capability `DiscoveryDedupTool`. When the hash already exists, the agent records the relationship in `discovery_duplicates` and sets the item status to `suppressed`.
+- **SSE telemetry**: rather than invent a new channel, the scoring loop emits `AgentEvent` frames through the existing `signalAgentEvent` helper. Nitro subscribers translate relevant frames into discovery SSE payloads for dashboard widgets.
+- **Persistence adapters**: add `DiscoveryRepository` under `packages/agents-server/src/services/discovery-repository.ts`, built with Drizzle and the same connection factory as HITL (`createDbClient`). No new ORM tooling required.
