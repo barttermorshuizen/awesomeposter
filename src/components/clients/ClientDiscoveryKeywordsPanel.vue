@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { normalizeDiscoveryKeyword } from '@awesomeposter/shared'
 import { subscribeToDiscoveryEvents } from '@/lib/discovery-sse'
 
-const props = defineProps<{ clientId: string }>()
+const props = defineProps<{ clientId: string; disabled?: boolean }>()
 
 type KeywordItem = {
   id: string
@@ -29,6 +29,14 @@ const limitWarning = computed(() =>
   keywords.value.length >= 20 ? 'Keyword limit reached (20). Remove an existing keyword before adding another.' : null,
 )
 
+const featureDisabled = ref(false)
+const featureDisabledMessage = ref('Discovery agent is disabled for this client.')
+const disabled = computed(() => Boolean(props.disabled) || featureDisabled.value)
+const disabledBannerMessage = computed(() => {
+  if (props.disabled) return 'Discovery agent is disabled for this client.'
+  return featureDisabled.value ? featureDisabledMessage.value : null
+})
+
 function hasDuplicate(duplicateKey: string, excludeId: string | null = null) {
   return keywords.value.some((item) => {
     if (excludeId && item.id === excludeId) return false
@@ -39,6 +47,14 @@ function hasDuplicate(duplicateKey: string, excludeId: string | null = null) {
       return false
     }
   })
+}
+
+function markFeatureDisabled(message?: string) {
+  featureDisabled.value = true
+  featureDisabledMessage.value = message || 'Discovery agent is disabled for this client.'
+  error.value = null
+  keywords.value = []
+  detachSse()
 }
 
 watch(
@@ -66,11 +82,33 @@ watch(
   () => props.clientId,
   async (id, oldId) => {
     if (id === oldId) return
-    resetState()
     detachSse()
-    if (!id) return
+    resetState()
+    featureDisabled.value = Boolean(props.disabled)
+    featureDisabledMessage.value = 'Discovery agent is disabled for this client.'
+    if (!id || disabled.value) return
     await loadKeywords()
-    attachSse()
+    if (!disabled.value) attachSse()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => props.disabled,
+  async (value, oldValue) => {
+    if (value === oldValue) return
+    if (value) {
+      featureDisabled.value = true
+      featureDisabledMessage.value = 'Discovery agent is disabled for this client.'
+      detachSse()
+      return
+    }
+    featureDisabled.value = false
+    featureDisabledMessage.value = 'Discovery agent is disabled for this client.'
+    resetState()
+    if (!props.clientId) return
+    await loadKeywords()
+    if (!disabled.value) attachSse()
   },
 )
 
@@ -87,7 +125,7 @@ function resetState() {
 function attachSse() {
   detachSse()
   const clientId = props.clientId
-  if (!clientId) return
+  if (!clientId || disabled.value) return
   unsubscribeFromSse = subscribeToDiscoveryEvents(clientId, {
     onKeywordUpdated: async () => {
       if (!clientId) return
@@ -112,15 +150,38 @@ function mapKeyword(record: KeywordItem): KeywordItem {
 
 async function loadKeywords() {
   const clientId = props.clientId
-  if (!clientId) return
+  if (!clientId || disabled.value) {
+    loading.value = false
+    return
+  }
   loading.value = true
   error.value = null
   try {
     const res = await fetch(`/api/clients/${clientId}/keywords`, { headers: { accept: 'application/json' } })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data = await res.json()
-    const items = Array.isArray(data?.items) ? data.items : []
+    const contentType = res.headers.get('content-type') || ''
+    let payload: any = null
+    if (contentType.includes('application/json')) {
+      payload = await res.json().catch(() => null)
+    } else {
+      payload = await res.text().catch(() => '')
+    }
+    if (!res.ok) {
+      const disabledMessage =
+        typeof payload === 'object' && payload && 'statusMessage' in payload
+          ? String((payload as any).statusMessage || '')
+          : undefined
+      if (res.status === 403 && (payload?.code === 'feature_disabled' || payload?.statusCode === 403)) {
+        markFeatureDisabled(disabledMessage || undefined)
+        return
+      }
+      const message = typeof payload === 'string'
+        ? (payload || `HTTP ${res.status}`)
+        : (payload?.statusMessage || payload?.message || payload?.error || `HTTP ${res.status}`)
+      throw new Error(message)
+    }
+    const items = Array.isArray((payload as any)?.items) ? (payload as any).items : []
     keywords.value = items.map(mapKeyword)
+    featureDisabled.value = false
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -144,7 +205,7 @@ function cancelEditing() {
 
 async function submit() {
   const clientId = props.clientId
-  if (!clientId) return
+  if (!clientId || disabled.value) return
 
   let normalized
   try {
@@ -194,13 +255,31 @@ async function submit() {
       fieldError.value = 'Keyword limit reached'
       return
     }
-    if (!res.ok) {
-      const message = await res.text().catch(() => `HTTP ${res.status}`)
-      throw new Error(message || `HTTP ${res.status}`)
+    const contentType = res.headers.get('content-type') || ''
+    let payload: any = null
+    if (contentType.includes('application/json')) {
+      payload = await res.json().catch(() => null)
+    } else {
+      payload = await res.text().catch(() => '')
     }
 
-    const data = await res.json()
-    const record = data?.keyword as KeywordItem | undefined
+    if (!res.ok) {
+      const disabledMessage =
+        typeof payload === 'object' && payload && 'statusMessage' in payload
+          ? String((payload as any).statusMessage || '')
+          : undefined
+      if (res.status === 403 && (payload?.code === 'feature_disabled' || payload?.statusCode === 403)) {
+        markFeatureDisabled(disabledMessage || undefined)
+        throw new Error(disabledMessage || 'Discovery agent is disabled for this client.')
+      }
+      const message = typeof payload === 'string'
+        ? (payload || `HTTP ${res.status}`)
+        : (payload?.statusMessage || payload?.message || payload?.error || `HTTP ${res.status}`)
+      throw new Error(message)
+    }
+
+    const data = payload ?? {}
+    const record = (data as any)?.keyword as KeywordItem | undefined
     if (record) {
       const normalizedRecord = mapKeyword(record)
       if (editingId.value) {
@@ -212,9 +291,15 @@ async function submit() {
       }
     }
 
+    featureDisabled.value = false
     cancelEditing()
   } catch (err) {
-    alert(err instanceof Error ? err.message : 'Failed to save keyword')
+    const message = err instanceof Error ? err.message : 'Failed to save keyword'
+    if (featureDisabled.value) {
+      error.value = message
+    } else {
+      alert(message)
+    }
   } finally {
     submitLoading.value = false
   }
@@ -234,29 +319,43 @@ async function onDelete(item: KeywordItem) {
       method: 'DELETE',
       headers: { accept: 'application/json' },
     })
+    const contentType = res.headers.get('content-type') || ''
+    let payload: any = null
+    if (contentType.includes('application/json')) {
+      payload = await res.json().catch(() => null)
+    } else {
+      payload = await res.text().catch(() => '')
+    }
     if (!res.ok) {
-      const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>
-      const message = typeof payload?.message === 'string' ? payload.message : undefined
-      throw new Error(message || `HTTP ${res.status}`)
+      const disabledMessage =
+        typeof payload === 'object' && payload && 'statusMessage' in payload
+          ? String((payload as any).statusMessage || '')
+          : undefined
+      if (res.status === 403 && (payload?.code === 'feature_disabled' || payload?.statusCode === 403)) {
+        markFeatureDisabled(disabledMessage || undefined)
+        throw new Error(disabledMessage || 'Discovery agent is disabled for this client.')
+      }
+      const message = typeof payload === 'string'
+        ? (payload || `HTTP ${res.status}`)
+        : (payload?.statusMessage || payload?.message || payload?.error || `HTTP ${res.status}`)
+      throw new Error(message)
     }
     keywords.value = keywords.value.filter((keyword) => keyword.id !== item.id)
     if (editingId.value === item.id) {
       cancelEditing()
     }
   } catch (err) {
-    alert(err instanceof Error ? err.message : 'Failed to delete keyword')
+    const message = err instanceof Error ? err.message : 'Failed to delete keyword'
+    if (featureDisabled.value) {
+      error.value = message
+    } else {
+      alert(message)
+    }
     keywords.value = keywords.value.map((keyword) =>
       keyword.id === item.id ? { ...keyword, pending: false } : keyword,
     )
   }
 }
-
-onMounted(() => {
-  if (props.clientId) {
-    loadKeywords()
-    attachSse()
-  }
-})
 
 onBeforeUnmount(() => {
   detachSse()
@@ -273,6 +372,15 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
         <p class="text-body-2 text-medium-emphasis mb-4">
           Keywords are stored in lowercase and used by the scoring service to focus relevance. Stick to ASCII characters.
         </p>
+
+        <v-alert
+          v-if="disabledBannerMessage"
+          type="info"
+          variant="tonal"
+          density="comfortable"
+          class="mb-3"
+          :text="disabledBannerMessage"
+        />
 
         <v-alert
           v-if="limitWarning"
@@ -293,6 +401,7 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
             :hint="editingId ? 'Updating existing keyword' : undefined"
             persistent-hint
             required
+            :disabled="disabled"
           />
 
           <div class="d-flex flex-wrap align-center gap-3 mb-3">
@@ -314,12 +423,12 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
               type="submit"
               color="primary"
               :loading="submitLoading"
-              :disabled="limitReached && !editingId"
+              :disabled="disabled || (limitReached && !editingId)"
               prepend-icon="mdi-content-save"
             >
               {{ editingId ? 'Update Keyword' : 'Add Keyword' }}
             </v-btn>
-            <v-btn v-if="editingId" variant="text" @click="cancelEditing">Cancel</v-btn>
+            <v-btn v-if="editingId" variant="text" :disabled="disabled" @click="cancelEditing">Cancel</v-btn>
           </div>
         </v-form>
       </v-card-text>
@@ -340,6 +449,15 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
           :text="error"
         />
 
+        <v-alert
+          v-else-if="disabledBannerMessage"
+          type="info"
+          density="comfortable"
+          variant="tonal"
+          class="mb-4"
+          :text="disabledBannerMessage"
+        />
+
         <v-list v-if="keywords.length" density="comfortable">
           <v-list-item
             v-for="keyword in keywords"
@@ -353,7 +471,7 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
                   icon="mdi-pencil"
                   size="small"
                   variant="text"
-                  :disabled="submitLoading && editingId === keyword.id"
+                  :disabled="disabled || (submitLoading && editingId === keyword.id)"
                   @click="startEditing(keyword)"
                 />
                 <v-btn
@@ -361,6 +479,7 @@ const limitReached = computed(() => keywords.value.length >= 20 && !editingId.va
                   icon="mdi-delete"
                   size="small"
                   variant="text"
+                  :disabled="disabled"
                   @click="onDelete(keyword)"
                 />
                 <v-progress-circular v-else size="18" width="2" indeterminate />

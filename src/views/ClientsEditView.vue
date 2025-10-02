@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, computed, onMounted } from 'vue'
+import { ref, reactive, nextTick, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import ClientDiscoverySourcesPanel from '@/components/clients/ClientDiscoverySourcesPanel.vue'
 import ClientDiscoveryKeywordsPanel from '@/components/clients/ClientDiscoveryKeywordsPanel.vue'
@@ -44,6 +44,20 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 const errors = reactive<Record<string, string>>({})
 const discoveryTab = ref<'sources' | 'keywords'>('sources')
+
+const discoveryFeature = reactive({
+  loading: false,
+  enabled: false,
+  error: null as string | null,
+})
+
+const discoveryBanner = computed(() => {
+  if (discoveryFeature.error) return discoveryFeature.error
+  if (!discoveryFeature.enabled) {
+    return 'Discovery agent is disabled for this client. Toggle it from the admin flag interface (Story 7.2) when the pilot is ready.'
+  }
+  return null
+})
 
 const languageItems = [
   { title: 'Nederlands', value: 'Nederlands' },
@@ -114,6 +128,41 @@ async function focusFirstError() {
   }
 }
 
+async function loadDiscoveryFeature(id: string) {
+  if (!id) {
+    discoveryFeature.enabled = false
+    discoveryFeature.error = 'Client identifier missing.'
+    return
+  }
+
+  discoveryFeature.loading = true
+  discoveryFeature.error = null
+  try {
+    const res = await fetch(`/api/clients/${id}/feature-flags`, { headers: { accept: 'application/json' } })
+    const contentType = res.headers.get('content-type') || ''
+    let payload: any = null
+    if (contentType.includes('application/json')) {
+      payload = await res.json().catch(() => null)
+    } else {
+      payload = await res.text().catch(() => '')
+    }
+    if (!res.ok) {
+      const message = typeof payload === 'string'
+        ? (payload || `HTTP ${res.status}`)
+        : (payload?.statusMessage || payload?.message || payload?.error || `HTTP ${res.status}`)
+      throw new Error(message)
+    }
+
+    const flags = (payload as any)?.flags ?? {}
+    discoveryFeature.enabled = Boolean(flags?.discoveryAgent)
+  } catch (err) {
+    discoveryFeature.enabled = false
+    discoveryFeature.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    discoveryFeature.loading = false
+  }
+}
+
 async function loadData() {
   const id = route.params.id as string
   loading.value = true
@@ -180,6 +229,8 @@ async function loadData() {
     } finally {
       assetsLoading.value = false
     }
+
+    await loadDiscoveryFeature(id)
   } catch (err: unknown) {
     loadError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -188,6 +239,12 @@ async function loadData() {
 }
 
 onMounted(loadData)
+
+watch(clientId, (id, oldId) => {
+  if (id && id !== oldId) {
+    loadData()
+  }
+})
 
 async function updateClient() {
   const id = route.params.id as string
@@ -514,6 +571,21 @@ function onCancel() {
     <v-card class="mb-6" elevation="2">
       <v-card-title class="text-subtitle-1 font-weight-medium">Discovery configuration</v-card-title>
       <v-card-text>
+        <v-alert
+          v-if="discoveryBanner"
+          type="info"
+          density="comfortable"
+          variant="tonal"
+          class="mb-4"
+          :text="discoveryBanner"
+        />
+        <v-progress-linear
+          v-if="discoveryFeature.loading"
+          indeterminate
+          color="primary"
+          class="mb-4"
+        />
+
         <v-tabs v-model="discoveryTab" class="mb-4" density="comfortable">
           <v-tab value="sources" prepend-icon="mdi-book-open-variant">Sources</v-tab>
           <v-tab value="keywords" prepend-icon="mdi-tag-text-outline">Keyword themes</v-tab>
@@ -521,10 +593,17 @@ function onCancel() {
 
         <v-window v-model="discoveryTab">
           <v-window-item value="sources">
-            <ClientDiscoverySourcesPanel :client-id="clientId" mode="embedded" />
+            <ClientDiscoverySourcesPanel
+              :client-id="clientId"
+              mode="embedded"
+              :disabled="!discoveryFeature.enabled"
+            />
           </v-window-item>
           <v-window-item value="keywords">
-            <ClientDiscoveryKeywordsPanel :client-id="clientId" />
+            <ClientDiscoveryKeywordsPanel
+              :client-id="clientId"
+              :disabled="!discoveryFeature.enabled"
+            />
           </v-window-item>
         </v-window>
       </v-card-text>

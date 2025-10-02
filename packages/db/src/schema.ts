@@ -10,6 +10,16 @@ export const clients = pgTable('clients', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 })
 
+export const clientFeatures = pgTable('client_features', {
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  feature: text('feature').notNull(),
+  enabled: boolean('enabled').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.clientId, table.feature] }),
+}))
+
 export const clientProfiles = pgTable('client_profiles', {
   id: uuid('id').primaryKey(),
   clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }),

@@ -10,6 +10,7 @@ import {
   DiscoverySourceType,
   normalizeDiscoveryKeyword,
 } from '@awesomeposter/shared'
+import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
 
 export type DiscoverySourceRecord = InferModel<typeof discoverySources>
 export type DiscoveryKeywordRecord = InferModel<typeof discoveryKeywords>
@@ -97,6 +98,7 @@ function buildConfigPayload(type: DiscoverySourceType, identifier: string) {
 }
 
 export async function listDiscoverySources(clientId: string) {
+  await requireDiscoveryFeatureEnabled(clientId)
   const db = getDb()
   return db
     .select()
@@ -110,6 +112,8 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
   if (!parsed.success) {
     throw new InvalidDiscoverySourceError(parsed.error.issues[0]?.message || 'Invalid payload')
   }
+
+  await requireDiscoveryFeatureEnabled(parsed.data.clientId)
 
   const normalized = (() => {
     try {
@@ -156,6 +160,7 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
 
 export async function deleteDiscoverySource(input: { clientId: string; sourceId: string }) {
   const parsed = deleteInputSchema.parse(input)
+  await requireDiscoveryFeatureEnabled(parsed.clientId)
   const db = getDb()
   const result = await db
     .delete(discoverySources)
@@ -179,6 +184,7 @@ function mapKeywordRecord(record: DiscoveryKeywordRecord) {
 }
 
 async function fetchKeywordRecords(clientId: string) {
+  await requireDiscoveryFeatureEnabled(clientId)
   const db = getDb()
   return db
     .select()
@@ -194,6 +200,7 @@ export async function listDiscoveryKeywords(clientId: string) {
 
 export async function createDiscoveryKeyword(input: { clientId: string; keyword: string; addedBy?: string | null }) {
   const parsed = keywordInputSchema.parse(input)
+  await requireDiscoveryFeatureEnabled(parsed.clientId)
   let normalized
   try {
     normalized = normalizeDiscoveryKeyword(parsed.keyword)
@@ -229,6 +236,7 @@ export async function createDiscoveryKeyword(input: { clientId: string; keyword:
 
 export async function updateDiscoveryKeyword(input: { clientId: string; keywordId: string; keyword: string }) {
   const parsed = keywordUpdateSchema.parse(input)
+  await requireDiscoveryFeatureEnabled(parsed.clientId)
   let normalized
   try {
     normalized = normalizeDiscoveryKeyword(parsed.keyword)
@@ -274,6 +282,7 @@ export async function updateDiscoveryKeyword(input: { clientId: string; keywordI
 
 export async function deleteDiscoveryKeyword(input: { clientId: string; keywordId: string }) {
   const parsed = keywordDeleteSchema.parse(input)
+  await requireDiscoveryFeatureEnabled(parsed.clientId)
   const db = getDb()
   const [deleted] = await db
     .delete(discoveryKeywords)

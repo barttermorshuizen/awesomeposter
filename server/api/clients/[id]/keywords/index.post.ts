@@ -6,6 +6,7 @@ import {
   listDiscoveryKeywords,
 } from '../../../../utils/discovery-repository'
 import { emitDiscoveryEvent } from '../../../../utils/discovery-events'
+import { FeatureFlagDisabledError } from '../../../../utils/client-config/feature-flags'
 
 export default defineEventHandler(async (event) => {
   const clientId = getRouterParam(event, 'id')
@@ -41,6 +42,9 @@ export default defineEventHandler(async (event) => {
       },
     }
   } catch (error) {
+    if (error instanceof FeatureFlagDisabledError) {
+      throw createError({ statusCode: 403, statusMessage: error.message, data: { code: 'feature_disabled' } })
+    }
     if (error instanceof InvalidDiscoveryKeywordError) {
       throw createError({ statusCode: 400, statusMessage: error.message })
     }

@@ -1,4 +1,5 @@
 import { listDiscoveryKeywords } from '../../../../utils/discovery-repository'
+import { FeatureFlagDisabledError } from '../../../../utils/client-config/feature-flags'
 
 export default defineEventHandler(async (event) => {
   const clientId = getRouterParam(event, 'id')
@@ -6,14 +7,21 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'clientId is required' })
   }
 
-  const items = await listDiscoveryKeywords(clientId)
-  return {
-    ok: true,
-    items: items.map((item) => ({
-      ...item,
-      addedBy: item.addedBy ?? null,
-      createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
-      updatedAt: item.updatedAt instanceof Date ? item.updatedAt.toISOString() : item.updatedAt,
-    })),
+  try {
+    const items = await listDiscoveryKeywords(clientId)
+    return {
+      ok: true,
+      items: items.map((item) => ({
+        ...item,
+        addedBy: item.addedBy ?? null,
+        createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
+        updatedAt: item.updatedAt instanceof Date ? item.updatedAt.toISOString() : item.updatedAt,
+      })),
+    }
+  } catch (error) {
+    if (error instanceof FeatureFlagDisabledError) {
+      throw createError({ statusCode: 403, statusMessage: error.message, data: { code: 'feature_disabled' } })
+    }
+    throw error
   }
 })

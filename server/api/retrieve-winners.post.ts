@@ -1,18 +1,22 @@
 import { defineEventHandler, readBody } from 'h3'
+import { FeatureFlagDisabledError, requireDiscoveryFeatureEnabled } from '../utils/client-config/feature-flags'
 
 export default defineEventHandler(async (event) => {
   try {
     const body = await readBody(event) as {
+      clientId: string
       briefId: string
       platform?: string
       limit?: number
     }
     
-    const { briefId, platform: _platform, limit = 5 } = body
+    const { clientId, briefId, platform: _platform, limit = 5 } = body
     
-    if (!briefId) {
-      throw new Error('Brief ID is required')
+    if (!clientId || !briefId) {
+      throw new Error('clientId and briefId are required')
     }
+
+    await requireDiscoveryFeatureEnabled(clientId)
     
     // Mock response for now
     const winners = [
@@ -35,6 +39,14 @@ export default defineEventHandler(async (event) => {
       winners
     }
   } catch (error) {
+    if (error instanceof FeatureFlagDisabledError) {
+      event.node.res.statusCode = 403
+      return {
+        success: false,
+        error: error.message,
+        code: 'feature_disabled'
+      }
+    }
     console.error('Error retrieving winners:', error)
     return {
       success: false,
@@ -42,5 +54,4 @@ export default defineEventHandler(async (event) => {
     }
   }
 })
-
 

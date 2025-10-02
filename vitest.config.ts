@@ -5,6 +5,11 @@ import viteConfig from './vite.config'
 export default mergeConfig(
   viteConfig,
   defineConfig({
+    resolve: {
+      alias: {
+        '@upstash/redis': fileURLToPath(new URL('./tests/stubs/upstash-redis.ts', import.meta.url)),
+      },
+    },
     test: {
       environment: 'jsdom',
       exclude: [...configDefaults.exclude, 'e2e/**'],

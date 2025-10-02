@@ -1,5 +1,6 @@
 import { deleteDiscoveryKeyword, listDiscoveryKeywords } from '../../../../utils/discovery-repository'
 import { emitDiscoveryEvent } from '../../../../utils/discovery-events'
+import { FeatureFlagDisabledError } from '../../../../utils/client-config/feature-flags'
 
 export default defineEventHandler(async (event) => {
   const clientId = getRouterParam(event, 'id')
@@ -8,22 +9,29 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'clientId and keywordId are required' })
   }
 
-  const deletedId = await deleteDiscoveryKeyword({ clientId, keywordId })
-  if (!deletedId) {
-    throw createError({ statusCode: 404, statusMessage: 'Keyword not found' })
+  try {
+    const deletedId = await deleteDiscoveryKeyword({ clientId, keywordId })
+    if (!deletedId) {
+      throw createError({ statusCode: 404, statusMessage: 'Keyword not found' })
+    }
+
+    const items = await listDiscoveryKeywords(clientId)
+
+    emitDiscoveryEvent({
+      type: 'keyword.updated',
+      version: 1,
+      payload: {
+        clientId,
+        keywords: items.map((item) => item.keyword),
+        updatedAt: new Date().toISOString(),
+      },
+    })
+
+    return { ok: true }
+  } catch (error) {
+    if (error instanceof FeatureFlagDisabledError) {
+      throw createError({ statusCode: 403, statusMessage: error.message, data: { code: 'feature_disabled' } })
+    }
+    throw error
   }
-
-  const items = await listDiscoveryKeywords(clientId)
-
-  emitDiscoveryEvent({
-    type: 'keyword.updated',
-    version: 1,
-    payload: {
-      clientId,
-      keywords: items.map((item) => item.keyword),
-      updatedAt: new Date().toISOString(),
-    },
-  })
-
-  return { ok: true }
 })

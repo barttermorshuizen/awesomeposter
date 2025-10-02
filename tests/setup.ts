@@ -1,5 +1,6 @@
 /* Vitest setup for JSDOM + Vuetify */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { vi } from 'vitest'
 
 // Use a non-conflicting class name and assign to global to avoid TS duplicate identifier issues
 class FakeResizeObserver {
@@ -57,3 +58,13 @@ if (!g.cancelAnimationFrame) {
 
 // Ensure orchestrator persistence uses in-memory implementation during tests
 process.env.ORCHESTRATOR_PERSISTENCE = process.env.ORCHESTRATOR_PERSISTENCE || 'memory'
+
+vi.mock('@upstash/redis', () => ({
+  Redis: class {
+    constructor(_: unknown) {}
+    async get() { return null }
+    async set() { return undefined }
+    async del() { return undefined }
+    async publish() { return 1 }
+  },
+}))
