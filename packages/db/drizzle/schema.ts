@@ -78,6 +78,26 @@ export const tasks = pgTable("tasks", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 });
 
+export const discoverySources = pgTable("discovery_sources", {
+	id: uuid().primaryKey().notNull(),
+	clientId: uuid("client_id").notNull(),
+	url: text().notNull(),
+	canonicalUrl: text("canonical_url").notNull(),
+	sourceType: text("source_type").notNull(),
+	identifier: text().notNull(),
+	notes: text(),
+	configJson: jsonb("config_json"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	foreignKey({
+			columns: [table.clientId],
+			foreignColumns: [clients.id],
+			name: "discovery_sources_client_id_clients_id_fk"
+		}).onDelete("cascade"),
+	unique("discovery_sources_client_identifier_unique").on(table.clientId, table.sourceType, table.identifier),
+]);
+
 export const clients = pgTable("clients", {
 	id: uuid().primaryKey().notNull(),
 	name: text().notNull(),

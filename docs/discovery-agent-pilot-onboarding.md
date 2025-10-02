@@ -57,6 +57,21 @@ If any step fails, disable flag immediately and escalate to engineering.
 
 Escalate anomalies via Slack channel `#discovery-pilot` with timestamps and screenshots.
 
+### 3.1 Source Entry Procedure
+Operators must follow this protocol when onboarding HTTP sources for a client:
+
+1. Navigate to **Clients → ⋮ → Discovery Sources** for the target client.
+2. Paste the candidate URL. The form immediately validates:
+   - Only `http://` or `https://` protocols are accepted; other schemes are blocked.
+   - RSS feeds (`*.xml`, `*.rss`, `/feed`) and YouTube channels/playlists are auto-detected and labelled.
+   - Canonicalization removes tracking parameters; confirm the summary chip matches expectations before saving.
+3. Resolve any inline duplicate warning before submitting. Duplicates are detected case-insensitively using canonical identifiers (e.g., YouTube channel ID or RSS URL).
+4. Add optional operator notes (why the source matters, expected cadence) for hand-off to support.
+5. Submit. The UI performs an optimistic add; if persistence fails the entry rolls back and a toast/alert surfaces the server error.
+6. After success, confirm support receives the `source-created` SSE event with payload `{ id, clientId, sourceType, url }` (visible in telemetry stream or developer console during pilot).
+
+If a source repeatedly fails validation, escalate to backend owners with the canonical URL and any error messages.
+
 ---
 
 ## 4. Issue Escalation Matrix

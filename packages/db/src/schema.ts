@@ -1,4 +1,4 @@
-import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric } from 'drizzle-orm/pg-core'
+import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique } from 'drizzle-orm/pg-core'
 
 export const clients = pgTable('clients', {
   id: uuid('id').primaryKey(),
@@ -166,6 +166,21 @@ export const tasks = pgTable('tasks', {
   payloadJson: jsonb('payload_json').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 })
+
+export const discoverySources = pgTable('discovery_sources', {
+  id: uuid('id').primaryKey(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  url: text('url').notNull(),
+  canonicalUrl: text('canonical_url').notNull(),
+  sourceType: text('source_type').$type<'rss' | 'youtube-channel' | 'youtube-playlist' | 'web-page'>().notNull(),
+  identifier: text('identifier').notNull(),
+  notes: text('notes'),
+  configJson: jsonb('config_json').$type<Record<string, unknown> | null>().default(null),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+}, (table) => ({
+  clientSourceIdentifierUnique: unique('discovery_sources_client_identifier_unique').on(table.clientId, table.sourceType, table.identifier)
+ }))
 
 
 export const orchestratorRuns = pgTable('orchestrator_runs', {

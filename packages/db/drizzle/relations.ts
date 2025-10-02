@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm/relations";
-import { clients, clientProfiles, briefs, experiments, posts, assets, briefVersions, postMetrics } from "./schema";
+import { clients, clientProfiles, briefs, experiments, posts, assets, briefVersions, postMetrics, discoverySources } from "./schema";
 
 export const clientProfilesRelations = relations(clientProfiles, ({one}) => ({
 	client: one(clients, {
@@ -13,6 +13,7 @@ export const clientsRelations = relations(clients, ({many}) => ({
 	briefs: many(briefs),
 	posts: many(posts),
 	assets: many(assets),
+	discoverySources: many(discoverySources),
 }));
 
 export const briefsRelations = relations(briefs, ({one, many}) => ({
@@ -67,5 +68,12 @@ export const postMetricsRelations = relations(postMetrics, ({one}) => ({
 	post: one(posts, {
 		fields: [postMetrics.postId],
 		references: [posts.id]
+	}),
+}));
+
+export const discoverySourcesRelations = relations(discoverySources, ({one}) => ({
+	client: one(clients, {
+		fields: [discoverySources.clientId],
+		references: [clients.id]
 	}),
 }));

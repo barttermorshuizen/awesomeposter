@@ -50,6 +50,13 @@
       "when": 1758745197000,
       "tag": "0008_hitl_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1766000000000,
+      "tag": "0009_discovery_sources",
+      "breakpoints": true
     }
   ]
 }
