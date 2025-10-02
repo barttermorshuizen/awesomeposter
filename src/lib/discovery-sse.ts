@@ -1,0 +1,124 @@
+import type {
+  DiscoveryKeywordUpdatedEvent,
+  DiscoverySourceCreatedEvent,
+} from '@awesomeposter/shared'
+import { discoveryEventEnvelopeSchema } from '@awesomeposter/shared'
+
+export type DiscoveryEventHandlers = {
+  onSourceCreated?: (payload: DiscoverySourceCreatedEvent['payload']) => void
+  onKeywordUpdated?: (payload: DiscoveryKeywordUpdatedEvent['payload']) => void
+}
+
+type StreamState = {
+  source: EventSource | null
+  handlers: Set<DiscoveryEventHandlers>
+  reconnectHandle: ReturnType<typeof setTimeout> | null
+  messageHandler?: (event: MessageEvent<string>) => void
+  errorHandler?: () => void
+}
+
+const streams = new Map<string, StreamState>()
+
+function ensureEnvironment() {
+  return typeof window !== 'undefined' && typeof window.EventSource !== 'undefined'
+}
+
+function cleanupStream(clientId: string, state: StreamState) {
+  if (state.reconnectHandle) {
+    clearTimeout(state.reconnectHandle)
+    state.reconnectHandle = null
+  }
+  if (state.source) {
+    if (state.messageHandler) {
+      state.source.removeEventListener('message', state.messageHandler)
+    }
+    if (state.errorHandler) {
+      state.source.removeEventListener('error', state.errorHandler)
+    }
+    state.source.close()
+    state.source = null
+    state.messageHandler = undefined
+    state.errorHandler = undefined
+  }
+  if (state.handlers.size === 0) {
+    streams.delete(clientId)
+  }
+}
+
+function connectStream(clientId: string, state: StreamState) {
+  if (!ensureEnvironment()) return
+  const url = new URL('/api/discovery/events.stream', window.location.origin)
+  url.searchParams.set('clientId', clientId)
+
+  const source = new EventSource(url.toString(), { withCredentials: true })
+  state.source = source
+
+  const messageHandler = (event: MessageEvent<string>) => {
+    try {
+      const parsed = JSON.parse(event.data)
+      const validation = discoveryEventEnvelopeSchema.safeParse(parsed)
+      if (!validation.success) {
+        console.error('Invalid discovery event payload', validation.error)
+        return
+      }
+
+      const envelope = validation.data
+      state.handlers.forEach((handler) => {
+        if (envelope.type === 'source-created') {
+          handler.onSourceCreated?.(envelope.payload)
+        } else if (envelope.type === 'keyword.updated') {
+          handler.onKeywordUpdated?.(envelope.payload)
+        }
+      })
+    } catch (err) {
+      console.error('Failed to parse discovery SSE payload', err)
+    }
+  }
+
+  const errorHandler = () => {
+    cleanupStream(clientId, state)
+    state.reconnectHandle = setTimeout(() => {
+      connectStream(clientId, state)
+    }, 2000)
+  }
+
+  source.addEventListener('message', messageHandler)
+  source.addEventListener('error', errorHandler)
+  state.messageHandler = messageHandler
+  state.errorHandler = errorHandler
+}
+
+export function subscribeToDiscoveryEvents(clientId: string, handler: DiscoveryEventHandlers) {
+  if (!clientId || !ensureEnvironment()) {
+    return () => {}
+  }
+
+  let state = streams.get(clientId)
+  if (!state) {
+    state = {
+      source: null,
+      handlers: new Set(),
+      reconnectHandle: null,
+    }
+    streams.set(clientId, state)
+  }
+
+  state.handlers.add(handler)
+  if (!state.source) {
+    connectStream(clientId, state)
+  }
+
+  return () => {
+    const current = streams.get(clientId)
+    if (!current) return
+    current.handlers.delete(handler)
+    if (current.handlers.size === 0) {
+      cleanupStream(clientId, current)
+    }
+  }
+}
+
+export function __resetDiscoveryEventStreamsForTests() {
+  streams.forEach((state, clientId) => cleanupStream(clientId, state))
+  streams.clear()
+}

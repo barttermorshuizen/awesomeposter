@@ -31,8 +31,21 @@ export const discoverySourceCreatedEventSchema = z.object({
 
 export type DiscoverySourceCreatedEvent = z.infer<typeof discoverySourceCreatedEventSchema>
 
-// Currently only one discovery event type exists; export scalar schema for now.
-// When adding new events, convert to z.union([...schemas]) at that time.
-export const discoveryEventEnvelopeSchema = discoverySourceCreatedEventSchema
+export const discoveryKeywordUpdatedEventSchema = z.object({
+  type: z.literal('keyword.updated'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    keywords: z.array(z.string().min(1)),
+    updatedAt: z.string(),
+  }),
+})
+
+export type DiscoveryKeywordUpdatedEvent = z.infer<typeof discoveryKeywordUpdatedEventSchema>
+
+export const discoveryEventEnvelopeSchema = z.union([
+  discoverySourceCreatedEventSchema,
+  discoveryKeywordUpdatedEventSchema,
+])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>

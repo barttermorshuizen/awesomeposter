@@ -98,6 +98,23 @@ export const discoverySources = pgTable("discovery_sources", {
 	unique("discovery_sources_client_identifier_unique").on(table.clientId, table.sourceType, table.identifier),
 ]);
 
+export const discoveryKeywords = pgTable("discovery_keywords", {
+	id: uuid().primaryKey().notNull(),
+	clientId: uuid("client_id").notNull(),
+	keyword: text().notNull(),
+	keywordAlias: text("keyword_alias").notNull(),
+	addedBy: text("added_by"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	foreignKey({
+			columns: [table.clientId],
+			foreignColumns: [clients.id],
+			name: "discovery_keywords_client_id_clients_id_fk"
+		}).onDelete("cascade"),
+	unique("discovery_keywords_client_alias_unique").on(table.clientId, table.keywordAlias),
+]);
+
 export const clients = pgTable("clients", {
 	id: uuid().primaryKey().notNull(),
 	name: text().notNull(),

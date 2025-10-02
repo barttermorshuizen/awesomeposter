@@ -1,8 +1,19 @@
 import { EventEmitter } from 'node:events'
 import type { DiscoveryEventEnvelope } from '@awesomeposter/shared'
 
-const emitter = new EventEmitter()
-emitter.setMaxListeners(100)
+type DiscoveryEventGlobal = typeof globalThis & {
+  __awesomeposterDiscoveryEventEmitter__?: EventEmitter
+}
+
+const globalScope = globalThis as DiscoveryEventGlobal
+
+if (!globalScope.__awesomeposterDiscoveryEventEmitter__) {
+  const globalEmitter = new EventEmitter()
+  globalEmitter.setMaxListeners(100)
+  globalScope.__awesomeposterDiscoveryEventEmitter__ = globalEmitter
+}
+
+const emitter = globalScope.__awesomeposterDiscoveryEventEmitter__!
 
 const CHANNEL = 'event'
 

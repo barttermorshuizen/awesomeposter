@@ -182,6 +182,18 @@ export const discoverySources = pgTable('discovery_sources', {
   clientSourceIdentifierUnique: unique('discovery_sources_client_identifier_unique').on(table.clientId, table.sourceType, table.identifier)
  }))
 
+export const discoveryKeywords = pgTable('discovery_keywords', {
+  id: uuid('id').primaryKey(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  keyword: text('keyword').notNull(),
+  keywordAlias: text('keyword_alias').notNull(),
+  addedBy: text('added_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  clientKeywordAliasUnique: unique('discovery_keywords_client_alias_unique').on(table.clientId, table.keywordAlias)
+}))
+
 
 export const orchestratorRuns = pgTable('orchestrator_runs', {
   runId: text('run_id').primaryKey(),

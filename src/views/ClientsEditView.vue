@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import { ref, reactive, nextTick, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import ClientDiscoverySourcesPanel from '@/components/clients/ClientDiscoverySourcesPanel.vue'
+import ClientDiscoveryKeywordsPanel from '@/components/clients/ClientDiscoveryKeywordsPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
+
+const clientId = computed(() => {
+  const raw = route.params.id
+  if (typeof raw === 'string') return raw
+  if (Array.isArray(raw)) return raw[0] ?? ''
+  return ''
+})
 
 // Basics
 const name = ref('')
@@ -34,6 +43,7 @@ const submitting = ref(false)
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const errors = reactive<Record<string, string>>({})
+const discoveryTab = ref<'sources' | 'keywords'>('sources')
 
 const languageItems = [
   { title: 'Nederlands', value: 'Nederlands' },
@@ -497,6 +507,26 @@ function onCancel() {
             </div>
           </v-col>
         </v-row>
+      </v-card-text>
+    </v-card>
+
+    <!-- Discovery configuration -->
+    <v-card class="mb-6" elevation="2">
+      <v-card-title class="text-subtitle-1 font-weight-medium">Discovery configuration</v-card-title>
+      <v-card-text>
+        <v-tabs v-model="discoveryTab" class="mb-4" density="comfortable">
+          <v-tab value="sources" prepend-icon="mdi-book-open-variant">Sources</v-tab>
+          <v-tab value="keywords" prepend-icon="mdi-tag-text-outline">Keyword themes</v-tab>
+        </v-tabs>
+
+        <v-window v-model="discoveryTab">
+          <v-window-item value="sources">
+            <ClientDiscoverySourcesPanel :client-id="clientId" mode="embedded" />
+          </v-window-item>
+          <v-window-item value="keywords">
+            <ClientDiscoveryKeywordsPanel :client-id="clientId" />
+          </v-window-item>
+        </v-window>
       </v-card-text>
     </v-card>
 

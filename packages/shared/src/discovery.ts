@@ -24,6 +24,62 @@ export type NormalizedDiscoverySource = {
   identifier: string
 }
 
+const KEYWORD_MAX_LENGTH = 40
+const ASCII_PATTERN = /^[\x20-\x7E]+$/
+
+export type NormalizedDiscoveryKeyword = {
+  /** Collapsed + trimmed keyword preserving user casing */
+  cleaned: string
+  /** Lowercase canonical keyword as persisted */
+  canonical: string
+  /** Duplicate key that merges whitespace + hyphen variants */
+  duplicateKey: string
+}
+
+function collapseInternalWhitespace(value: string) {
+  return value.replace(/\s+/g, ' ')
+}
+
+function buildDuplicateKey(canonical: string) {
+  return canonical.replace(/[-\s]+/g, ' ').trim()
+}
+
+export function normalizeDiscoveryKeyword(raw: string): NormalizedDiscoveryKeyword {
+  if (typeof raw !== 'string') {
+    throw new Error('Keyword is required')
+  }
+
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    throw new Error('Keyword is required')
+  }
+
+  const collapsed = collapseInternalWhitespace(trimmed)
+  if (collapsed.length > KEYWORD_MAX_LENGTH) {
+    throw new Error(`Keywords must be ${KEYWORD_MAX_LENGTH} characters or fewer`)
+  }
+
+  if (!ASCII_PATTERN.test(collapsed)) {
+    throw new Error('Keywords must use ASCII characters only')
+  }
+
+  const canonical = collapsed.toLowerCase()
+  const duplicateKey = buildDuplicateKey(canonical)
+
+  return {
+    cleaned: collapsed,
+    canonical,
+    duplicateKey,
+  }
+}
+
+export function deriveDiscoveryKeywordDuplicateKey(input: string | NormalizedDiscoveryKeyword) {
+  if (typeof input === 'string') {
+    return normalizeDiscoveryKeyword(input).duplicateKey
+  }
+  return buildDuplicateKey(input.canonical)
+}
+
 const SUPPORTED_PROTOCOLS = new Set(['http:', 'https:'])
 
 const RSS_PATH_HINTS = [

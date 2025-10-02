@@ -57,6 +57,13 @@
       "when": 1766000000000,
       "tag": "0009_discovery_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1769000000000,
+      "tag": "0010_keyword_theme_management",
+      "breakpoints": true
     }
   ]
 }

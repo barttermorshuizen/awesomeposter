@@ -1,4 +1,4 @@
-import { and, eq, getDb, discoverySources } from '@awesomeposter/db'
+import { and, eq, getDb, discoverySources, discoveryKeywords } from '@awesomeposter/db'
 import { desc } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
 import { z } from 'zod'
@@ -8,9 +8,11 @@ import {
   normalizeDiscoverySourceUrl,
   deriveDuplicateKey,
   DiscoverySourceType,
+  normalizeDiscoveryKeyword,
 } from '@awesomeposter/shared'
 
 export type DiscoverySourceRecord = InferModel<typeof discoverySources>
+export type DiscoveryKeywordRecord = InferModel<typeof discoveryKeywords>
 
 export class InvalidDiscoverySourceError extends Error {
   constructor(message: string) {
@@ -29,10 +31,57 @@ export class DuplicateDiscoverySourceError extends Error {
   }
 }
 
+export class InvalidDiscoveryKeywordError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InvalidDiscoveryKeywordError'
+  }
+}
+
+export class DuplicateDiscoveryKeywordError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DuplicateDiscoveryKeywordError'
+  }
+}
+
+export class KeywordLimitExceededError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KeywordLimitExceededError'
+  }
+}
+
+export class DiscoveryKeywordNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoveryKeywordNotFoundError'
+  }
+}
+
 const deleteInputSchema = z.object({
   clientId: z.string().uuid(),
   sourceId: z.string().uuid(),
 })
+
+const keywordInputSchema = z.object({
+  clientId: z.string().uuid(),
+  keyword: z.string(),
+  addedBy: z.string().trim().min(1).optional(),
+})
+
+const keywordUpdateSchema = z.object({
+  clientId: z.string().uuid(),
+  keywordId: z.string().uuid(),
+  keyword: z.string(),
+})
+
+const keywordDeleteSchema = z.object({
+  clientId: z.string().uuid(),
+  keywordId: z.string().uuid(),
+})
+
+const KEYWORD_LIMIT = 20
 
 function buildConfigPayload(type: DiscoverySourceType, identifier: string) {
   if (type === 'youtube-channel') {
@@ -116,4 +165,123 @@ export async function deleteDiscoverySource(input: { clientId: string; sourceId:
     ))
     .returning({ id: discoverySources.id })
   return result[0]?.id ?? null
+}
+
+function mapKeywordRecord(record: DiscoveryKeywordRecord) {
+  return {
+    id: record.id,
+    clientId: record.clientId,
+    keyword: record.keyword,
+    addedBy: record.addedBy ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  }
+}
+
+async function fetchKeywordRecords(clientId: string) {
+  const db = getDb()
+  return db
+    .select()
+    .from(discoveryKeywords)
+    .where(eq(discoveryKeywords.clientId, clientId))
+    .orderBy(desc(discoveryKeywords.createdAt))
+}
+
+export async function listDiscoveryKeywords(clientId: string) {
+  const records = await fetchKeywordRecords(clientId)
+  return records.map(mapKeywordRecord)
+}
+
+export async function createDiscoveryKeyword(input: { clientId: string; keyword: string; addedBy?: string | null }) {
+  const parsed = keywordInputSchema.parse(input)
+  let normalized
+  try {
+    normalized = normalizeDiscoveryKeyword(parsed.keyword)
+  } catch (err) {
+    throw new InvalidDiscoveryKeywordError((err as Error).message)
+  }
+
+  const db = getDb()
+  const existing = await fetchKeywordRecords(parsed.clientId)
+
+  if (existing.length >= KEYWORD_LIMIT) {
+    throw new KeywordLimitExceededError('Maximum of 20 keywords per client')
+  }
+
+  if (existing.some((entry) => entry.keywordAlias === normalized.duplicateKey)) {
+    throw new DuplicateDiscoveryKeywordError('Keyword already exists for this client')
+  }
+
+  const now = new Date()
+  const record: DiscoveryKeywordRecord = {
+    id: crypto.randomUUID(),
+    clientId: parsed.clientId,
+    keyword: normalized.canonical,
+    keywordAlias: normalized.duplicateKey,
+    addedBy: parsed.addedBy ?? null,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  await db.insert(discoveryKeywords).values(record)
+  return mapKeywordRecord(record)
+}
+
+export async function updateDiscoveryKeyword(input: { clientId: string; keywordId: string; keyword: string }) {
+  const parsed = keywordUpdateSchema.parse(input)
+  let normalized
+  try {
+    normalized = normalizeDiscoveryKeyword(parsed.keyword)
+  } catch (err) {
+    throw new InvalidDiscoveryKeywordError((err as Error).message)
+  }
+
+  const db = getDb()
+  const records = await fetchKeywordRecords(parsed.clientId)
+  const target = records.find((entry) => entry.id === parsed.keywordId)
+  if (!target) {
+    throw new DiscoveryKeywordNotFoundError('Keyword not found')
+  }
+
+  if (records.some((entry) => entry.id !== parsed.keywordId && entry.keywordAlias === normalized.duplicateKey)) {
+    throw new DuplicateDiscoveryKeywordError('Keyword already exists for this client')
+  }
+
+  if (target.keyword === normalized.canonical) {
+    return mapKeywordRecord(target)
+  }
+
+  const now = new Date()
+  const [updated] = await db
+    .update(discoveryKeywords)
+    .set({
+      keyword: normalized.canonical,
+      keywordAlias: normalized.duplicateKey,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(discoveryKeywords.clientId, parsed.clientId),
+      eq(discoveryKeywords.id, parsed.keywordId),
+    ))
+    .returning()
+
+  if (!updated) {
+    throw new DiscoveryKeywordNotFoundError('Keyword not found')
+  }
+
+  return mapKeywordRecord(updated)
+}
+
+export async function deleteDiscoveryKeyword(input: { clientId: string; keywordId: string }) {
+  const parsed = keywordDeleteSchema.parse(input)
+  const db = getDb()
+  const [deleted] = await db
+    .delete(discoveryKeywords)
+    .where(and(
+      eq(discoveryKeywords.clientId, parsed.clientId),
+      eq(discoveryKeywords.id, parsed.keywordId),
+    ))
+    .returning({ id: discoveryKeywords.id })
+
+  return deleted?.id ?? null
 }

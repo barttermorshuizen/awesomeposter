@@ -61,9 +61,6 @@ onMounted(load)
 // UI handlers (no-op for now)
 function onNewClient(): void { router.push({ name: 'clients-new' }) }
 function onEdit(row: Client): void { router.push({ name: 'clients-edit', params: { id: row.id } }) }
-function onManageSources(row: Client): void {
-  router.push({ name: 'clients-sources', params: { id: row.id } })
-}
 async function onDelete(row: Client) {
   if (!row?.id) return
   const confirmed = confirm('Delete this client? This will permanently remove all related data (briefs, assets, posts, tasks).')
@@ -186,11 +183,6 @@ async function onDelete(row: Client) {
                   prepend-icon="mdi-pencil-outline"
                   title="Edit"
                   @click="onEdit(item as any)"
-                />
-                <v-list-item
-                  prepend-icon="mdi-rss"
-                  title="Discovery Sources"
-                  @click="onManageSources(item as any)"
                 />
                 <v-list-item
                   prepend-icon="mdi-delete-outline"

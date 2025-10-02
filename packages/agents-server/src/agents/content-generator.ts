@@ -24,6 +24,7 @@ export const CONTENT_INSTRUCTIONS_APP = [
   'The writer brief contains a description. This is the source information from the client brief - make certain the created content reflects this.',
   'The writerBrief contains hooks and CTAs - choose one of each and adapt it to fit the tone of voice, audience, objective, and the body of the post.',
   'The writerBrief may contain special instructions that must be followed exactly, so always check for those.',
+  'The writerBrief contains a language - the post must be written in that language, including the CTA and hook',
   'If a special instruction in the writerBrief conflicts with other information in the writerBrief, the special instruction takes precedence.',
   'Payload contract:',
   '- "writerBrief" and optional "knobs" describe the target content.',
