@@ -4,8 +4,10 @@ import { and, eq, getDb, clientFeatures } from '@awesomeposter/db'
 import {
   FEATURE_DISCOVERY_AGENT,
   FEATURE_FLAG_PUBSUB_TOPIC,
+  DISCOVERY_FLAG_CHANGED_EVENT,
   type FeatureFlagName,
   type FeatureFlagUpdatePayload,
+  type DiscoveryFlagChangedTelemetry,
 } from '@awesomeposter/shared'
 
 const CACHE_TTL_MS = 2 * 60_000
@@ -173,9 +175,40 @@ export async function publishFeatureFlagUpdate(payload: FeatureFlagUpdatePayload
   }
 }
 
+export async function emitDiscoveryFlagChanged(payload: DiscoveryFlagChangedTelemetry) {
+  emitter.emit(DISCOVERY_FLAG_CHANGED_EVENT, payload)
+
+  const redis = getRedisClient()
+  if (redis) {
+    try {
+      await redis.publish(DISCOVERY_FLAG_CHANGED_EVENT, JSON.stringify(payload))
+    } catch (error) {
+      console.error('Discovery flag telemetry publish failed', { error })
+    }
+  }
+
+  const metadata = {
+    event: payload.event,
+    clientId: payload.clientId,
+    feature: payload.feature,
+    enabled: payload.enabled,
+    actor: payload.actor,
+    previousEnabled: payload.previousEnabled,
+    occurredAt: payload.occurredAt,
+    reason: payload.reason ?? undefined,
+  }
+
+  console.info('[telemetry]', JSON.stringify(metadata))
+}
+
 export function subscribeToFeatureFlagUpdates(listener: (payload: FeatureFlagUpdatePayload) => void) {
   emitter.on(FEATURE_FLAG_PUBSUB_TOPIC, listener)
   return () => emitter.off(FEATURE_FLAG_PUBSUB_TOPIC, listener)
+}
+
+export function subscribeToDiscoveryFlagChanges(listener: (payload: DiscoveryFlagChangedTelemetry) => void) {
+  emitter.on(DISCOVERY_FLAG_CHANGED_EVENT, listener)
+  return () => emitter.off(DISCOVERY_FLAG_CHANGED_EVENT, listener)
 }
 
 export function flushLocalFeatureFlagCache() {
@@ -189,6 +222,7 @@ subscribeToFeatureFlagUpdates(({ clientId, feature }) => {
 export {
   FEATURE_DISCOVERY_AGENT,
   FEATURE_FLAG_PUBSUB_TOPIC,
+  DISCOVERY_FLAG_CHANGED_EVENT,
 }
 
-export type { FeatureFlagUpdatePayload, FeatureFlagName }
+export type { FeatureFlagUpdatePayload, FeatureFlagName, DiscoveryFlagChangedTelemetry }

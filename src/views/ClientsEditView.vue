@@ -54,10 +54,19 @@ const discoveryFeature = reactive({
 const discoveryBanner = computed(() => {
   if (discoveryFeature.error) return discoveryFeature.error
   if (!discoveryFeature.enabled) {
-    return 'Discovery agent is disabled for this client. Toggle it from the admin flag interface (Story 7.2) when the pilot is ready.'
+    return 'Discovery agent is disabled for this client. Toggle it from Settings → Feature flags.'
   }
   return null
 })
+
+watch(
+  () => discoveryFeature.enabled,
+  enabled => {
+    if (!enabled) {
+      discoveryTab.value = 'sources'
+    }
+  }
+)
 
 const languageItems = [
   { title: 'Nederlands', value: 'Nederlands' },
@@ -586,26 +595,28 @@ function onCancel() {
           class="mb-4"
         />
 
-        <v-tabs v-model="discoveryTab" class="mb-4" density="comfortable">
-          <v-tab value="sources" prepend-icon="mdi-book-open-variant">Sources</v-tab>
-          <v-tab value="keywords" prepend-icon="mdi-tag-text-outline">Keyword themes</v-tab>
-        </v-tabs>
+        <template v-if="discoveryFeature.enabled">
+          <v-tabs v-model="discoveryTab" class="mb-4" density="comfortable">
+            <v-tab value="sources" prepend-icon="mdi-book-open-variant">Sources</v-tab>
+            <v-tab value="keywords" prepend-icon="mdi-tag-text-outline">Keyword themes</v-tab>
+          </v-tabs>
 
-        <v-window v-model="discoveryTab">
-          <v-window-item value="sources">
-            <ClientDiscoverySourcesPanel
-              :client-id="clientId"
-              mode="embedded"
-              :disabled="!discoveryFeature.enabled"
-            />
-          </v-window-item>
-          <v-window-item value="keywords">
-            <ClientDiscoveryKeywordsPanel
-              :client-id="clientId"
-              :disabled="!discoveryFeature.enabled"
-            />
-          </v-window-item>
-        </v-window>
+          <v-window v-model="discoveryTab">
+            <v-window-item value="sources">
+              <ClientDiscoverySourcesPanel
+                :client-id="clientId"
+                mode="embedded"
+                :disabled="!discoveryFeature.enabled"
+              />
+            </v-window-item>
+            <v-window-item value="keywords">
+              <ClientDiscoveryKeywordsPanel
+                :client-id="clientId"
+                :disabled="!discoveryFeature.enabled"
+              />
+            </v-window-item>
+          </v-window>
+        </template>
       </v-card-text>
     </v-card>
 

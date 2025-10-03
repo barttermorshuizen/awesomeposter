@@ -76,12 +76,7 @@ const router = createRouter({
     {
       path: '/settings',
       name: 'settings',
-      component: () => import('@/views/PlaceholderView.vue'),
-      props: () => ({
-        title: 'Settings screen',
-        icon: 'mdi-cog-outline',
-        description: 'Application and client settings.',
-      }),
+      component: () => import('@/views/SettingsView.vue'),
     },
     {
       path: '/sandbox',

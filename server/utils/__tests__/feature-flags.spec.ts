@@ -33,6 +33,8 @@ import {
   FeatureFlagDisabledError,
   publishFeatureFlagUpdate,
   flushLocalFeatureFlagCache,
+  emitDiscoveryFlagChanged,
+  subscribeToDiscoveryFlagChanges,
 } from '../client-config/feature-flags'
 import { FEATURE_DISCOVERY_AGENT } from '@awesomeposter/shared'
 
@@ -104,6 +106,31 @@ describe('feature flag helper', () => {
     const next = await isFeatureEnabled('client-5', FEATURE_DISCOVERY_AGENT)
     expect(next).toBe(false)
     expect(limitMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('emits discovery flag telemetry updates to subscribers', async () => {
+    const listener = vi.fn()
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const unsubscribe = subscribeToDiscoveryFlagChanges(listener)
+
+    const payload = {
+      event: 'discovery.flagChanged',
+      clientId: 'client-7',
+      feature: FEATURE_DISCOVERY_AGENT,
+      enabled: true,
+      previousEnabled: false,
+      actor: 'admin@example.com',
+      occurredAt: new Date().toISOString(),
+      reason: 'pilot launch',
+    }
+
+    await emitDiscoveryFlagChanged(payload)
+
+    expect(listener).toHaveBeenCalledWith(payload)
+    expect(infoSpy).toHaveBeenCalledTimes(1)
+
+    unsubscribe()
+    infoSpy.mockRestore()
   })
 
   it('throws FeatureFlagDisabledError with discovery-specific messaging', async () => {

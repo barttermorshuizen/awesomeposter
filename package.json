@@ -24,6 +24,7 @@
     "type-check": "vue-tsc --build",
     "lint": "eslint . --fix",
     "imap:poller": "node scripts/imap-poller.mjs",
+    "flags": "node scripts/feature-flags.mjs",
     "bmad:refresh": "bmad-method install -f -i codex",
     "bmad:list": "bmad-method list:agents",
     "bmad:validate": "bmad-method validate"

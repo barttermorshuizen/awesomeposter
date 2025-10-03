@@ -4,9 +4,22 @@ export type FeatureFlagName = typeof FEATURE_DISCOVERY_AGENT | (string & {})
 
 export const FEATURE_FLAG_PUBSUB_TOPIC = 'feature.flags.updated' as const
 
+export const DISCOVERY_FLAG_CHANGED_EVENT = 'discovery.flagChanged' as const
+
 export type FeatureFlagUpdatePayload = {
   clientId: string
   feature: FeatureFlagName
   enabled?: boolean
   updatedAt?: string
+}
+
+export type DiscoveryFlagChangedTelemetry = {
+  event: typeof DISCOVERY_FLAG_CHANGED_EVENT
+  clientId: string
+  feature: typeof FEATURE_DISCOVERY_AGENT
+  enabled: boolean
+  actor: string
+  previousEnabled: boolean
+  occurredAt: string
+  reason?: string | null
 }

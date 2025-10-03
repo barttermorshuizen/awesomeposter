@@ -20,6 +20,17 @@ export const clientFeatures = pgTable('client_features', {
   pk: primaryKey({ columns: [table.clientId, table.feature] }),
 }))
 
+export const clientFeatureToggleAudits = pgTable('client_feature_toggle_audits', {
+  id: uuid('id').primaryKey(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  feature: text('feature').notNull(),
+  previousEnabled: boolean('previous_enabled').notNull(),
+  newEnabled: boolean('new_enabled').notNull(),
+  actor: text('actor').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+})
+
 export const clientProfiles = pgTable('client_profiles', {
   id: uuid('id').primaryKey(),
   clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }),
