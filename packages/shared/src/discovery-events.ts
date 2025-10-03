@@ -49,3 +49,31 @@ export const discoveryEventEnvelopeSchema = z.union([
 ])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>
+
+export const DISCOVERY_TELEMETRY_SCHEMA_VERSION = 1 as const
+
+const discoverySourceCreatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('source-created'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoverySourceCreatedEventSchema.shape.payload,
+})
+
+const discoveryKeywordUpdatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('keyword.updated'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryKeywordUpdatedEventSchema.shape.payload,
+})
+
+export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
+  discoverySourceCreatedTelemetrySchema,
+  discoveryKeywordUpdatedTelemetrySchema,
+])
+
+export type DiscoveryTelemetryEvent = z.infer<typeof discoveryTelemetryEventSchema>
+export type DiscoveryTelemetryEventType = DiscoveryTelemetryEvent['eventType']

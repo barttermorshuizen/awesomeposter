@@ -1,12 +1,14 @@
 import type {
   DiscoveryKeywordUpdatedEvent,
   DiscoverySourceCreatedEvent,
+  DiscoveryTelemetryEvent,
 } from '@awesomeposter/shared'
-import { discoveryEventEnvelopeSchema } from '@awesomeposter/shared'
+import { discoveryTelemetryEventSchema } from '@awesomeposter/shared'
 
 export type DiscoveryEventHandlers = {
   onSourceCreated?: (payload: DiscoverySourceCreatedEvent['payload']) => void
   onKeywordUpdated?: (payload: DiscoveryKeywordUpdatedEvent['payload']) => void
+  onEvent?: (event: DiscoveryTelemetryEvent) => void
 }
 
 type StreamState = {
@@ -45,9 +47,11 @@ function cleanupStream(clientId: string, state: StreamState) {
   }
 }
 
+const RECONNECT_DELAY_MS = 5_000
+
 function connectStream(clientId: string, state: StreamState) {
   if (!ensureEnvironment()) return
-  const url = new URL('/api/discovery/events.stream', window.location.origin)
+  const url = new URL('/api/events/discovery', window.location.origin)
   url.searchParams.set('clientId', clientId)
 
   const source = new EventSource(url.toString(), { withCredentials: true })
@@ -56,7 +60,7 @@ function connectStream(clientId: string, state: StreamState) {
   const messageHandler = (event: MessageEvent<string>) => {
     try {
       const parsed = JSON.parse(event.data)
-      const validation = discoveryEventEnvelopeSchema.safeParse(parsed)
+      const validation = discoveryTelemetryEventSchema.safeParse(parsed)
       if (!validation.success) {
         console.error('Invalid discovery event payload', validation.error)
         return
@@ -64,9 +68,10 @@ function connectStream(clientId: string, state: StreamState) {
 
       const envelope = validation.data
       state.handlers.forEach((handler) => {
-        if (envelope.type === 'source-created') {
+        handler.onEvent?.(envelope)
+        if (envelope.eventType === 'source-created') {
           handler.onSourceCreated?.(envelope.payload)
-        } else if (envelope.type === 'keyword.updated') {
+        } else if (envelope.eventType === 'keyword.updated') {
           handler.onKeywordUpdated?.(envelope.payload)
         }
       })
@@ -79,7 +84,7 @@ function connectStream(clientId: string, state: StreamState) {
     cleanupStream(clientId, state)
     state.reconnectHandle = setTimeout(() => {
       connectStream(clientId, state)
-    }, 2000)
+    }, RECONNECT_DELAY_MS)
   }
 
   source.addEventListener('message', messageHandler)
