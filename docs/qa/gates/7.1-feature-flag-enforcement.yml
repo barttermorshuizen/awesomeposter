@@ -2,16 +2,16 @@ schema: 1
 story: '7.1'
 story_title: 'Feature Flag Enforcement'
 gate: PASS
-status_reason: 'Discovery services fail closed for disabled clients, UI surfaces clear messaging, and cache invalidation now keeps flag changes under the 2-minute SLA with no blocking defects remaining.'
+status_reason: 'Discovery stack fails closed for disabled clients with cache + UI behaviour verified; no blocking findings.'
 reviewer: 'Quinn (Test Architect)'
-updated: '2025-10-04T15:45:00Z'
+updated: '2025-10-03T13:09:20Z'
 top_issues: []
 waiver:
   active: false
 quality_score: 95
-expires: '2025-10-18T15:45:00Z'
+expires: '2025-10-17T13:09:20Z'
 evidence:
-  tests_reviewed: 5
+  tests_reviewed: 4
   risks_identified: 0
   trace:
     ac_covered: [1, 2, 3, 4]
@@ -19,16 +19,16 @@ evidence:
 nfr_validation:
   security:
     status: PASS
-    notes: 'Flag helpers default to disabled and raise FeatureFlagDisabledError before any discovery data flows (`server/utils/client-config/feature-flags.ts`).'
+    notes: 'API, repositories, and agents server call requireDiscoveryFeatureEnabled before discovery operations, returning 403 with fail-closed caching.'
   performance:
     status: PASS
-    notes: 'Redis + in-process caching invalidates immediately on toggle and otherwise expires within 2 minutes (`server/utils/client-config/feature-flags.ts:23`).'
+    notes: 'Redis plus in-process caches invalidate on toggles and honour the 2-minute TTL with a 30s fail-safe fallback.'
   reliability:
     status: PASS
-    notes: 'SSE handler broadcasts feature_disabled events and downstream repos fail closed; component tests cover rollback paths (`server/api/events/discovery.get.ts`, `src/__tests__/ClientDiscoverySourcesPanel.spec.ts`).'
+    notes: 'SSE listeners terminate on feature_disabled events; cache invalidation keeps stale sessions from persisting.'
   maintainability:
     status: PASS
-    notes: 'Shared helpers consolidate flag logic, with regression coverage in unit/API tests (`server/utils/__tests__/feature-flags.spec.ts`, `tests/api/discovery/events-stream.spec.ts`).'
+    notes: 'Shared helpers centralize feature flag logic across runtimes with focused unit coverage.'
 recommendations:
   immediate: []
   future: []
