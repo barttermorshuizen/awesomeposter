@@ -14,4 +14,3 @@ CREATE INDEX IF NOT EXISTS client_feature_toggle_audits_client_id_idx
 
 CREATE INDEX IF NOT EXISTS client_feature_toggle_audits_created_at_idx
   ON client_feature_toggle_audits (created_at DESC);
-th

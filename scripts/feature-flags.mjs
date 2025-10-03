@@ -27,6 +27,8 @@ const {
   setDiscoveryFlag,
 } = jiti('../server/utils/client-config/feature-flag-admin.ts')
 
+const PILOT_RUNBOOK_URL = 'https://github.com/AwesomePoster/awesomeposter/blob/main/docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md'
+
 function printUsage() {
   console.log(`Usage:
   pnpm run flags -- list
@@ -37,6 +39,8 @@ Options:
   --reason      Optional context for the change. Stored alongside audit record.
   --yes, -y     Skip interactive confirmation when toggling.
   --json        Output machine-readable JSON for list command.
+
+Docs: ${PILOT_RUNBOOK_URL}
 `)
 }
 
@@ -207,6 +211,7 @@ async function toggleFlag({ clientId, enable, actor, reason, skipConfirm }) {
 
   console.log(`Updated discovery agent flag for ${client.name} (${client.id}).`)
   console.log(`Previous state: ${result.previousEnabled ? 'enabled' : 'disabled'} → New state: ${result.newEnabled ? 'ENABLED' : 'DISABLED'}`)
+  console.log(`Day-1 checklist & telemetry steps: ${PILOT_RUNBOOK_URL}`)
 
   const telemetryPayload = {
     event: DISCOVERY_FLAG_CHANGED_EVENT,

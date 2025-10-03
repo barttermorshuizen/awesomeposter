@@ -1,0 +1,35 @@
+schema: 1
+story: '7.2'
+story_title: 'Admin Flag Toggle Workflow'
+gate: PASS
+status_reason: 'Audit table migration passes after stray characters removed; remaining helper duplication is captured in Story 7.4 for follow-up.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-03T13:16:51Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 90
+expires: '2025-10-17T13:16:57Z'
+evidence:
+  tests_reviewed: 2
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Actor attribution enforced via API and CLI; audit logging persists with the corrected migration.'
+  performance:
+    status: PASS
+    notes: 'Cache TTL stays under 2 minutes and Redis publish flushes downstream caches immediately.'
+  reliability:
+    status: PASS
+    notes: 'Migration succeeds; toggles complete with audit logging and telemetry in place.'
+  maintainability:
+    status: CONCERNS
+    notes: 'Feature flag helper logic remains duplicated across Nitro and agents until Story 7.4 lands.'
+recommendations:
+  immediate: []
+  future:
+    - 'Deliver Story 7.4 to consolidate feature flag helper logic across runtimes.'

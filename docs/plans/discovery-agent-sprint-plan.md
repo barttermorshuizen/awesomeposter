@@ -27,7 +27,7 @@
 ### Quality & Readiness Work
 - Integration tests for `/api/discovery/sources` and `/api/discovery/keywords` flows (backend owner) — ensure regression coverage before flag enablement.
 - UI smoke + Playwright script for source/keyword forms with optimistic updates (frontend owner).
-- Seed pilot test data and verify rollback/disable path documented in `docs/discovery-agent-pilot-onboarding.md` (platform + PM).
+- Seed pilot test data and verify rollback/disable path documented in `docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md` (platform + PM).
 - Pilot training collateral outline + scheduling checklist (PM) aligned with runbook requirements.
 - UAT sign-off session with QA/support capturing issues in the pilot backlog.
 

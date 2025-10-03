@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 
+const PILOT_RUNBOOK_URL = 'https://github.com/AwesomePoster/awesomeposter/blob/main/docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md'
+
 const clients = ref<Array<{ id: string; name: string; slug: string | null }>>([])
 const clientsLoading = ref(false)
 const clientsError = ref<string | null>(null)
@@ -190,6 +192,28 @@ async function applyChanges() {
       <p class="text-body-2 text-medium-emphasis mb-4">
         Manage per-client discovery rollout. Changes publish cache invalidation events and audit logs automatically.
       </p>
+
+      <v-alert
+        type="info"
+        variant="tonal"
+        density="comfortable"
+        class="mb-4"
+      >
+        <div class="text-body-2">
+          <strong>Discovery pilot runbook:</strong>
+          <a
+            :href="PILOT_RUNBOOK_URL"
+            target="_blank"
+            rel="noreferrer"
+            class="text-primary"
+          >
+            docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md
+          </a>
+        </div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          Review prerequisites, Day-1 checklist, and telemetry accuracy steps before toggling client flags.
+        </div>
+      </v-alert>
 
       <v-row class="mb-4" dense>
         <v-col cols="12" md="6">
