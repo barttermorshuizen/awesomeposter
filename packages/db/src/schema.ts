@@ -1,4 +1,5 @@
-import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique } from 'drizzle-orm/pg-core'
+import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 export const clients = pgTable('clients', {
   id: uuid('id').primaryKey(),
@@ -200,7 +201,12 @@ export const discoverySources = pgTable('discovery_sources', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
 }, (table) => ({
-  clientSourceIdentifierUnique: unique('discovery_sources_client_identifier_unique').on(table.clientId, table.sourceType, table.identifier)
+  clientSourceIdentifierUnique: unique('discovery_sources_client_identifier_unique').on(table.clientId, table.sourceType, table.identifier),
+  clientSourceIdentifierLowerUnique: uniqueIndex('discovery_sources_client_identifier_lower_unique').on(
+    table.clientId,
+    table.sourceType,
+    sql`lower(${table.identifier})`,
+  ),
  }))
 
 export const discoveryKeywords = pgTable('discovery_keywords', {

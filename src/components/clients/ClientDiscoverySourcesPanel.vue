@@ -6,7 +6,8 @@ import {
   type DiscoverySourceType,
   type DiscoverySourceCreatedEvent,
 } from '@awesomeposter/shared'
-import { subscribeToDiscoveryEvents } from '@/lib/discovery-sse'
+import { subscribeToDiscoveryEvents, type DiscoveryFeatureDisabledPayload } from '@/lib/discovery-sse'
+import { useNotificationsStore } from '@/stores/notifications'
 
 const props = defineProps<{
   clientId: string
@@ -26,6 +27,7 @@ const form = reactive({
 const fieldErrors = reactive<{ url?: string; notes?: string }>({})
 const detectionSummary = ref<{ sourceType: DiscoverySourceType; canonicalUrl: string } | null>(null)
 const duplicateWarning = ref<string | null>(null)
+const notifications = useNotificationsStore()
 
 const featureDisabled = ref(false)
 const featureDisabledMessage = ref('Discovery agent is disabled for this client.')
@@ -135,6 +137,8 @@ function markFeatureDisabled(message?: string) {
   featureDisabledMessage.value = message || 'Discovery agent is disabled for this client.'
   error.value = null
   sources.value = []
+  submitLoading.value = false
+  loading.value = false
   detachSse()
 }
 
@@ -201,6 +205,7 @@ function attachSse() {
   if (!clientId || disabled.value) return
   unsubscribeFromSse = subscribeToDiscoveryEvents(clientId, {
     onSourceCreated: handleSourceCreated,
+    onFeatureDisabled: handleFeatureDisabled,
   })
 }
 
@@ -307,7 +312,7 @@ async function submit() {
     if (featureDisabled.value) {
       error.value = message
     } else {
-      alert(message)
+      notifications.notifyError(message)
     }
   } finally {
     submitLoading.value = false
@@ -360,7 +365,7 @@ async function onDelete(item: SourceItem) {
     if (featureDisabled.value) {
       error.value = message
     } else {
-      alert(message)
+      notifications.notifyError(message)
     }
     sources.value = sources.value.map((s) => (s.id === item.id ? { ...s, pending: false } : s))
   }
@@ -386,6 +391,14 @@ function handleSourceCreated(payload: DiscoverySourceCreatedEvent['payload']) {
     },
     ...sources.value,
   ]
+}
+
+function handleFeatureDisabled(payload: DiscoveryFeatureDisabledPayload) {
+  const message = typeof payload?.message === 'string' && payload.message.trim()
+    ? payload.message.trim()
+    : undefined
+  markFeatureDisabled(message)
+  resetForm()
 }
 
 onBeforeUnmount(() => {

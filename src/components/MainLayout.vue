@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { useUiStore } from '@/stores/ui'
+import AppNotifications from '@/components/AppNotifications.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -173,6 +174,8 @@ const drawerModel = computed({
       </v-card-actions>
     </v-card>
   </v-dialog>
+
+  <AppNotifications />
 </template>
 
 <style scoped>

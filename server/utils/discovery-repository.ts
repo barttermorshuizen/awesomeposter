@@ -126,16 +126,20 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
   const duplicateKey = deriveDuplicateKey(normalized)
   const db = getDb()
   const existing = await db
-    .select({ id: discoverySources.id })
+    .select({
+      id: discoverySources.id,
+      identifier: discoverySources.identifier,
+    })
     .from(discoverySources)
     .where(and(
       eq(discoverySources.clientId, parsed.data.clientId),
       eq(discoverySources.sourceType, normalized.sourceType),
-      eq(discoverySources.identifier, normalized.identifier),
     ))
-    .limit(1)
 
-  if (existing[0]) {
+  const normalizedIdentifier = normalized.identifier.toLowerCase()
+  const duplicateMatch = existing.find((record) => record.identifier.toLowerCase() === normalizedIdentifier)
+
+  if (duplicateMatch) {
     throw new DuplicateDiscoverySourceError('Source already exists for this client', duplicateKey)
   }
 
@@ -154,7 +158,14 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
     updatedAt: now,
   }
 
-  await db.insert(discoverySources).values(payload)
+  try {
+    await db.insert(discoverySources).values(payload)
+  } catch (error) {
+    if (isDuplicateSourceConstraint(error)) {
+      throw new DuplicateDiscoverySourceError('Source already exists for this client', duplicateKey)
+    }
+    throw error
+  }
   return payload
 }
 
@@ -170,6 +181,22 @@ export async function deleteDiscoverySource(input: { clientId: string; sourceId:
     ))
     .returning({ id: discoverySources.id })
   return result[0]?.id ?? null
+}
+
+function isDuplicateSourceConstraint(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const code = (error as { code?: unknown }).code
+  if (code !== '23505') {
+    return false
+  }
+  const constraint = (error as { constraint?: unknown }).constraint
+  if (typeof constraint !== 'string') {
+    return false
+  }
+  return constraint === 'discovery_sources_client_identifier_unique'
+    || constraint === 'discovery_sources_client_identifier_lower_unique'
 }
 
 function mapKeywordRecord(record: DiscoveryKeywordRecord) {

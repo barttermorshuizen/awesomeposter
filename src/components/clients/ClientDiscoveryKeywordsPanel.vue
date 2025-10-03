@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { normalizeDiscoveryKeyword } from '@awesomeposter/shared'
-import { subscribeToDiscoveryEvents } from '@/lib/discovery-sse'
+import { subscribeToDiscoveryEvents, type DiscoveryFeatureDisabledPayload } from '@/lib/discovery-sse'
 
 const props = defineProps<{ clientId: string; disabled?: boolean }>()
 
@@ -52,8 +52,7 @@ function hasDuplicate(duplicateKey: string, excludeId: string | null = null) {
 function markFeatureDisabled(message?: string) {
   featureDisabled.value = true
   featureDisabledMessage.value = message || 'Discovery agent is disabled for this client.'
-  error.value = null
-  keywords.value = []
+  resetState()
   detachSse()
 }
 
@@ -131,6 +130,7 @@ function attachSse() {
       if (!clientId) return
       await loadKeywords()
     },
+    onFeatureDisabled: handleFeatureDisabled,
   })
 }
 
@@ -139,6 +139,13 @@ function detachSse() {
     unsubscribeFromSse()
     unsubscribeFromSse = null
   }
+}
+
+function handleFeatureDisabled(payload: DiscoveryFeatureDisabledPayload) {
+  const message = typeof payload?.message === 'string' && payload.message.trim()
+    ? payload.message.trim()
+    : undefined
+  markFeatureDisabled(message)
 }
 
 function mapKeyword(record: KeywordItem): KeywordItem {

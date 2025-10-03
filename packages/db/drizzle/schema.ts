@@ -96,6 +96,7 @@ export const discoverySources = pgTable("discovery_sources", {
 			name: "discovery_sources_client_id_clients_id_fk"
 		}).onDelete("cascade"),
 	unique("discovery_sources_client_identifier_unique").on(table.clientId, table.sourceType, table.identifier),
+	unique("discovery_sources_client_identifier_lower_unique").on(table.clientId, table.sourceType, sql`lower(${table.identifier})`),
 ]);
 
 export const discoveryKeywords = pgTable("discovery_keywords", {

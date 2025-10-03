@@ -1,0 +1,51 @@
+schema: 1
+story: '2.2'
+story_title: 'Keyword Theme Management'
+gate: FAIL
+status_reason: 'Scoring agent never consumes the keyword cache, so keyword updates stall; duplicate unique violations still surface 500s.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-03T11:27:54Z'
+top_issues:
+  - severity: high
+    summary: 'Scoring worker never subscribes to keyword cache, leaving new themes unused.'
+    refs:
+      - server/utils/discovery-keyword-cache.ts:27
+      - server/utils/__tests__/discovery-keyword-cache.spec.ts:38
+    suggested_owner: dev
+  - severity: medium
+    summary: 'Keyword insert race still throws unhandled unique constraint errors instead of 409.'
+    refs:
+      - server/utils/discovery-repository.ts:228
+    suggested_owner: dev
+waiver:
+  active: false
+quality_score: 70
+expires: '2025-10-17T11:27:54Z'
+evidence:
+  tests_reviewed: 4
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3]
+    ac_gaps: [4]
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Keyword endpoints retain existing auth + schema validation.'
+  performance:
+    status: CONCERNS
+    notes: 'Without scoring integration, cache invalidation adds no value and leaves latency unresolved.'
+  reliability:
+    status: FAIL
+    notes: 'Scoring continues using stale keywords despite UI updates.'
+  maintainability:
+    status: CONCERNS
+    notes: 'Repository duplicate handling diverges from established pattern; risk of opaque 500s.'
+recommendations:
+  immediate:
+    - action: 'Wire scoring agent to getKeywordThemesForClient and cover with regression tests.'
+      refs:
+        - server/utils/discovery-keyword-cache.ts:27
+    - action: 'Trap discovery_keywords unique violations and surface 409 Duplicate errors.'
+      refs:
+        - server/utils/discovery-repository.ts:260
+  future: []

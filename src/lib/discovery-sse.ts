@@ -9,6 +9,13 @@ export type DiscoveryEventHandlers = {
   onSourceCreated?: (payload: DiscoverySourceCreatedEvent['payload']) => void
   onKeywordUpdated?: (payload: DiscoveryKeywordUpdatedEvent['payload']) => void
   onEvent?: (event: DiscoveryTelemetryEvent) => void
+  onFeatureDisabled?: (payload: DiscoveryFeatureDisabledPayload) => void
+}
+
+export type DiscoveryFeatureDisabledPayload = {
+  reason?: string
+  message?: string
+  [key: string]: unknown
 }
 
 type StreamState = {
@@ -17,6 +24,7 @@ type StreamState = {
   reconnectHandle: ReturnType<typeof setTimeout> | null
   messageHandler?: (event: MessageEvent<string>) => void
   errorHandler?: () => void
+  featureDisabledHandler?: (event: MessageEvent<string>) => void
 }
 
 const streams = new Map<string, StreamState>()
@@ -37,10 +45,14 @@ function cleanupStream(clientId: string, state: StreamState) {
     if (state.errorHandler) {
       state.source.removeEventListener('error', state.errorHandler)
     }
+    if (state.featureDisabledHandler) {
+      state.source.removeEventListener('feature_disabled', state.featureDisabledHandler as EventListener)
+    }
     state.source.close()
     state.source = null
     state.messageHandler = undefined
     state.errorHandler = undefined
+    state.featureDisabledHandler = undefined
   }
   if (state.handlers.size === 0) {
     streams.delete(clientId)
@@ -87,10 +99,32 @@ function connectStream(clientId: string, state: StreamState) {
     }, RECONNECT_DELAY_MS)
   }
 
+  const featureDisabledHandler = (event: MessageEvent<string>) => {
+    let payload: DiscoveryFeatureDisabledPayload = {}
+    if (event.data) {
+      try {
+        const parsed = JSON.parse(event.data)
+        if (parsed && typeof parsed === 'object') {
+          payload = parsed as DiscoveryFeatureDisabledPayload
+        }
+      } catch {
+        payload = { message: event.data }
+      }
+    }
+
+    state.handlers.forEach((handler) => {
+      handler.onFeatureDisabled?.(payload)
+    })
+
+    cleanupStream(clientId, state)
+  }
+
   source.addEventListener('message', messageHandler)
   source.addEventListener('error', errorHandler)
+  source.addEventListener('feature_disabled', featureDisabledHandler as EventListener)
   state.messageHandler = messageHandler
   state.errorHandler = errorHandler
+  state.featureDisabledHandler = featureDisabledHandler
 }
 
 export function subscribeToDiscoveryEvents(clientId: string, handler: DiscoveryEventHandlers) {

@@ -1,0 +1,34 @@
+schema: 1
+story: '2.1'
+story_title: 'Client Source HTTP Configuration'
+gate: PASS
+status_reason: 'Lower(identifier) uniqueness plus SSE feature_disabled handling resolve the duplicate and rollback gaps; all ACs satisfied.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-03T13:16:30Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 95
+expires: '2025-10-17T12:00:00Z'
+evidence:
+  tests_reviewed: 4
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Input validation matches existing discovery endpoints; no new auth exposure.'
+  performance:
+    status: PASS
+    notes: 'Single-row DB operations and SSE fan-out remain lightweight.'
+  reliability:
+    status: PASS
+    notes: 'Lower(identifier) UNIQUE index and repository guard reject mixed-case duplicates.'
+  maintainability:
+    status: PASS
+    notes: 'SSE clients unsubscribe on feature_disabled with component/API regression tests for the disable path.'
+recommendations:
+  immediate: []
+  future: []
