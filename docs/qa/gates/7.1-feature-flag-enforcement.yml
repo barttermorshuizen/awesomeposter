@@ -1,0 +1,34 @@
+schema: 1
+story: '7.1'
+story_title: 'Feature Flag Enforcement'
+gate: PASS
+status_reason: 'Discovery services fail closed for disabled clients, UI surfaces clear messaging, and cache invalidation now keeps flag changes under the 2-minute SLA with no blocking defects remaining.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-04T15:45:00Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 95
+expires: '2025-10-18T15:45:00Z'
+evidence:
+  tests_reviewed: 5
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Flag helpers default to disabled and raise FeatureFlagDisabledError before any discovery data flows (`server/utils/client-config/feature-flags.ts`).'
+  performance:
+    status: PASS
+    notes: 'Redis + in-process caching invalidates immediately on toggle and otherwise expires within 2 minutes (`server/utils/client-config/feature-flags.ts:23`).'
+  reliability:
+    status: PASS
+    notes: 'SSE handler broadcasts feature_disabled events and downstream repos fail closed; component tests cover rollback paths (`server/api/events/discovery.get.ts`, `src/__tests__/ClientDiscoverySourcesPanel.spec.ts`).'
+  maintainability:
+    status: PASS
+    notes: 'Shared helpers consolidate flag logic, with regression coverage in unit/API tests (`server/utils/__tests__/feature-flags.spec.ts`, `tests/api/discovery/events-stream.spec.ts`).'
+recommendations:
+  immediate: []
+  future: []

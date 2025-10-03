@@ -1,5 +1,6 @@
 import { defineEventHandler, readBody } from 'h3'
 import { FeatureFlagDisabledError, requireDiscoveryFeatureEnabled } from '../utils/client-config/feature-flags'
+import { scoreDiscoveryVariants } from '../utils/discovery-scoring'
 
 export default defineEventHandler(async (event) => {
   try {
@@ -21,13 +22,7 @@ export default defineEventHandler(async (event) => {
 
     await requireDiscoveryFeatureEnabled(clientId)
     
-    // Simple ranking based on content length for now
-    const rankedVariants = variants
-      .map(variant => ({
-        ...variant,
-        score: variant.content.length > 100 ? 0.8 : 0.6
-      }))
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
+    const rankedVariants = await scoreDiscoveryVariants(clientId, variants)
     
     return {
       success: true,

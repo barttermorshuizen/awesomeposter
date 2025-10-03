@@ -199,6 +199,21 @@ function isDuplicateSourceConstraint(error: unknown) {
     || constraint === 'discovery_sources_client_identifier_lower_unique'
 }
 
+function isDuplicateKeywordConstraint(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const code = (error as { code?: unknown }).code
+  if (code !== '23505') {
+    return false
+  }
+  const constraint = (error as { constraint?: unknown }).constraint
+  if (typeof constraint !== 'string') {
+    return false
+  }
+  return constraint === 'discovery_keywords_client_alias_unique'
+}
+
 function mapKeywordRecord(record: DiscoveryKeywordRecord) {
   return {
     id: record.id,
@@ -257,7 +272,14 @@ export async function createDiscoveryKeyword(input: { clientId: string; keyword:
     updatedAt: now,
   }
 
-  await db.insert(discoveryKeywords).values(record)
+  try {
+    await db.insert(discoveryKeywords).values(record)
+  } catch (error) {
+    if (isDuplicateKeywordConstraint(error)) {
+      throw new DuplicateDiscoveryKeywordError('Keyword already exists for this client')
+    }
+    throw error
+  }
   return mapKeywordRecord(record)
 }
 
@@ -287,18 +309,26 @@ export async function updateDiscoveryKeyword(input: { clientId: string; keywordI
   }
 
   const now = new Date()
-  const [updated] = await db
-    .update(discoveryKeywords)
-    .set({
-      keyword: normalized.canonical,
-      keywordAlias: normalized.duplicateKey,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(discoveryKeywords.clientId, parsed.clientId),
-      eq(discoveryKeywords.id, parsed.keywordId),
-    ))
-    .returning()
+  let updated
+  try {
+    ;[updated] = await db
+      .update(discoveryKeywords)
+      .set({
+        keyword: normalized.canonical,
+        keywordAlias: normalized.duplicateKey,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(discoveryKeywords.clientId, parsed.clientId),
+        eq(discoveryKeywords.id, parsed.keywordId),
+      ))
+      .returning()
+  } catch (error) {
+    if (isDuplicateKeywordConstraint(error)) {
+      throw new DuplicateDiscoveryKeywordError('Keyword already exists for this client')
+    }
+    throw error
+  }
 
   if (!updated) {
     throw new DiscoveryKeywordNotFoundError('Keyword not found')

@@ -1,51 +1,34 @@
 schema: 1
 story: '2.2'
 story_title: 'Keyword Theme Management'
-gate: FAIL
-status_reason: 'Scoring agent never consumes the keyword cache, so keyword updates stall; duplicate unique violations still surface 500s.'
+gate: PASS
+status_reason: 'Scoring agent now resolves keyword themes through the shared cache and duplicate inserts translate to 409 responses; no blocking defects remain.'
 reviewer: 'Quinn (Test Architect)'
-updated: '2025-10-03T11:27:54Z'
-top_issues:
-  - severity: high
-    summary: 'Scoring worker never subscribes to keyword cache, leaving new themes unused.'
-    refs:
-      - server/utils/discovery-keyword-cache.ts:27
-      - server/utils/__tests__/discovery-keyword-cache.spec.ts:38
-    suggested_owner: dev
-  - severity: medium
-    summary: 'Keyword insert race still throws unhandled unique constraint errors instead of 409.'
-    refs:
-      - server/utils/discovery-repository.ts:228
-    suggested_owner: dev
+updated: '2025-10-04T14:32:00Z'
+top_issues: []
 waiver:
   active: false
-quality_score: 70
-expires: '2025-10-17T11:27:54Z'
+quality_score: 95
+expires: '2025-10-18T14:32:00Z'
 evidence:
-  tests_reviewed: 4
-  risks_identified: 2
+  tests_reviewed: 6
+  risks_identified: 0
   trace:
-    ac_covered: [1, 2, 3]
-    ac_gaps: [4]
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
 nfr_validation:
   security:
     status: PASS
-    notes: 'Keyword endpoints retain existing auth + schema validation.'
+    notes: 'Keyword endpoints retain auth + schema validation and reuse shared normalization.'
   performance:
-    status: CONCERNS
-    notes: 'Without scoring integration, cache invalidation adds no value and leaves latency unresolved.'
+    status: PASS
+    notes: 'Cache invalidation keeps scoring lookups to first access per change; no regressions observed.'
   reliability:
-    status: FAIL
-    notes: 'Scoring continues using stale keywords despite UI updates.'
+    status: PASS
+    notes: 'Scoring worker now consumes cache updates and duplicate submissions surface user error states.'
   maintainability:
-    status: CONCERNS
-    notes: 'Repository duplicate handling diverges from established pattern; risk of opaque 500s.'
+    status: PASS
+    notes: 'Repository duplicate handling matches established helpers and is covered by regression tests.'
 recommendations:
-  immediate:
-    - action: 'Wire scoring agent to getKeywordThemesForClient and cover with regression tests.'
-      refs:
-        - server/utils/discovery-keyword-cache.ts:27
-    - action: 'Trap discovery_keywords unique violations and surface 409 Duplicate errors.'
-      refs:
-        - server/utils/discovery-repository.ts:260
+  immediate: []
   future: []
