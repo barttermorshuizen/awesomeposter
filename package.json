@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "dev:app": "vite",
-    "dev:api": "PORT=3001 nitropack dev",
+    "dev:api": "NITRO_NO_UNIX_SOCKET=1 PORT=3001 nitropack dev",
     "dev:agents": "cd packages/agents-server && npm run dev",
     "dev:both": "run-p dev:app dev:agents",
     "dev:shared": "cd packages/shared && npm run dev",

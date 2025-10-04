@@ -198,6 +198,12 @@ export const discoverySources = pgTable('discovery_sources', {
   identifier: text('identifier').notNull(),
   notes: text('notes'),
   configJson: jsonb('config_json').$type<Record<string, unknown> | null>().default(null),
+  fetchIntervalMinutes: integer('fetch_interval_minutes').notNull().default(60),
+  nextFetchAt: timestamp('next_fetch_at', { withTimezone: true }).default(sql`now()`),
+  lastFetchStartedAt: timestamp('last_fetch_started_at', { withTimezone: true }),
+  lastFetchCompletedAt: timestamp('last_fetch_completed_at', { withTimezone: true }),
+  lastFetchStatus: text('last_fetch_status').$type<'idle' | 'running' | 'success' | 'failure'>().default('idle'),
+  lastFailureReason: text('last_failure_reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
 }, (table) => ({
@@ -219,6 +225,23 @@ export const discoveryKeywords = pgTable('discovery_keywords', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   clientKeywordAliasUnique: unique('discovery_keywords_client_alias_unique').on(table.clientId, table.keywordAlias)
+}))
+
+export const discoveryIngestRuns = pgTable('discovery_ingest_runs', {
+  id: uuid('id').primaryKey(),
+  runId: text('run_id').notNull(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  sourceId: uuid('source_id').references(() => discoverySources.id, { onDelete: 'cascade' }).notNull(),
+  status: text('status').$type<'running' | 'succeeded' | 'failed'>().notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  failureReason: text('failure_reason'),
+  retryInMinutes: integer('retry_in_minutes'),
+  telemetryJson: jsonb('telemetry_json').$type<Record<string, unknown>>().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  runIdUnique: unique('discovery_ingest_runs_run_id_unique').on(table.runId),
 }))
 
 

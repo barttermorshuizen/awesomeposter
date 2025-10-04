@@ -9,6 +9,32 @@ export const discoverySourceTypeSchema = z.enum([
 
 export type DiscoverySourceType = z.infer<typeof discoverySourceTypeSchema>
 
+export const discoveryIngestionFailureReasonSchema = z.enum([
+  'network_error',
+  'http_4xx',
+  'http_5xx',
+  'youtube_quota',
+  'youtube_not_found',
+  'timeout',
+  'parser_error',
+  'unknown_error',
+])
+
+export type DiscoveryIngestionFailureReason = z.infer<typeof discoveryIngestionFailureReasonSchema>
+
+export const normalizedDiscoveryItemSchema = z.object({
+  externalId: z.string().min(1),
+  url: z.string().url(),
+  title: z.string().max(300),
+  summary: z.string().optional().nullable(),
+  publishedAt: z.string().optional().nullable(),
+  author: z.string().optional().nullable(),
+  thumbnailUrl: z.string().url().optional().nullable(),
+  raw: z.unknown().optional(),
+})
+
+export type NormalizedDiscoveryItem = z.infer<typeof normalizedDiscoveryItemSchema>
+
 export const createDiscoverySourceInputSchema = z.object({
   clientId: z.string().uuid(),
   url: z.string().min(1, 'URL is required'),

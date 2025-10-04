@@ -1,0 +1,55 @@
+schema: 1
+story: '3.1'
+story_title: 'Scheduled Source Fetching'
+gate: PASS
+status_reason: 'Scheduler now releases sources even when completion persistence fails, preventing stuck running state.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-04T12:50:13Z'
+quality_score: 95
+expires: '2025-10-18T00:00:00Z'
+
+top_issues:
+  - id: QA-3.1-Resolved
+    severity: info
+    summary: 'Completion fallback now resets discovery source status after transaction failures.'
+    details: 'New helper releaseDiscoverySourceAfterFailedCompletion updates cadence fields and is invoked when completion persistence raises, with regression coverage to guard the behavior.'
+    suggested_owner: qa
+    refs:
+      - server/jobs/discovery/ingest-sources.ts:167
+      - server/utils/discovery-repository.ts:210
+      - server/jobs/__tests__/discovery-ingest-sources.spec.ts:214
+
+waiver:
+  active: false
+
+evidence:
+  tests_reviewed: 5
+  risks_identified: 0
+  trace:
+    ac_covered:
+      - 1
+      - 3
+      - 4
+      - 5
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new security-sensitive paths identified.'
+  performance:
+    status: PASS
+    notes: 'Worker-limited design remains adequate; fallback does not increase load.'
+  reliability:
+    status: PASS
+    notes: 'Completion fallback ensures sources are released even when persistence errors occur; crash path is resolved.'
+  maintainability:
+    status: PASS
+    notes: 'Regression tests now cover string timestamps, worker limits, retry telemetry, and persistence fallback.'
+
+recommendations:
+  immediate: []
+  future:
+    - action: 'Monitor production telemetry for repeated fallback invocations to spot upstream DB instability early.'
+      refs:
+        - server/jobs/discovery/ingest-sources.ts:184

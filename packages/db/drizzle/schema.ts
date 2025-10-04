@@ -87,6 +87,12 @@ export const discoverySources = pgTable("discovery_sources", {
 	identifier: text().notNull(),
 	notes: text(),
 	configJson: jsonb("config_json"),
+	fetchIntervalMinutes: integer("fetch_interval_minutes").default(60).notNull(),
+	nextFetchAt: timestamp("next_fetch_at", { withTimezone: true, mode: 'string' }).default(sql`now()`),
+	lastFetchStartedAt: timestamp("last_fetch_started_at", { withTimezone: true, mode: 'string' }),
+	lastFetchCompletedAt: timestamp("last_fetch_completed_at", { withTimezone: true, mode: 'string' }),
+	lastFetchStatus: text("last_fetch_status").default('idle'),
+	lastFailureReason: text("last_failure_reason"),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 }, (table) => [
@@ -97,6 +103,33 @@ export const discoverySources = pgTable("discovery_sources", {
 		}).onDelete("cascade"),
 	unique("discovery_sources_client_identifier_unique").on(table.clientId, table.sourceType, table.identifier),
 	unique("discovery_sources_client_identifier_lower_unique").on(table.clientId, table.sourceType, sql`lower(${table.identifier})`),
+]);
+
+export const discoveryIngestRuns = pgTable("discovery_ingest_runs", {
+	id: uuid().primaryKey().notNull(),
+	runId: text("run_id").notNull(),
+	clientId: uuid("client_id").notNull(),
+	sourceId: uuid("source_id").notNull(),
+	status: text().notNull(),
+	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	completedAt: timestamp("completed_at", { withTimezone: true, mode: 'string' }),
+	durationMs: integer("duration_ms"),
+	failureReason: text("failure_reason"),
+	retryInMinutes: integer("retry_in_minutes"),
+	telemetryJson: jsonb("telemetry_json"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	foreignKey({
+			columns: [table.clientId],
+			foreignColumns: [clients.id],
+			name: "discovery_ingest_runs_client_id_clients_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.sourceId],
+			foreignColumns: [discoverySources.id],
+			name: "discovery_ingest_runs_source_id_discovery_sources_id_fk"
+		}).onDelete("cascade"),
+	unique("discovery_ingest_runs_run_id_unique").on(table.runId),
 ]);
 
 export const discoveryKeywords = pgTable("discovery_keywords", {

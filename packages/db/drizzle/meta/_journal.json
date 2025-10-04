@@ -71,6 +71,13 @@
       "when": 1770000000000,
       "tag": "0011_discovery_sources_identifier_lower_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771000000000,
+      "tag": "0012_discovery_ingestion_schedule",
+      "breakpoints": true
     }
   ]
 }

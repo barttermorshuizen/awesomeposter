@@ -1,0 +1,347 @@
+import { randomUUID } from 'node:crypto';
+import { c as createError, d as defineEventHandler, g as getQuery, e as setHeader } from '../../../nitro/nitro.mjs';
+import { z } from 'zod';
+import { r as requireApiAuth } from '../../../_/api-auth.mjs';
+import { r as requireDiscoveryFeatureEnabled, s as subscribeToFeatureFlagUpdates, F as FEATURE_DISCOVERY_AGENT } from '../../../_/feature-flags.mjs';
+import { o as onDiscoveryEvent } from '../../../_/discovery-events.mjs';
+import { b as discoverySourceTypeSchema, e as discoveryIngestionFailureReasonSchema } from '../../../_/discovery.mjs';
+import 'node:http';
+import 'node:https';
+import 'node:events';
+import 'node:buffer';
+import 'node:fs';
+import 'node:path';
+import 'node:url';
+import '@upstash/redis';
+import '../../../_/index.mjs';
+import 'drizzle-orm/node-postgres';
+import 'pg';
+import 'drizzle-orm/pg-core';
+import 'drizzle-orm';
+
+z.object({
+  id: z.string().uuid(),
+  clientId: z.string().uuid(),
+  url: z.string().url(),
+  canonicalUrl: z.string().url(),
+  sourceType: discoverySourceTypeSchema,
+  identifier: z.string(),
+  notes: z.string().optional().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+const discoverySourceCreatedEventSchema = z.object({
+  type: z.literal("source-created"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    id: z.string().uuid(),
+    clientId: z.string().uuid(),
+    url: z.string().url(),
+    canonicalUrl: z.string().url(),
+    sourceType: discoverySourceTypeSchema,
+    identifier: z.string(),
+    createdAt: z.string()
+  })
+});
+const ingestionStartedEventSchema = z.object({
+  type: z.literal("ingestion.started"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    scheduledAt: z.string(),
+    startedAt: z.string()
+  })
+});
+const ingestionCompletedEventSchema = z.object({
+  type: z.literal("ingestion.completed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    startedAt: z.string(),
+    completedAt: z.string(),
+    durationMs: z.number().int().min(0),
+    success: z.boolean(),
+    failureReason: discoveryIngestionFailureReasonSchema.optional(),
+    retryInMinutes: z.number().int().min(0).nullable().optional()
+  })
+});
+const discoveryKeywordUpdatedEventSchema = z.object({
+  type: z.literal("keyword.updated"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    keywords: z.array(z.string().min(1)),
+    updatedAt: z.string()
+  })
+});
+z.union([
+  discoverySourceCreatedEventSchema,
+  ingestionStartedEventSchema,
+  ingestionCompletedEventSchema,
+  discoveryKeywordUpdatedEventSchema
+]);
+const DISCOVERY_TELEMETRY_SCHEMA_VERSION = 1;
+const discoverySourceCreatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("source-created"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoverySourceCreatedEventSchema.shape.payload
+});
+const discoveryKeywordUpdatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("keyword.updated"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryKeywordUpdatedEventSchema.shape.payload
+});
+z.discriminatedUnion("eventType", [
+  discoverySourceCreatedTelemetrySchema,
+  discoveryKeywordUpdatedTelemetrySchema,
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("ingestion.started"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionStartedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("ingestion.completed"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionCompletedEventSchema.shape.payload
+  })
+]);
+
+function isSessionUser(value) {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value;
+  return typeof candidate.id === "string" && candidate.id.length > 0;
+}
+function requireUserSession(event) {
+  var _a, _b, _c;
+  const ctx = event.context || {};
+  const userCandidate = (_c = (_a = ctx.auth) == null ? void 0 : _a.user) != null ? _c : (_b = ctx.session) == null ? void 0 : _b.user;
+  if (!isSessionUser(userCandidate)) {
+    throw createError({ statusCode: 401, statusMessage: "Authentication required" });
+  }
+  return userCandidate;
+}
+function assertClientAccess(user, clientId) {
+  if (!clientId) return;
+  const allowed = Array.isArray(user.clientIds) ? user.clientIds : typeof user.clientId === "string" && user.clientId.length > 0 ? [user.clientId] : null;
+  if (allowed && !allowed.includes(clientId)) {
+    throw createError({ statusCode: 403, statusMessage: "Forbidden" });
+  }
+}
+
+function toDiscoveryTelemetryEvent(envelope) {
+  switch (envelope.type) {
+    case "source-created":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "source-created",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.id,
+        timestamp: envelope.payload.createdAt,
+        payload: envelope.payload
+      };
+    case "ingestion.started":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "ingestion.started",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: envelope.payload.startedAt,
+        payload: envelope.payload
+      };
+    case "ingestion.completed":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "ingestion.completed",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: envelope.payload.completedAt,
+        payload: envelope.payload
+      };
+    case "keyword.updated":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "keyword.updated",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.clientId,
+        timestamp: envelope.payload.updatedAt,
+        payload: envelope.payload
+      };
+    default:
+      return null;
+  }
+}
+
+const CONNECTION_LIMIT_PER_USER = 5;
+const HEARTBEAT_INTERVAL_MS = 3e4;
+const RETRY_DELAY_MS = 5e3;
+const querySchema = z.object({
+  clientId: z.string().uuid()
+});
+const userConnections = /* @__PURE__ */ new Map();
+function getConnectionSet(userId) {
+  let set = userConnections.get(userId);
+  if (!set) {
+    set = /* @__PURE__ */ new Set();
+    userConnections.set(userId, set);
+  }
+  return set;
+}
+function ensureCapacity(connection) {
+  const set = getConnectionSet(connection.userId);
+  if (set.size >= CONNECTION_LIMIT_PER_USER) {
+    console.warn(JSON.stringify({
+      event: "discovery.sse.rate_limited",
+      userId: connection.userId,
+      clientId: connection.clientId,
+      attemptedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      activeConnections: set.size
+    }));
+    throw createError({ statusCode: 429, statusMessage: "Too many concurrent SSE connections" });
+  }
+  return set;
+}
+function registerConnection(connection) {
+  const set = ensureCapacity(connection);
+  set.add(connection);
+  return set;
+}
+function releaseConnection(connection) {
+  const set = userConnections.get(connection.userId);
+  if (!set) return;
+  set.delete(connection);
+  if (set.size === 0) {
+    userConnections.delete(connection.userId);
+  }
+}
+function writeEvent(res, event) {
+  res.write(`data: ${JSON.stringify(event)}
+
+`);
+}
+const discoverySseHandler = defineEventHandler(async (event) => {
+  var _a;
+  requireApiAuth(event);
+  const sessionUser = requireUserSession(event);
+  const rawQuery = getQuery(event);
+  const parseResult = querySchema.safeParse(rawQuery);
+  if (!parseResult.success) {
+    throw createError({ statusCode: 400, statusMessage: "clientId is required and must be a UUID" });
+  }
+  const clientId = parseResult.data.clientId;
+  assertClientAccess(sessionUser, clientId);
+  await requireDiscoveryFeatureEnabled(clientId);
+  const userId = sessionUser.id;
+  const connectionId = randomUUID();
+  const startedAt = Date.now();
+  const connection = {
+    id: connectionId,
+    clientId,
+    userId,
+    startedAt
+  };
+  registerConnection(connection);
+  const res = event.node.res;
+  let heartbeat = null;
+  try {
+    setHeader(event, "Content-Type", "text/event-stream; charset=utf-8");
+    setHeader(event, "Cache-Control", "no-cache, no-transform");
+    setHeader(event, "Connection", "keep-alive");
+    res.write(`retry: ${RETRY_DELAY_MS}
+`);
+    res.write(`: connected ${(/* @__PURE__ */ new Date()).toISOString()}
+
+`);
+    (_a = res.flushHeaders) == null ? void 0 : _a.call(res);
+    event._handled = true;
+    heartbeat = setInterval(() => {
+      res.write(": heartbeat\n\n");
+    }, HEARTBEAT_INTERVAL_MS);
+  } catch (error) {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    releaseConnection(connection);
+    throw error;
+  }
+  console.info(JSON.stringify({
+    event: "discovery.sse.connected",
+    connectionId,
+    clientId,
+    userId,
+    connectedAt: new Date(startedAt).toISOString(),
+    activeConnections: getConnectionSet(userId).size
+  }));
+  const sendTelemetry = (payload) => {
+    try {
+      writeEvent(res, payload);
+    } catch (error) {
+      console.error("Failed to write discovery SSE event", { error });
+    }
+  };
+  const unsubscribeEvents = onDiscoveryEvent((envelope) => {
+    const telemetry = toDiscoveryTelemetryEvent(envelope);
+    if (!telemetry) return;
+    if (telemetry.clientId !== clientId) return;
+    sendTelemetry(telemetry);
+  });
+  const unsubscribeFlags = subscribeToFeatureFlagUpdates((payload) => {
+    if (payload.feature !== FEATURE_DISCOVERY_AGENT) return;
+    if (payload.clientId !== clientId) return;
+    if (payload.enabled === false) {
+      res.write("event: feature_disabled\n");
+      res.write(`data: ${JSON.stringify({ reason: "discovery-disabled" })}
+
+`);
+      cleanup();
+    }
+  });
+  let closed = false;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribeEvents();
+    unsubscribeFlags();
+    releaseConnection(connection);
+    const durationMs = Date.now() - startedAt;
+    console.info(JSON.stringify({
+      event: "discovery.sse.disconnected",
+      connectionId,
+      clientId,
+      userId,
+      disconnectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      durationMs
+    }));
+    try {
+      res.end();
+    } catch {
+    }
+  }
+  event.node.req.on("close", cleanup);
+  event.node.req.on("aborted", cleanup);
+  event.node.req.on("end", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
+});
+
+export { discoverySseHandler as default };
+//# sourceMappingURL=discovery.get.mjs.map

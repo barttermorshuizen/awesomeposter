@@ -3,6 +3,19 @@ import { defineNitroConfig } from 'nitropack/config'
 export default defineNitroConfig({
   srcDir: 'server',
   scanDirs: ['server'],
+  compatibilityDate: '2025-10-04',
+  experimental: {
+    tasks: true,
+  },
+  tasks: {
+    'discovery-ingestion': {
+      handler: '~/jobs/discovery/ingest-sources',
+      description: 'Fetch discovery sources on cadence',
+    },
+  },
+  scheduledTasks: {
+    '*/5 * * * *': 'discovery-ingestion',
+  },
   runtimeConfig: {
     DATABASE_URL: process.env.DATABASE_URL,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,

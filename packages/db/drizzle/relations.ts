@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm/relations";
-import { clients, clientProfiles, briefs, experiments, posts, assets, briefVersions, postMetrics, discoverySources, discoveryKeywords } from "./schema";
+import { clients, clientProfiles, briefs, experiments, posts, assets, briefVersions, postMetrics, discoverySources, discoveryKeywords, discoveryIngestRuns } from "./schema";
 
 export const clientProfilesRelations = relations(clientProfiles, ({one}) => ({
 	client: one(clients, {
@@ -15,6 +15,7 @@ export const clientsRelations = relations(clients, ({many}) => ({
 	assets: many(assets),
 	discoverySources: many(discoverySources),
 	discoveryKeywords: many(discoveryKeywords),
+	discoveryIngestRuns: many(discoveryIngestRuns),
 }));
 
 export const briefsRelations = relations(briefs, ({one, many}) => ({
@@ -77,11 +78,23 @@ export const discoverySourcesRelations = relations(discoverySources, ({one}) => 
 		fields: [discoverySources.clientId],
 		references: [clients.id]
 	}),
+	ingestRuns: many(discoveryIngestRuns),
 }));
 
 export const discoveryKeywordsRelations = relations(discoveryKeywords, ({one}) => ({
 	client: one(clients, {
 		fields: [discoveryKeywords.clientId],
 		references: [clients.id]
+	}),
+}));
+
+export const discoveryIngestRunsRelations = relations(discoveryIngestRuns, ({one}) => ({
+	client: one(clients, {
+		fields: [discoveryIngestRuns.clientId],
+		references: [clients.id]
+	}),
+	source: one(discoverySources, {
+		fields: [discoveryIngestRuns.sourceId],
+		references: [discoverySources.id]
 	}),
 }));

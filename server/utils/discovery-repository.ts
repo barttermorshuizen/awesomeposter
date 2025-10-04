@@ -1,5 +1,5 @@
-import { and, eq, getDb, discoverySources, discoveryKeywords } from '@awesomeposter/db'
-import { desc } from 'drizzle-orm'
+import { and, eq, getDb, discoverySources, discoveryKeywords, discoveryIngestRuns } from '@awesomeposter/db'
+import { desc, ne, or, lte, isNull } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
 import { z } from 'zod'
 import {
@@ -14,6 +14,16 @@ import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
 
 export type DiscoverySourceRecord = InferModel<typeof discoverySources>
 export type DiscoveryKeywordRecord = InferModel<typeof discoveryKeywords>
+export type DiscoveryIngestRunRecord = InferModel<typeof discoveryIngestRuns>
+
+export type DiscoverySourceWithCadence = DiscoverySourceRecord & {
+  nextFetchAt: Date | null
+  fetchIntervalMinutes: number
+  lastFetchStatus: 'idle' | 'running' | 'success' | 'failure'
+  lastFetchStartedAt: Date | null
+  lastFetchCompletedAt: Date | null
+  lastFailureReason: string | null
+}
 
 export class InvalidDiscoverySourceError extends Error {
   constructor(message: string) {
@@ -84,6 +94,18 @@ const keywordDeleteSchema = z.object({
 
 const KEYWORD_LIMIT = 20
 
+export function computeNextFetchAt(
+  completedAt: Date,
+  fetchIntervalMinutes: number,
+  retryInMinutes?: number | null,
+) {
+  const base = completedAt.getTime()
+  const offsetMinutes = typeof retryInMinutes === 'number' && retryInMinutes >= 0
+    ? retryInMinutes
+    : fetchIntervalMinutes
+  return new Date(base + offsetMinutes * 60_000)
+}
+
 function buildConfigPayload(type: DiscoverySourceType, identifier: string) {
   if (type === 'youtube-channel') {
     return { youtube: { channel: identifier } }
@@ -105,6 +127,111 @@ export async function listDiscoverySources(clientId: string) {
     .from(discoverySources)
     .where(eq(discoverySources.clientId, clientId))
     .orderBy(desc(discoverySources.createdAt))
+}
+
+export async function listDiscoverySourcesDue(limit: number, now = new Date()) {
+  const db = getDb()
+  return db
+    .select()
+    .from(discoverySources)
+    .where(and(
+      or(isNull(discoverySources.nextFetchAt), lte(discoverySources.nextFetchAt, now)),
+      ne(discoverySources.lastFetchStatus, 'running'),
+    ))
+    .orderBy(discoverySources.nextFetchAt)
+    .limit(limit)
+}
+
+export async function claimDiscoverySourceForFetch(sourceId: string, now = new Date()) {
+  const db = getDb()
+  const [record] = await db
+    .update(discoverySources)
+    .set({
+      lastFetchStatus: 'running',
+      lastFetchStartedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(discoverySources.id, sourceId),
+      ne(discoverySources.lastFetchStatus, 'running'),
+      or(isNull(discoverySources.nextFetchAt), lte(discoverySources.nextFetchAt, now)),
+    ))
+    .returning()
+  return record ?? null
+}
+
+export type CompleteDiscoverySourceFetchInput = {
+  runId: string
+  sourceId: string
+  clientId: string
+  startedAt: Date
+  completedAt: Date
+  fetchIntervalMinutes: number
+  success: boolean
+  failureReason?: string | null
+  retryInMinutes?: number | null
+  telemetry?: Record<string, unknown>
+}
+
+export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourceFetchInput) {
+  const db = getDb()
+  const durationMs = Math.max(0, input.completedAt.getTime() - input.startedAt.getTime())
+  const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes)
+
+  await db.transaction(async (tx) => {
+    await tx.insert(discoveryIngestRuns).values({
+      id: crypto.randomUUID(),
+      runId: input.runId,
+      clientId: input.clientId,
+      sourceId: input.sourceId,
+      status: input.success ? 'succeeded' : 'failed',
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      durationMs,
+      failureReason: input.failureReason ?? null,
+      retryInMinutes: input.retryInMinutes ?? null,
+      telemetryJson: input.telemetry ?? {},
+      createdAt: new Date(),
+    })
+
+    await tx
+      .update(discoverySources)
+      .set({
+        lastFetchStatus: input.success ? 'success' : 'failure',
+        lastFetchCompletedAt: input.completedAt,
+        lastFailureReason: input.failureReason ?? null,
+        nextFetchAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(discoverySources.id, input.sourceId))
+  })
+}
+
+export type ReleaseDiscoverySourceAfterFailedCompletionInput = {
+  sourceId: string
+  completedAt: Date
+  fetchIntervalMinutes: number
+  success: boolean
+  failureReason?: string | null
+  retryInMinutes?: number | null
+}
+
+export async function releaseDiscoverySourceAfterFailedCompletion(
+  input: ReleaseDiscoverySourceAfterFailedCompletionInput,
+) {
+  const db = getDb()
+  const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes)
+
+  await db
+    .update(discoverySources)
+    .set({
+      lastFetchStatus: input.success ? 'success' : 'failure',
+      lastFetchCompletedAt: input.completedAt,
+      lastFailureReason: input.failureReason ?? null,
+      nextFetchAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(discoverySources.id, input.sourceId))
 }
 
 export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
@@ -154,6 +281,12 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
     identifier: normalized.identifier,
     notes: parsed.data.notes?.trim() || null,
     configJson: buildConfigPayload(normalized.sourceType, normalized.identifier),
+    fetchIntervalMinutes: 60,
+    nextFetchAt: now,
+    lastFetchStatus: 'idle',
+    lastFetchStartedAt: null,
+    lastFetchCompletedAt: null,
+    lastFailureReason: null,
     createdAt: now,
     updatedAt: now,
   }

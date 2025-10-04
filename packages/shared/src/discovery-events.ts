@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { discoverySourceTypeSchema } from './discovery.js'
+import { discoverySourceTypeSchema, discoveryIngestionFailureReasonSchema } from './discovery.js'
 
 export const discoverySourceSchema = z.object({
   id: z.string().uuid(),
@@ -31,6 +31,40 @@ export const discoverySourceCreatedEventSchema = z.object({
 
 export type DiscoverySourceCreatedEvent = z.infer<typeof discoverySourceCreatedEventSchema>
 
+export const ingestionStartedEventSchema = z.object({
+  type: z.literal('ingestion.started'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    scheduledAt: z.string(),
+    startedAt: z.string(),
+  }),
+})
+
+export type IngestionStartedEvent = z.infer<typeof ingestionStartedEventSchema>
+
+export const ingestionCompletedEventSchema = z.object({
+  type: z.literal('ingestion.completed'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    startedAt: z.string(),
+    completedAt: z.string(),
+    durationMs: z.number().int().min(0),
+    success: z.boolean(),
+    failureReason: discoveryIngestionFailureReasonSchema.optional(),
+    retryInMinutes: z.number().int().min(0).nullable().optional(),
+  }),
+})
+
+export type IngestionCompletedEvent = z.infer<typeof ingestionCompletedEventSchema>
+
 export const discoveryKeywordUpdatedEventSchema = z.object({
   type: z.literal('keyword.updated'),
   version: z.number().int().min(1),
@@ -45,6 +79,8 @@ export type DiscoveryKeywordUpdatedEvent = z.infer<typeof discoveryKeywordUpdate
 
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
+  ingestionStartedEventSchema,
+  ingestionCompletedEventSchema,
   discoveryKeywordUpdatedEventSchema,
 ])
 
@@ -73,6 +109,22 @@ const discoveryKeywordUpdatedTelemetrySchema = z.object({
 export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoverySourceCreatedTelemetrySchema,
   discoveryKeywordUpdatedTelemetrySchema,
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('ingestion.started'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionStartedEventSchema.shape.payload,
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('ingestion.completed'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionCompletedEventSchema.shape.payload,
+  }),
 ])
 
 export type DiscoveryTelemetryEvent = z.infer<typeof discoveryTelemetryEventSchema>
