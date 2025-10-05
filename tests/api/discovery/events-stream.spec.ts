@@ -313,6 +313,97 @@ describe('GET /api/events/discovery', () => {
     client.close()
   })
 
+  it('streams ingestion.failed telemetry envelope', async () => {
+    const clientId = '00000000-0000-0000-0000-000000000777'
+    currentUser = { id: 'user-failure', clientIds: [clientId] }
+    const client = createClient(`/api/events/discovery?clientId=${clientId}`, {
+      accept: 'text/event-stream',
+      authorization: 'Bearer test-api-key',
+    })
+    await client.ready
+    expect(client.statusCode).toBe(200)
+    await readNextComment(client)
+
+    const nextRetryAt = new Date('2025-04-01T10:05:00Z').toISOString()
+    emitDiscoveryEvent({
+      type: 'ingestion.failed',
+      version: 1,
+      payload: {
+        runId: 'run-failure',
+        clientId,
+        sourceId: '00000000-0000-0000-0000-00000000BBBB',
+        sourceType: 'rss',
+        failureReason: 'network_error',
+        attempt: 3,
+        maxAttempts: 3,
+        retryInMinutes: 4,
+        nextRetryAt,
+      },
+    })
+
+    const frame = await readNextData(client)
+    expect(frame).toBeTruthy()
+    const payload = JSON.parse((frame as SseMessage).data) as Record<string, unknown>
+    expect(payload).toMatchObject({
+      eventType: 'ingestion.failed',
+      clientId,
+      entityId: '00000000-0000-0000-0000-00000000BBBB',
+      payload: expect.objectContaining({
+        failureReason: 'network_error',
+        attempt: 3,
+        maxAttempts: 3,
+        retryInMinutes: 4,
+        nextRetryAt,
+      }),
+    })
+
+    client.close()
+  })
+
+  it('streams source.health telemetry envelope', async () => {
+    const clientId = '00000000-0000-0000-0000-000000000888'
+    currentUser = { id: 'user-health', clientIds: [clientId] }
+    const client = createClient(`/api/events/discovery?clientId=${clientId}`, {
+      accept: 'text/event-stream',
+      authorization: 'Bearer test-api-key',
+    })
+    await client.ready
+    expect(client.statusCode).toBe(200)
+    await readNextComment(client)
+
+    const observedAt = new Date('2025-04-02T08:15:00Z').toISOString()
+    emitDiscoveryEvent({
+      type: 'source.health',
+      version: 1,
+      payload: {
+        clientId,
+        sourceId: '00000000-0000-0000-0000-00000000CCCC',
+        sourceType: 'rss',
+        status: 'error',
+        lastFetchedAt: observedAt,
+        failureReason: 'http_4xx',
+        observedAt,
+        attempt: 1,
+      },
+    })
+
+    const frame = await readNextData(client)
+    expect(frame).toBeTruthy()
+    const payload = JSON.parse((frame as SseMessage).data) as Record<string, unknown>
+    expect(payload).toMatchObject({
+      eventType: 'source.health',
+      clientId,
+      entityId: '00000000-0000-0000-0000-00000000CCCC',
+      payload: expect.objectContaining({
+        status: 'error',
+        failureReason: 'http_4xx',
+        observedAt,
+      }),
+    })
+
+    client.close()
+  })
+
   it('emits heartbeat comment every 30 seconds', async () => {
     vi.useFakeTimers()
     usingFakeTimers = true

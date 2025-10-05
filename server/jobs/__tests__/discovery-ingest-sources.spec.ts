@@ -19,6 +19,10 @@ vi.mock('../../utils/discovery-events', () => ({
   emitDiscoveryEvent: vi.fn(),
 }))
 
+vi.mock('../../utils/discovery-health', () => ({
+  publishSourceHealthStatus: vi.fn(),
+}))
+
 vi.mock('nitropack/runtime', () => ({
   defineTask: (input: unknown) => input,
 }))
@@ -33,6 +37,7 @@ import {
 } from '../../utils/discovery-repository'
 import { executeIngestionAdapter } from '@awesomeposter/shared'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
+import { publishSourceHealthStatus } from '../../utils/discovery-health'
 
 describe('runDiscoveryIngestionJob', () => {
   const now = new Date('2025-04-01T10:00:00Z')
@@ -74,6 +79,7 @@ describe('runDiscoveryIngestionJob', () => {
       items: [],
       metadata: { adapter: 'http' },
     } satisfies DiscoveryAdapterResult)
+    vi.mocked(publishSourceHealthStatus).mockReset()
   })
 
   afterEach(() => {
@@ -170,27 +176,124 @@ describe('runDiscoveryIngestionJob', () => {
     vi.mocked(executeIngestionAdapter).mockResolvedValue({
       ok: false,
       failureReason: 'network_error',
-      retryInMinutes: 10,
+      retryInMinutes: 1,
       metadata: { adapter: 'rss' },
       error: new Error('network'),
     })
 
-    const result = await runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+    const jobPromise = runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    const result = await jobPromise
 
     expect(result.failed).toBe(1)
+    expect(executeIngestionAdapter).toHaveBeenCalledTimes(3)
     expect(completeDiscoverySourceFetch).toHaveBeenCalledWith(expect.objectContaining({
       success: false,
       failureReason: 'network_error',
-      retryInMinutes: 10,
+      retryInMinutes: 4,
       telemetry: expect.objectContaining({
         durationMs: expect.any(Number),
         adapter: 'rss',
+        attemptCount: 3,
+        attempts: expect.arrayContaining([
+          expect.objectContaining({ attempt: 1, success: false }),
+          expect.objectContaining({ attempt: 2, success: false }),
+          expect.objectContaining({ attempt: 3, success: false }),
+        ]),
       }),
     }))
 
     const completionEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingestion.completed')?.[0]
     expect(completionEvent?.payload.failureReason).toBe('network_error')
-    expect(completionEvent?.payload.retryInMinutes).toBe(10)
+    expect(completionEvent?.payload.retryInMinutes).toBe(4)
+    expect(completionEvent?.payload.attempt).toBe(3)
+    expect(completionEvent?.payload.maxAttempts).toBeGreaterThanOrEqual(3)
+
+    const failureEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingestion.failed')?.[0]
+    expect(failureEvent?.payload).toMatchObject({
+      clientId: source.clientId,
+      sourceId: source.id,
+      failureReason: 'network_error',
+      attempt: 3,
+      maxAttempts: expect.any(Number),
+      retryInMinutes: 4,
+    })
+  })
+
+  it('publishes source health status when encountering permanent failures', async () => {
+    const source = buildSource({ id: 'source-permanent', clientId: 'client-permanent', sourceType: 'rss' })
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter).mockResolvedValue({
+      ok: false,
+      failureReason: 'http_4xx',
+      metadata: { adapter: 'rss', status: 404 },
+    })
+
+    const result = await runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+
+    expect(result.failed).toBe(1)
+    expect(executeIngestionAdapter).toHaveBeenCalledTimes(1)
+    expect(completeDiscoverySourceFetch).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      failureReason: 'http_4xx',
+    }))
+    expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: source.clientId,
+      sourceId: source.id,
+      status: 'error',
+      failureReason: 'http_4xx',
+      attempt: 1,
+    }))
+  })
+
+  it('respects retry-after header for 429 responses and retries with override', async () => {
+    const source = buildSource({ id: 'source-429', clientId: 'client-429', sourceType: 'rss' })
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter)
+      .mockResolvedValueOnce({
+        ok: false,
+        failureReason: 'http_4xx',
+        metadata: { adapter: 'rss', status: 429 },
+        raw: { headers: { 'Retry-After': '120' } },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        items: [],
+        metadata: { adapter: 'rss' },
+      })
+
+    const jobPromise = runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    const result = await jobPromise
+
+    expect(result.succeeded).toBe(1)
+    expect(executeIngestionAdapter).toHaveBeenCalledTimes(2)
+
+    const { telemetry } = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0]
+    expect(telemetry).toEqual(expect.objectContaining({
+      attempts: expect.arrayContaining([
+        expect.objectContaining({
+          attempt: 1,
+          retryInMinutes: 2,
+          retryAfterOverride: true,
+        }),
+        expect.objectContaining({ attempt: 2, success: true }),
+      ]),
+      attemptCount: 2,
+    }))
+
+    const completionEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingestion.completed')?.[0]
+    expect(completionEvent?.payload.attempt).toBe(2)
+    expect(completionEvent?.payload.retryInMinutes).toBeUndefined()
   })
 
   it('marks source as failed when adapter throws', async () => {
@@ -219,20 +322,25 @@ describe('runDiscoveryIngestionJob', () => {
     vi.mocked(executeIngestionAdapter).mockResolvedValue({
       ok: false,
       failureReason: 'network_error',
-      retryInMinutes: 20,
+      retryInMinutes: 1,
       metadata: { adapter: 'rss' },
       error: new Error('network'),
     })
     vi.mocked(completeDiscoverySourceFetch).mockRejectedValue(new Error('db offline'))
 
-    const result = await runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+    const jobPromise = runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    const result = await jobPromise
 
     expect(result.failed).toBe(1)
     expect(releaseDiscoverySourceAfterFailedCompletion).toHaveBeenCalledWith(expect.objectContaining({
       sourceId: source.id,
       fetchIntervalMinutes: source.fetchIntervalMinutes,
       failureReason: 'network_error',
-      retryInMinutes: 20,
+      retryInMinutes: 4,
       success: false,
     }))
     expect(releaseDiscoverySourceAfterFailedCompletion).toHaveBeenCalledTimes(1)

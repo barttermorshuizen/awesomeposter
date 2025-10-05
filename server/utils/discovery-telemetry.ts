@@ -35,6 +35,24 @@ export function toDiscoveryTelemetryEvent(envelope: DiscoveryEventEnvelope): Dis
         timestamp: envelope.payload.completedAt,
         payload: envelope.payload,
       }
+    case 'ingestion.failed':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'ingestion.failed',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: envelope.payload.nextRetryAt ?? new Date().toISOString(),
+        payload: envelope.payload,
+      }
+    case 'source.health':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'source.health',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: envelope.payload.observedAt,
+        payload: envelope.payload,
+      }
     case 'keyword.updated':
       return {
         schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,

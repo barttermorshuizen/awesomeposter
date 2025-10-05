@@ -46,6 +46,19 @@ export const ingestionStartedEventSchema = z.object({
 
 export type IngestionStartedEvent = z.infer<typeof ingestionStartedEventSchema>
 
+const ingestionAttemptSchema = z.object({
+  attempt: z.number().int().min(1),
+  startedAt: z.string(),
+  completedAt: z.string(),
+  durationMs: z.number().int().min(0),
+  success: z.boolean(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  retryInMinutes: z.number().int().min(0).nullable().optional(),
+  nextRetryAt: z.string().nullable().optional(),
+  retryReason: z.enum(['transient', 'permanent', 'exhausted', 'none']).optional(),
+  retryAfterOverride: z.boolean().optional(),
+})
+
 export const ingestionCompletedEventSchema = z.object({
   type: z.literal('ingestion.completed'),
   version: z.number().int().min(1),
@@ -60,10 +73,52 @@ export const ingestionCompletedEventSchema = z.object({
     success: z.boolean(),
     failureReason: discoveryIngestionFailureReasonSchema.optional(),
     retryInMinutes: z.number().int().min(0).nullable().optional(),
+    attempt: z.number().int().min(1).optional(),
+    maxAttempts: z.number().int().min(1).optional(),
+    attempts: z.array(ingestionAttemptSchema).optional(),
+    nextRetryAt: z.string().optional(),
   }),
 })
 
 export type IngestionCompletedEvent = z.infer<typeof ingestionCompletedEventSchema>
+
+export const ingestionFailedEventSchema = z.object({
+  type: z.literal('ingestion.failed'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    failureReason: discoveryIngestionFailureReasonSchema,
+    attempt: z.number().int().min(1),
+    maxAttempts: z.number().int().min(1),
+    retryInMinutes: z.number().int().min(0).nullable().optional(),
+    nextRetryAt: z.string().optional(),
+  }),
+})
+
+export type IngestionFailedEvent = z.infer<typeof ingestionFailedEventSchema>
+
+const sourceHealthPayloadSchema = z.object({
+  clientId: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  sourceType: discoverySourceTypeSchema,
+  status: z.enum(['healthy', 'warning', 'error']),
+  lastFetchedAt: z.string().nullable(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  observedAt: z.string(),
+  consecutiveFailures: z.number().int().min(0).optional(),
+  attempt: z.number().int().min(1).optional(),
+})
+
+export const sourceHealthEventSchema = z.object({
+  type: z.literal('source.health'),
+  version: z.number().int().min(1),
+  payload: sourceHealthPayloadSchema,
+})
+
+export type SourceHealthEvent = z.infer<typeof sourceHealthEventSchema>
 
 export const discoveryKeywordUpdatedEventSchema = z.object({
   type: z.literal('keyword.updated'),
@@ -81,6 +136,8 @@ export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
   ingestionStartedEventSchema,
   ingestionCompletedEventSchema,
+  ingestionFailedEventSchema,
+  sourceHealthEventSchema,
   discoveryKeywordUpdatedEventSchema,
 ])
 
@@ -124,6 +181,22 @@ export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
     entityId: z.string().uuid(),
     timestamp: z.string(),
     payload: ingestionCompletedEventSchema.shape.payload,
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('ingestion.failed'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionFailedEventSchema.shape.payload,
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('source.health'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: sourceHealthEventSchema.shape.payload,
   }),
 ])
 
