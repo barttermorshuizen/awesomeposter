@@ -1,4 +1,4 @@
-import { i as getPool } from '../../../../_/index.mjs';
+import { i as getPool } from '../../../../_/client.mjs';
 import { d as defineEventHandler, a as getRouterParam, c as createError, r as readBody } from '../../../../nitro/nitro.mjs';
 import { a as createOrUpdateClientProfileSchema } from '../../../../_/schemas.mjs';
 import 'drizzle-orm/node-postgres';

@@ -2,7 +2,7 @@ import { d as defineEventHandler, r as readBody, c as createError } from '../../
 import { A as AgentOrchestrator } from '../../../_/orchestrator.mjs';
 import { workflowStatuses } from './workflow-status.get.mjs';
 import { g as getDb } from '../../../_/db.mjs';
-import { b as briefs, a as assets } from '../../../_/index.mjs';
+import { b as briefs, a as assets } from '../../../_/client.mjs';
 import { eq } from 'drizzle-orm';
 import 'node:http';
 import 'node:https';

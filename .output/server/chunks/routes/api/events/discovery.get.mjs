@@ -13,11 +13,11 @@ import 'node:fs';
 import 'node:path';
 import 'node:url';
 import '@upstash/redis';
-import '../../../_/index.mjs';
+import 'drizzle-orm';
+import '../../../_/client.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';
-import 'drizzle-orm';
 
 z.object({
   id: z.string().uuid(),
@@ -55,6 +55,18 @@ const ingestionStartedEventSchema = z.object({
     startedAt: z.string()
   })
 });
+const ingestionAttemptSchema = z.object({
+  attempt: z.number().int().min(1),
+  startedAt: z.string(),
+  completedAt: z.string(),
+  durationMs: z.number().int().min(0),
+  success: z.boolean(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  retryInMinutes: z.number().int().min(0).nullable().optional(),
+  nextRetryAt: z.string().nullable().optional(),
+  retryReason: z.enum(["transient", "permanent", "exhausted", "none"]).optional(),
+  retryAfterOverride: z.boolean().optional()
+});
 const ingestionCompletedEventSchema = z.object({
   type: z.literal("ingestion.completed"),
   version: z.number().int().min(1),
@@ -68,8 +80,43 @@ const ingestionCompletedEventSchema = z.object({
     durationMs: z.number().int().min(0),
     success: z.boolean(),
     failureReason: discoveryIngestionFailureReasonSchema.optional(),
-    retryInMinutes: z.number().int().min(0).nullable().optional()
+    retryInMinutes: z.number().int().min(0).nullable().optional(),
+    attempt: z.number().int().min(1).optional(),
+    maxAttempts: z.number().int().min(1).optional(),
+    attempts: z.array(ingestionAttemptSchema).optional(),
+    nextRetryAt: z.string().optional()
   })
+});
+const ingestionFailedEventSchema = z.object({
+  type: z.literal("ingestion.failed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    failureReason: discoveryIngestionFailureReasonSchema,
+    attempt: z.number().int().min(1),
+    maxAttempts: z.number().int().min(1),
+    retryInMinutes: z.number().int().min(0).nullable().optional(),
+    nextRetryAt: z.string().optional()
+  })
+});
+const sourceHealthPayloadSchema = z.object({
+  clientId: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  sourceType: discoverySourceTypeSchema,
+  status: z.enum(["healthy", "warning", "error"]),
+  lastFetchedAt: z.string().nullable(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  observedAt: z.string(),
+  consecutiveFailures: z.number().int().min(0).optional(),
+  attempt: z.number().int().min(1).optional()
+});
+const sourceHealthEventSchema = z.object({
+  type: z.literal("source.health"),
+  version: z.number().int().min(1),
+  payload: sourceHealthPayloadSchema
 });
 const discoveryKeywordUpdatedEventSchema = z.object({
   type: z.literal("keyword.updated"),
@@ -84,6 +131,8 @@ z.union([
   discoverySourceCreatedEventSchema,
   ingestionStartedEventSchema,
   ingestionCompletedEventSchema,
+  ingestionFailedEventSchema,
+  sourceHealthEventSchema,
   discoveryKeywordUpdatedEventSchema
 ]);
 const DISCOVERY_TELEMETRY_SCHEMA_VERSION = 1;
@@ -121,6 +170,22 @@ z.discriminatedUnion("eventType", [
     entityId: z.string().uuid(),
     timestamp: z.string(),
     payload: ingestionCompletedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("ingestion.failed"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionFailedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("source.health"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: sourceHealthEventSchema.shape.payload
   })
 ]);
 
@@ -147,6 +212,7 @@ function assertClientAccess(user, clientId) {
 }
 
 function toDiscoveryTelemetryEvent(envelope) {
+  var _a;
   switch (envelope.type) {
     case "source-created":
       return {
@@ -173,6 +239,24 @@ function toDiscoveryTelemetryEvent(envelope) {
         clientId: envelope.payload.clientId,
         entityId: envelope.payload.sourceId,
         timestamp: envelope.payload.completedAt,
+        payload: envelope.payload
+      };
+    case "ingestion.failed":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "ingestion.failed",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: (_a = envelope.payload.nextRetryAt) != null ? _a : (/* @__PURE__ */ new Date()).toISOString(),
+        payload: envelope.payload
+      };
+    case "source.health":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "source.health",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.sourceId,
+        timestamp: envelope.payload.observedAt,
         payload: envelope.payload
       };
     case "keyword.updated":

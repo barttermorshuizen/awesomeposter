@@ -1,8 +1,71 @@
-import { g as getDb, j as discoveryKeywords, k as discoverySources, l as discoveryIngestRuns } from './index.mjs';
-import { and, eq, desc, or, isNull, lte, ne } from 'drizzle-orm';
+import { and, eq, inArray, desc, or, isNull, lte, ne } from 'drizzle-orm';
+import { g as getDb, j as discoveryItems, k as discoveryKeywords, l as discoverySources, m as discoveryIngestRuns } from './client.mjs';
+import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { r as requireDiscoveryFeatureEnabled } from './feature-flags.mjs';
 import { n as normalizeDiscoveryKeyword, c as createDiscoverySourceInputSchema, a as normalizeDiscoverySourceUrl, d as deriveDuplicateKey } from './discovery.mjs';
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`);
+  return `{${entries.join(",")}}`;
+}
+function computeRawHash(rawPayload) {
+  const serialized = stableStringify(rawPayload);
+  return createHash("sha256").update(serialized).digest("hex");
+}
+function toDate(value) {
+  if (!value)
+    return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+async function persistDiscoveryItems(inputs) {
+  if (!inputs.length) {
+    return { inserted: [], duplicates: [] };
+  }
+  const db = getDb();
+  const itemsWithHash = inputs.map((input) => ({
+    input,
+    rawHash: computeRawHash(input.rawPayload)
+  }));
+  const clientIds = new Set(itemsWithHash.map((item) => item.input.clientId));
+  if (clientIds.size !== 1) {
+    throw new Error("persistDiscoveryItems expects all inputs to share the same clientId");
+  }
+  const [clientId] = [...clientIds];
+  const rawHashes = itemsWithHash.map((item) => item.rawHash);
+  const existing = await db.select({ rawHash: discoveryItems.rawHash }).from(discoveryItems).where(and(eq(discoveryItems.clientId, clientId), inArray(discoveryItems.rawHash, rawHashes)));
+  const existingSet = new Set(existing.map((row) => row.rawHash));
+  const toInsert = itemsWithHash.filter((item) => !existingSet.has(item.rawHash));
+  const rows = toInsert.map(({ input, rawHash }) => ({
+    id: randomUUID(),
+    clientId: input.clientId,
+    sourceId: input.sourceId,
+    externalId: input.externalId,
+    rawHash,
+    status: "pending_scoring",
+    title: input.title,
+    url: input.url,
+    fetchedAt: new Date(input.fetchedAt),
+    publishedAt: toDate(input.publishedAt),
+    publishedAtSource: input.publishedAtSource,
+    rawPayloadJson: input.rawPayload,
+    normalizedJson: input.normalized,
+    sourceMetadataJson: input.sourceMetadata
+  }));
+  let inserted = [];
+  if (rows.length) {
+    inserted = await db.insert(discoveryItems).values(rows).returning({ id: discoveryItems.id, rawHash: discoveryItems.rawHash });
+  }
+  const duplicates = itemsWithHash.filter((item) => existingSet.has(item.rawHash)).map((item) => ({ rawHash: item.rawHash }));
+  return { inserted, duplicates };
+}
 
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
@@ -111,7 +174,7 @@ async function completeDiscoverySourceFetch(input) {
   const durationMs = Math.max(0, input.completedAt.getTime() - input.startedAt.getTime());
   const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes);
   await db.transaction(async (tx) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     await tx.insert(discoveryIngestRuns).values({
       id: crypto.randomUUID(),
       runId: input.runId,
@@ -123,17 +186,49 @@ async function completeDiscoverySourceFetch(input) {
       durationMs,
       failureReason: (_a = input.failureReason) != null ? _a : null,
       retryInMinutes: (_b = input.retryInMinutes) != null ? _b : null,
-      telemetryJson: (_c = input.telemetry) != null ? _c : {},
+      metricsJson: (_c = input.metrics) != null ? _c : {},
+      telemetryJson: (_d = input.telemetry) != null ? _d : {},
       createdAt: /* @__PURE__ */ new Date()
     });
     await tx.update(discoverySources).set({
       lastFetchStatus: input.success ? "success" : "failure",
       lastFetchCompletedAt: input.completedAt,
-      lastFailureReason: (_d = input.failureReason) != null ? _d : null,
+      lastFailureReason: (_e = input.failureReason) != null ? _e : null,
       nextFetchAt,
       updatedAt: /* @__PURE__ */ new Date()
     }).where(eq(discoverySources.id, input.sourceId));
   });
+}
+async function saveDiscoveryItems(input) {
+  if (!input.items.length) {
+    return { inserted: [], duplicates: [] };
+  }
+  const payloads = input.items.map(({ normalized, rawPayload, sourceMetadata }) => ({
+    clientId: input.clientId,
+    sourceId: input.sourceId,
+    externalId: normalized.externalId,
+    title: normalized.title,
+    url: normalized.url,
+    fetchedAt: normalized.fetchedAt,
+    publishedAt: normalized.publishedAt,
+    publishedAtSource: normalized.publishedAtSource,
+    normalized,
+    rawPayload,
+    sourceMetadata
+  }));
+  return persistDiscoveryItems(payloads);
+}
+async function releaseDiscoverySourceAfterFailedCompletion(input) {
+  var _a;
+  const db = getDb();
+  const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes);
+  await db.update(discoverySources).set({
+    lastFetchStatus: input.success ? "success" : "failure",
+    lastFetchCompletedAt: input.completedAt,
+    lastFailureReason: (_a = input.failureReason) != null ? _a : null,
+    nextFetchAt,
+    updatedAt: /* @__PURE__ */ new Date()
+  }).where(eq(discoverySources.id, input.sourceId));
 }
 async function createDiscoverySource(input) {
   var _a, _b;
@@ -346,5 +441,5 @@ async function deleteDiscoveryKeyword(input) {
   return (_a = deleted == null ? void 0 : deleted.id) != null ? _a : null;
 }
 
-export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, listDiscoverySourcesDue as i, claimDiscoverySourceForFetch as j, completeDiscoverySourceFetch as k, listDiscoveryKeywords as l, updateDiscoveryKeyword as u };
+export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, listDiscoverySourcesDue as i, claimDiscoverySourceForFetch as j, completeDiscoverySourceFetch as k, listDiscoveryKeywords as l, releaseDiscoverySourceAfterFailedCompletion as r, saveDiscoveryItems as s, updateDiscoveryKeyword as u };
 //# sourceMappingURL=discovery-repository.mjs.map

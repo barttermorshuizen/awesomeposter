@@ -1,5 +1,5 @@
 import { d as defineEventHandler } from '../../nitro/nitro.mjs';
-import { i as getPool } from '../../_/index.mjs';
+import { i as getPool } from '../../_/client.mjs';
 import { g as generateMinimalClientProfile, v as validateClientProfileStructure } from '../../_/sample-client-profile.mjs';
 import 'node:http';
 import 'node:https';

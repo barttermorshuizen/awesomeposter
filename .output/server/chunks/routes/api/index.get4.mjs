@@ -1,5 +1,5 @@
 import { d as defineEventHandler } from '../../nitro/nitro.mjs';
-import { g as getDb, t as tasks } from '../../_/index.mjs';
+import { g as getDb, t as tasks } from '../../_/client.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

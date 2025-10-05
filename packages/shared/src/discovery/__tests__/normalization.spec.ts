@@ -3,6 +3,7 @@ import { fetchHttpSource } from '../adapters/http.js'
 import { fetchRssSource } from '../adapters/rss.js'
 import { fetchYoutubeSource } from '../adapters/youtube.js'
 import type { DiscoveryAdapterResult } from '../ingestion.js'
+import type { YoutubeSourceMetadata } from '../../discovery.js'
 
 function createResponse(body: string, status = 200, headers: Record<string, string> = {}) {
   return new Response(body, {
@@ -135,21 +136,36 @@ describe('discovery normalization adapters', () => {
 
     const fetchMock = vi.fn().mockResolvedValue(createResponse(apiBody, 200, { 'content-type': 'application/json' }))
 
+    const originalKey = process.env.YOUTUBE_API_KEY
+    process.env.YOUTUBE_API_KEY = 'test-key'
+
+    const channelId = 'UCabc1234567890abcdef'
+
     const result = (await fetchYoutubeSource(
       {
         sourceId: 'source-yt',
         clientId: 'client-1',
         sourceType: 'youtube-channel',
-        url: 'https://youtube-api.example.com',
-        canonicalUrl: 'https://youtube.com/channel/example',
-        config: { youtube: { channel: 'channel-1' } },
+        url: `https://www.youtube.com/channel/${channelId}`,
+        canonicalUrl: `https://www.youtube.com/channel/${channelId}`,
+        config: { youtube: { channel: channelId } },
       },
       { fetch: fetchMock, now: () => now },
     )) as DiscoveryAdapterResult
 
+    if (originalKey === undefined) {
+      delete process.env.YOUTUBE_API_KEY
+    } else {
+      process.env.YOUTUBE_API_KEY = originalKey
+    }
+
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.items).toHaveLength(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [requestedUrl] = fetchMock.mock.calls[0]!
+    expect(requestedUrl).toContain('playlistItems')
+    expect(requestedUrl).toContain('key=test-key')
 
     const first = result.items[0]
     const second = result.items[1]
@@ -161,5 +177,78 @@ describe('discovery normalization adapters', () => {
     expect(second.sourceMetadata).toMatchObject({ transcriptAvailable: true, durationSeconds: 3660 })
     expect(result.metadata?.itemCount).toBe(2)
     expect(result.metadata?.skippedCount).toBe(0)
+    expect((result.metadata as Record<string, unknown>).requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'channelUploads', status: 200 }),
+      ]),
+    )
+  })
+
+  it('resolves handle-based channels before fetching playlist items', async () => {
+    const handleResponse = JSON.stringify({
+      items: [
+        { id: 'UC123handleResolved', snippet: { title: 'Example Channel' } },
+      ],
+    })
+
+    const playlistResponse = JSON.stringify({
+      items: [
+        {
+          id: 'video-999',
+          snippet: {
+            title: 'Handle Video',
+            description: 'Video from handle channel',
+            publishedAt: '2025-03-29T00:00:00Z',
+            channelId: 'UC123handleResolved',
+          },
+          contentDetails: { duration: 'PT10M' },
+          transcript: null,
+        },
+      ],
+    })
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createResponse(handleResponse, 200, { 'content-type': 'application/json' }))
+      .mockResolvedValueOnce(createResponse(playlistResponse, 200, { 'content-type': 'application/json' }))
+
+    const originalKey = process.env.YOUTUBE_API_KEY
+    process.env.YOUTUBE_API_KEY = 'test-key'
+
+    const result = (await fetchYoutubeSource(
+      {
+        sourceId: 'source-yt',
+        clientId: 'client-1',
+        sourceType: 'youtube-channel',
+        url: 'https://www.youtube.com/@awesomeposter',
+        canonicalUrl: 'https://www.youtube.com/@awesomeposter',
+        config: { youtube: { channel: '@awesomeposter' } },
+      },
+      { fetch: fetchMock, now: () => now },
+    )) as DiscoveryAdapterResult
+
+    if (originalKey === undefined) {
+      delete process.env.YOUTUBE_API_KEY
+    } else {
+      process.env.YOUTUBE_API_KEY = originalKey
+    }
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [firstRequestUrl] = fetchMock.mock.calls[0]!
+    expect(firstRequestUrl).toContain('/channels')
+    const [secondRequestUrl] = fetchMock.mock.calls[1]!
+    expect(secondRequestUrl).toContain('/playlistItems')
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0].normalized.url).toBe('https://www.youtube.com/watch?v=video-999')
+    const metadata = result.items[0].sourceMetadata as YoutubeSourceMetadata
+    expect(metadata.channelId).toBe('UC123handleResolved')
+    expect((result.metadata as Record<string, unknown>).requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'resolveHandle', status: 200 }),
+        expect.objectContaining({ type: 'channelUploads', status: 200 }),
+      ]),
+    )
   })
 })

@@ -1,7 +1,7 @@
 import { d as defineEventHandler, r as readBody, c as createError } from '../../nitro/nitro.mjs';
-import { g as getDb, b as briefs } from '../../_/index.mjs';
-import { c as createBriefSchema } from '../../_/schemas.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, b as briefs } from '../../_/client.mjs';
+import { c as createBriefSchema } from '../../_/schemas.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

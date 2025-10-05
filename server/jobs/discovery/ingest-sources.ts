@@ -23,6 +23,7 @@ const EVENT_VERSION = 1
 const DEFAULT_MAX_RETRY_ATTEMPTS = 3
 const DEFAULT_MAX_RETRY_DELAY_MINUTES = 15
 const BASE_RETRY_DELAY_MINUTES = 1
+const YOUTUBE_MAX_RESULTS_CAP = 50
 
 type IngestionRunnerOptions = {
   now: () => Date
@@ -84,6 +85,14 @@ function parsePositiveInt(
   return fallback
 }
 
+function resolveYoutubeMaxResults(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed)) return undefined
+  const clamped = Math.min(Math.max(parsed, 1), YOUTUBE_MAX_RESULTS_CAP)
+  return clamped
+}
+
 function resolveMaxAttempts(): number {
   return parsePositiveInt(process.env.INGESTION_RETRY_MAX_ATTEMPTS, DEFAULT_MAX_RETRY_ATTEMPTS, { min: 1, max: 10 })
 }
@@ -94,6 +103,10 @@ function resolveMaxRetryDelayMinutes(): number {
     max: 60,
   })
 }
+
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY ?? undefined
+const YOUTUBE_API_BASE_URL = process.env.YOUTUBE_DATA_API_BASE_URL ?? undefined
+const YOUTUBE_API_MAX_RESULTS = resolveYoutubeMaxResults(process.env.YOUTUBE_API_MAX_RESULTS)
 
 function resolveFailureReason(raw: unknown): DiscoveryIngestionFailureReason {
   if (typeof raw === 'string') {
@@ -304,7 +317,13 @@ async function processSource(
             canonicalUrl: claimed.canonicalUrl,
             config: claimed.configJson ?? null,
           },
-          { fetch: options.fetch, now: options.now },
+          {
+            fetch: options.fetch,
+            now: options.now,
+            youtubeApiKey: YOUTUBE_API_KEY,
+            youtubeApiBaseUrl: YOUTUBE_API_BASE_URL,
+            youtubeMaxResults: YOUTUBE_API_MAX_RESULTS,
+          },
         )
       } catch (error) {
         const derivedFailure = resolveFailureReason((error as Error)?.cause ?? null)

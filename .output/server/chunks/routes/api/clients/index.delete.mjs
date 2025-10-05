@@ -1,7 +1,7 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError } from '../../../nitro/nitro.mjs';
-import { g as getDb, c as clients, f as emailsIngested, h as examplesIndex, t as tasks } from '../../../_/index.mjs';
-import { deleteClientAssets } from '../../../_/storage.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, c as clients, f as emailsIngested, h as examplesIndex, t as tasks } from '../../../_/client.mjs';
+import { deleteClientAssets } from '../../../_/storage.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

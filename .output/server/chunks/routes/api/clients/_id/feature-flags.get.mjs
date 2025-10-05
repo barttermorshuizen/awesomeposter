@@ -9,11 +9,11 @@ import 'node:path';
 import 'node:crypto';
 import 'node:url';
 import '@upstash/redis';
-import '../../../../_/index.mjs';
+import 'drizzle-orm';
+import '../../../../_/client.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';
-import 'drizzle-orm';
 
 const featureFlags_get = defineEventHandler(async (event) => {
   const clientId = getRouterParam(event, "id");

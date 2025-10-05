@@ -16,15 +16,18 @@ const discoveryIngestionFailureReasonSchema = z.enum([
   "parser_error",
   "unknown_error"
 ]);
-z.object({
+const discoveryContentTypeSchema = z.enum(["article", "rss", "youtube"]);
+const discoveryPublishedAtSourceSchema = z.enum(["original", "fallback", "feed", "api"]);
+const normalizedDiscoveryAdapterItemSchema = z.object({
   externalId: z.string().min(1),
+  title: z.string().min(1).max(500),
   url: z.string().url(),
-  title: z.string().max(300),
-  summary: z.string().optional().nullable(),
-  publishedAt: z.string().optional().nullable(),
-  author: z.string().optional().nullable(),
-  thumbnailUrl: z.string().url().optional().nullable(),
-  raw: z.unknown().optional()
+  contentType: discoveryContentTypeSchema,
+  publishedAt: z.string().datetime().nullable(),
+  publishedAtSource: discoveryPublishedAtSourceSchema,
+  fetchedAt: z.string().datetime(),
+  extractedBody: z.string().min(1),
+  excerpt: z.string().optional().nullable()
 });
 const createDiscoverySourceInputSchema = z.object({
   clientId: z.string().uuid(),
@@ -187,5 +190,5 @@ function deriveDuplicateKey(ns) {
   return `${ns.sourceType}::${ns.identifier.toLowerCase()}`;
 }
 
-export { normalizeDiscoverySourceUrl as a, discoverySourceTypeSchema as b, createDiscoverySourceInputSchema as c, deriveDuplicateKey as d, discoveryIngestionFailureReasonSchema as e, normalizeDiscoveryKeyword as n };
+export { normalizeDiscoverySourceUrl as a, discoverySourceTypeSchema as b, createDiscoverySourceInputSchema as c, deriveDuplicateKey as d, discoveryIngestionFailureReasonSchema as e, normalizedDiscoveryAdapterItemSchema as f, normalizeDiscoveryKeyword as n };
 //# sourceMappingURL=discovery.mjs.map

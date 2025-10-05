@@ -1,7 +1,7 @@
 import { d as defineEventHandler, c as createError, b as readMultipartFormData } from '../../../nitro/nitro.mjs';
 import { putAssetObject } from '../../../_/storage.mjs';
 import { g as getEnv } from '../../../_/env.mjs';
-import { g as getDb, a as assets } from '../../../_/index.mjs';
+import { g as getDb, a as assets } from '../../../_/client.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

@@ -1,6 +1,6 @@
-import { g as getDb, b as briefs } from '../../../../_/index.mjs';
-import { d as defineEventHandler, a as getRouterParam, c as createError } from '../../../../nitro/nitro.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, b as briefs } from '../../../../_/client.mjs';
+import { d as defineEventHandler, a as getRouterParam, c as createError } from '../../../../nitro/nitro.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';

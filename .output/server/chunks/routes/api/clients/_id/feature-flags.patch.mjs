@@ -1,8 +1,8 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError, r as readBody } from '../../../../nitro/nitro.mjs';
 import { F as FEATURE_DISCOVERY_AGENT, e as emitDiscoveryFlagChanged, p as publishFeatureFlagUpdate, D as DISCOVERY_FLAG_CHANGED_EVENT } from '../../../../_/feature-flags.mjs';
 import crypto from 'node:crypto';
-import { g as getDb, c as clients, d as clientFeatures, e as clientFeatureToggleAudits } from '../../../../_/index.mjs';
 import { eq, and } from 'drizzle-orm';
+import { g as getDb, c as clients, d as clientFeatures, e as clientFeatureToggleAudits } from '../../../../_/client.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

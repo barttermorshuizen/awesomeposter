@@ -1,7 +1,7 @@
 import { u as useRuntimeConfig } from '../nitro/nitro.mjs';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
-import { pgTable, timestamp, uuid, text, jsonb, integer, boolean, primaryKey, numeric, uniqueIndex, unique } from 'drizzle-orm/pg-core';
+import { pgTable, timestamp, uuid, text, jsonb, integer, boolean, primaryKey, numeric, uniqueIndex, unique, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 const clients = pgTable("clients", {
@@ -224,10 +224,32 @@ const discoveryIngestRuns = pgTable("discovery_ingest_runs", {
   durationMs: integer("duration_ms"),
   failureReason: text("failure_reason"),
   retryInMinutes: integer("retry_in_minutes"),
+  metricsJson: jsonb("metrics_json").$type().default({}),
   telemetryJson: jsonb("telemetry_json").$type().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
 }, (table) => ({
   runIdUnique: unique("discovery_ingest_runs_run_id_unique").on(table.runId)
+}));
+const discoveryItems = pgTable("discovery_items", {
+  id: uuid("id").primaryKey(),
+  clientId: uuid("client_id").references(() => clients.id, { onDelete: "cascade" }).notNull(),
+  sourceId: uuid("source_id").references(() => discoverySources.id, { onDelete: "cascade" }).notNull(),
+  externalId: text("external_id").notNull(),
+  rawHash: text("raw_hash").notNull(),
+  status: text("status").$type().default("pending_scoring").notNull(),
+  title: text("title").notNull(),
+  url: text("url").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  publishedAtSource: text("published_at_source").$type().notNull(),
+  ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow(),
+  rawPayloadJson: jsonb("raw_payload_json").$type().notNull(),
+  normalizedJson: jsonb("normalized_json").$type().notNull(),
+  sourceMetadataJson: jsonb("source_metadata_json").$type().notNull()
+}, (table) => ({
+  clientHashUnique: uniqueIndex("discovery_items_client_hash_unique").on(table.clientId, table.rawHash),
+  statusIdx: index("discovery_items_status_idx").on(table.status),
+  sourceIdx: index("discovery_items_source_idx").on(table.sourceId)
 }));
 const orchestratorRuns = pgTable("orchestrator_runs", {
   runId: text("run_id").primaryKey(),
@@ -282,6 +304,7 @@ const schema = /*#__PURE__*/Object.freeze({
     clientProfiles: clientProfiles,
     clients: clients,
     discoveryIngestRuns: discoveryIngestRuns,
+    discoveryItems: discoveryItems,
     discoveryKeywords: discoveryKeywords,
     discoverySources: discoverySources,
     emailsIngested: emailsIngested,
@@ -323,5 +346,5 @@ function getDb() {
   return cachedDb;
 }
 
-export { assets as a, briefs as b, clients as c, clientFeatures as d, clientFeatureToggleAudits as e, emailsIngested as f, getDb as g, examplesIndex as h, getPool as i, discoveryKeywords as j, discoverySources as k, discoveryIngestRuns as l, clientProfiles as m, hitlRequests as n, orchestratorRuns as o, hitlResponses as p, tasks as t };
-//# sourceMappingURL=index.mjs.map
+export { assets as a, briefs as b, clients as c, clientFeatures as d, clientFeatureToggleAudits as e, emailsIngested as f, getDb as g, examplesIndex as h, getPool as i, discoveryItems as j, discoveryKeywords as k, discoverySources as l, discoveryIngestRuns as m, clientProfiles as n, orchestratorRuns as o, hitlRequests as p, hitlResponses as q, tasks as t };
+//# sourceMappingURL=client.mjs.map

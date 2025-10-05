@@ -12,11 +12,11 @@ import 'zod';
 import '../../../_/api-auth.mjs';
 import '../../../_/feature-flags.mjs';
 import '@upstash/redis';
-import '../../../_/index.mjs';
+import 'drizzle-orm';
+import '../../../_/client.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';
-import 'drizzle-orm';
 import '../../../_/discovery-events.mjs';
 import '../../../_/discovery.mjs';
 

@@ -1,8 +1,8 @@
 import { d as defineEventHandler, r as readBody } from '../../nitro/nitro.mjs';
 import { r as requireDiscoveryFeatureEnabled, a as FeatureFlagDisabledError } from '../../_/feature-flags.mjs';
-import { g as getDb, j as discoveryKeywords } from '../../_/index.mjs';
-import { o as onDiscoveryEvent } from '../../_/discovery-events.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, k as discoveryKeywords } from '../../_/client.mjs';
+import { o as onDiscoveryEvent } from '../../_/discovery-events.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

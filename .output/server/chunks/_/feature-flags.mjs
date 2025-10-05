@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { Redis } from '@upstash/redis';
-import { g as getDb, d as clientFeatures } from './index.mjs';
 import { and, eq } from 'drizzle-orm';
+import { g as getDb, d as clientFeatures } from './client.mjs';
 
 const FEATURE_DISCOVERY_AGENT = "discovery-agent";
 const FEATURE_FLAG_PUBSUB_TOPIC = "feature.flags.updated";

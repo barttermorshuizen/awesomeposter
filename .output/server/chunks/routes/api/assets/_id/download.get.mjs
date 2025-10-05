@@ -1,7 +1,7 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError, s as sendRedirect } from '../../../../nitro/nitro.mjs';
-import { g as getDb, a as assets } from '../../../../_/index.mjs';
-import { getSignedDownloadUrl } from '../../../../_/storage.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, a as assets } from '../../../../_/client.mjs';
+import { getSignedDownloadUrl } from '../../../../_/storage.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

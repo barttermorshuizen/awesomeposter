@@ -4884,6 +4884,14 @@ const tasks = {
         }
 };
 
+function defineTask(def) {
+  if (typeof def.run !== "function") {
+    def.run = () => {
+      throw new TypeError("Task must implement a `run` method!");
+    };
+  }
+  return def;
+}
 const __runningTasks__ = {};
 async function runTask(name, {
   payload = {},
@@ -5215,5 +5223,5 @@ setupGracefulShutdown(listener, nitroApp);
 }
 const nodeServer = {};
 
-export { getRouterParam as a, readMultipartFormData as b, createError$1 as c, defineEventHandler as d, setHeader as e, getHeader as f, getQuery as g, nodeServer as n, readBody as r, sendRedirect as s, useRuntimeConfig as u };
+export { getRouterParam as a, readMultipartFormData as b, createError$1 as c, defineEventHandler as d, setHeader as e, getHeader as f, getQuery as g, defineTask as h, nodeServer as n, readBody as r, sendRedirect as s, useRuntimeConfig as u };
 //# sourceMappingURL=nitro.mjs.map

@@ -13,6 +13,9 @@ export type DiscoveryIngestionAdapterContext = {
   fetch?: typeof globalThis.fetch
   signal?: AbortSignal
   now?: () => Date
+  youtubeApiKey?: string
+  youtubeApiBaseUrl?: string
+  youtubeMaxResults?: number
 }
 
 export type DiscoveryIngestionAdapterInput = {

@@ -1,4 +1,4 @@
-import { g as getDb$1 } from './index.mjs';
+import { g as getDb$1 } from './client.mjs';
 import { g as getEnv } from './env.mjs';
 
 let initialized = false;

@@ -1,6 +1,6 @@
 import { d as defineEventHandler } from '../../nitro/nitro.mjs';
-import { g as getDb, b as briefs, c as clients } from '../../_/index.mjs';
 import { eq } from 'drizzle-orm';
+import { g as getDb, b as briefs, c as clients } from '../../_/client.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
