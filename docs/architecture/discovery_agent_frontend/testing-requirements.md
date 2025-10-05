@@ -1,6 +1,7 @@
 # Testing Requirements
-- **Stores**: Unit-test filter merging, SSE application, and optimistic updates via Vitest.
-- **Components**: Use Vue Test Utils to verify list rendering, empty states, form validation, and bulk action flows.
+- **Stores**: Unit-test filter merging, SSE application, optimistic updates, nested `webList` state, and suggestion caching via Vitest.
+- **Components**: Use Vue Test Utils to verify list rendering, empty states, form validation (including selector defaults), suggestion acceptance/decline flows, and bulk action behaviour.
+- **Services**: Mock `fetch` to cover success, low-confidence, and error cases for `configSuggestions.request`, ensuring warnings propagate correctly.
 - **Routing**: Add a guard test ensuring discovery routes redirect when the feature flag is disabled.
 - **Accessibility**: Deferred until post-validation stage; no automated checks required for MVP.
 

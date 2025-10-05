@@ -30,5 +30,5 @@ export function subscribeDiscoveryEvents(
 ```
 
 - Store wires `subscribeDiscoveryEvents` within `onMounted`/`onUnmounted` composition helpers.
-- `DiscoverySseEvent` covers `brief-updated`, `status-changed`, `source-health`, `telemetry-counts` with schema versioning so the UI can branch safely.
+- `DiscoverySseEvent` covers `brief-updated`, `status-changed`, `source-health`, `telemetry-counts`, plus new `list-ingestion-metrics` and `pagination-warning` frames so stores can update list KPIs and surface alerts inline. Schema versioning stays in place so the UI can branch safely.
 - SSE reconnect UI reuses the HITL reconnection pattern (toast + inline banner) for consistency.

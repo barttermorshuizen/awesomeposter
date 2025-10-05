@@ -41,3 +41,6 @@ export async function promoteBriefs(ids: string[], note: string): Promise<void> 
 
 - Validation errors surface via JSON body; service helpers throw typed errors so components can show inline messaging.
 - The same pattern is reused for sources (CRUD) and telemetry (fetch aggregates, request CSV export link).
+
+## Config Suggestions Helper
+`configSuggestions.request(url, options)` wraps `POST /api/discovery/config-suggestions`, returning `{ suggestion, alternatives, warnings }`. The helper normalizes selector casing, stamps timestamps for caching, and bubbles low-confidence flags so the dialog can prompt for manual review (Story 3.6).

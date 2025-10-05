@@ -8,6 +8,8 @@
   - [Frontend Tech Stack](./frontend-tech-stack.md)
   - [Project Structure](./project-structure.md)
   - [Component Architecture](./component-architecture.md)
+    - [Sources Management Flow](./component-architecture.md#sources-management-flow)
+    - [Telemetry Enhancements](./component-architecture.md#telemetry-enhancements)
   - [State Management](./state-management.md)
   - [API Integration](./api-integration.md)
   - [Realtime Telemetry (SSE)](./realtime-telemetry-sse.md)

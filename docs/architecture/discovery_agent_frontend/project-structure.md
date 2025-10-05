@@ -15,23 +15,32 @@ src/
 │     ├─ BriefDetailDrawer.vue
 │     ├─ BulkActionBar.vue
 │     ├─ SourceFormDrawer.vue
+│     ├─ SourceListConfigForm.vue
+│     ├─ ConfigSuggestionDialog.vue
+│     ├─ SuggestionConfidenceBadge.vue
 │     ├─ SourceHealthChip.vue
 │     ├─ TelemetrySummaryCards.vue
 │     └─ TelemetryEventFeed.vue
 ├─ stores/
 │  ├─ discoveryBriefs.ts
 │  ├─ discoverySources.ts
-│  └─ discoveryTelemetry.ts
+│  ├─ discoveryTelemetry.ts
+│  └─ discoveryConfigSuggestions.ts
 ├─ lib/
 │  ├─ agent-sse.ts                       # existing orchestrator SSE helper (unchanged)
 │  └─ discovery-sse.ts                   # thin EventSource wrapper for telemetry stream
+├─ composables/
+│  └─ discovery/
+│     ├─ useListConfig.ts                # form helpers + defaults for webList blocks
+│     └─ useConfigSuggestions.ts         # orchestrates dialog + store wiring
 └─ services/
    └─ discovery/
       ├─ briefs.ts
       ├─ sources.ts
-      └─ telemetry.ts
+      ├─ telemetry.ts
+      └─ configSuggestions.ts
 ```
 
-- `packages/shared/` gains typed models (`DiscoveryBrief`, `DiscoverySource`, `DiscoveryTelemetryEvent`) so SPA, Nitro API, and agents server share contracts.
+- `packages/shared/` gains typed models (`DiscoveryBrief`, `DiscoverySource`, `DiscoveryTelemetryEvent`, `DiscoveryListConfig`, `DiscoveryConfigSuggestion`) so SPA, Nitro API, and agents server share contracts.
 - `server/api/discovery/*` handlers expose the CRUD + SSE endpoints consumed below.
 - Feature flag plumbing (`packages/shared/src/config.ts`) centralises client enablement so SPA can hide routes when disabled.

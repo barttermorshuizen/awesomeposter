@@ -4,4 +4,5 @@ AwesomePoster already ships a Vue 3 + Vite + Vuetify SPA. The discovery agent UI
 ## Change Log
 | Date | Version | Description | Author |
 | --- | --- | --- | --- |
+| 2025-10-07 | v0.2 | Documented configurable web list UI, telemetry, and config suggestion flows. | Winston (Architect) |
 | 2025-03-30 | v0.1 | Initial discovery agent frontend architecture aligned with existing stack. | Winston (Architect) |
