@@ -11,6 +11,7 @@ import {
   claimDiscoverySourceForFetch,
   completeDiscoverySourceFetch,
   releaseDiscoverySourceAfterFailedCompletion,
+  saveDiscoveryItems,
   type DiscoverySourceWithCadence,
 } from '../../utils/discovery-repository'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
@@ -286,6 +287,8 @@ async function processSource(
   const attempts: AttemptTelemetry[] = []
   const maxAttempts = resolveMaxAttempts()
   let permanentFailureNotice: { failureReason: DiscoveryIngestionFailureReason; attempt: number } | null = null
+  let runMetrics: Record<string, unknown> = {}
+  const ingestionIssues: Array<{ reason: string; count: number; details?: unknown }> = []
 
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -317,22 +320,76 @@ async function processSource(
       adapterResult = result
       const attemptCompletedAt = options.now()
       const attemptDurationMs = Math.max(0, attemptCompletedAt.getTime() - attemptStartedAt.getTime())
+      const adapterName = typeof result.metadata?.adapter === 'string' ? result.metadata!.adapter : runMetrics.adapter ?? 'unknown'
+      runMetrics.adapter = adapterName
 
       if (result.ok) {
-        success = true
-        failureReason = null
-        retryInMinutes = null
-        nextRetryAt = null
-        attempts.push({
-          attempt,
-          startedAt: attemptStartedAt.toISOString(),
-          completedAt: attemptCompletedAt.toISOString(),
-          durationMs: attemptDurationMs,
-          success: true,
-          retryInMinutes: null,
-          nextRetryAt: null,
-        })
-        break
+        const metadata = result.metadata ?? {}
+        const skippedDetails = Array.isArray((metadata as { skipped?: unknown[] }).skipped)
+          ? ((metadata as { skipped: unknown[] }).skipped)
+          : []
+        if (typeof (metadata as { entryCount?: number }).entryCount === 'number') {
+          runMetrics.entryCount = (metadata as { entryCount: number }).entryCount
+        }
+        if (typeof (metadata as { totalItems?: number }).totalItems === 'number') {
+          runMetrics.totalItems = (metadata as { totalItems: number }).totalItems
+        }
+        runMetrics.normalizedCount = result.items.length
+        runMetrics.skippedCount = skippedDetails.length
+
+        if (skippedDetails.length) {
+          ingestionIssues.push({
+            reason: 'adapter_skipped',
+            count: skippedDetails.length,
+            details: skippedDetails,
+          })
+        }
+
+        let persistence: Awaited<ReturnType<typeof saveDiscoveryItems>> | null = null
+        try {
+          persistence = await saveDiscoveryItems({
+            clientId: claimed.clientId,
+            sourceId: claimed.id,
+            items: result.items.map((item) => ({
+              normalized: item.normalized,
+              rawPayload: item.rawPayload,
+              sourceMetadata: item.sourceMetadata,
+            })),
+          })
+        } catch (persistError) {
+          result = {
+            ok: false,
+            failureReason: 'unknown_error',
+            error: persistError as Error,
+            metadata: {
+              adapter: adapterName,
+            },
+          }
+          adapterResult = result
+        }
+
+        if (result.ok && persistence) {
+          runMetrics.insertedCount = persistence.inserted.length
+          runMetrics.duplicateCount = persistence.duplicates.length
+          if (persistence.duplicates.length) {
+            ingestionIssues.push({ reason: 'duplicate', count: persistence.duplicates.length })
+          }
+
+          success = true
+          failureReason = null
+          retryInMinutes = null
+          nextRetryAt = null
+          attempts.push({
+            attempt,
+            startedAt: attemptStartedAt.toISOString(),
+            completedAt: attemptCompletedAt.toISOString(),
+            durationMs: attemptDurationMs,
+            success: true,
+            retryInMinutes: null,
+            nextRetryAt: null,
+          })
+          break
+        }
       }
 
       failureReason = result.failureReason
@@ -376,6 +433,10 @@ async function processSource(
     const completedAt = options.now()
     const durationMs = Math.max(0, completedAt.getTime() - startedAt.getTime())
 
+    if (failureReason) {
+      runMetrics.failureReason = failureReason
+    }
+
     try {
       await completeDiscoverySourceFetch({
         runId,
@@ -394,6 +455,10 @@ async function processSource(
           attemptCount: attempts.length,
           maxAttempts,
           nextRetryAt: nextRetryAt ? nextRetryAt.toISOString() : null,
+        },
+        metrics: {
+          ...runMetrics,
+          issues: ingestionIssues,
         },
       })
     } catch (error) {
@@ -438,6 +503,7 @@ async function processSource(
         maxAttempts,
         attempts,
         nextRetryAt: nextRetryAt ? nextRetryAt.toISOString() : undefined,
+        metrics: runMetrics,
       },
     })
 
@@ -470,6 +536,18 @@ async function processSource(
           attempt: permanentFailureNotice.attempt,
         })
       }
+    } else if (ingestionIssues.length) {
+      emitDiscoveryEventSafely({
+        type: 'ingest.error',
+        version: EVENT_VERSION,
+        payload: {
+          runId,
+          clientId: claimed.clientId,
+          sourceId: claimed.id,
+          sourceType: claimed.sourceType,
+          issues: ingestionIssues,
+        },
+      })
     }
   }
 

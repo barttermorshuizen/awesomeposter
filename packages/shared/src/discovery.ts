@@ -22,18 +22,52 @@ export const discoveryIngestionFailureReasonSchema = z.enum([
 
 export type DiscoveryIngestionFailureReason = z.infer<typeof discoveryIngestionFailureReasonSchema>
 
-export const normalizedDiscoveryItemSchema = z.object({
+export const discoveryContentTypeSchema = z.enum(['article', 'rss', 'youtube'])
+
+export const discoveryPublishedAtSourceSchema = z.enum(['original', 'fallback', 'feed', 'api'])
+
+export const normalizedDiscoveryAdapterItemSchema = z.object({
   externalId: z.string().min(1),
+  title: z.string().min(1).max(500),
   url: z.string().url(),
-  title: z.string().max(300),
-  summary: z.string().optional().nullable(),
-  publishedAt: z.string().optional().nullable(),
-  author: z.string().optional().nullable(),
-  thumbnailUrl: z.string().url().optional().nullable(),
-  raw: z.unknown().optional(),
+  contentType: discoveryContentTypeSchema,
+  publishedAt: z.string().datetime().nullable(),
+  publishedAtSource: discoveryPublishedAtSourceSchema,
+  fetchedAt: z.string().datetime(),
+  extractedBody: z.string().min(1),
+  excerpt: z.string().optional().nullable(),
 })
 
-export type NormalizedDiscoveryItem = z.infer<typeof normalizedDiscoveryItemSchema>
+export type DiscoveryContentType = z.infer<typeof discoveryContentTypeSchema>
+export type DiscoveryPublishedAtSource = z.infer<typeof discoveryPublishedAtSourceSchema>
+export type NormalizedDiscoveryAdapterItem = z.infer<typeof normalizedDiscoveryAdapterItemSchema>
+
+export type ArticleSourceMetadata = {
+  contentType: 'article'
+  canonicalUrl: string | null
+  language?: string | null
+}
+
+export type RssSourceMetadata = {
+  contentType: 'rss'
+  feedUrl: string
+  entryId: string | null
+  categories?: string[]
+}
+
+export type YoutubeSourceMetadata = {
+  contentType: 'youtube'
+  videoId: string
+  channelId: string | null
+  playlistId?: string | null
+  transcriptAvailable: boolean
+  durationSeconds?: number | null
+}
+
+export type DiscoverySourceMetadata = ArticleSourceMetadata | RssSourceMetadata | YoutubeSourceMetadata
+
+// Backwards compatible alias while adapters transition to the richer shape.
+export type NormalizedDiscoveryItem = NormalizedDiscoveryAdapterItem
 
 export const createDiscoverySourceInputSchema = z.object({
   clientId: z.string().uuid(),

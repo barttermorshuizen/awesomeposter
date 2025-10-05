@@ -1,0 +1,40 @@
+schema: 1
+story: '3.2'
+story_title: 'Normalize Ingested Content'
+gate: PASS
+status_reason: 'Excerpt helper now emits ASCII-only ellipsis; normalization outputs comply with sanitization policy.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-05T09:05:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 95
+expires: '2025-10-19T00:00:00Z'
+
+evidence:
+  tests_reviewed: 1
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new security surfaces observed; telemetry respects existing pathways.'
+  performance:
+    status: PASS
+    notes: 'Batch persistence and retry logic avoid uncontrolled fan-out.'
+  reliability:
+    status: PASS
+    notes: 'Retries, telemetry, and duplicate handling validated via tests.'
+  maintainability:
+    status: PASS
+    notes: 'ASCII-only sanitization reinstated in excerpt helper.'
+
+recommendations:
+  immediate: []
+  future: []

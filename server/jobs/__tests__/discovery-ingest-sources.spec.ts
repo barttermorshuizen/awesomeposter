@@ -5,6 +5,7 @@ vi.mock('../../utils/discovery-repository', () => ({
   claimDiscoverySourceForFetch: vi.fn(),
   completeDiscoverySourceFetch: vi.fn(),
   releaseDiscoverySourceAfterFailedCompletion: vi.fn(),
+  saveDiscoveryItems: vi.fn(),
 }))
 
 vi.mock('@awesomeposter/shared', async (importOriginal) => {
@@ -34,6 +35,7 @@ import {
   claimDiscoverySourceForFetch,
   completeDiscoverySourceFetch,
   releaseDiscoverySourceAfterFailedCompletion,
+  saveDiscoveryItems,
 } from '../../utils/discovery-repository'
 import { executeIngestionAdapter } from '@awesomeposter/shared'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
@@ -79,6 +81,7 @@ describe('runDiscoveryIngestionJob', () => {
       items: [],
       metadata: { adapter: 'http' },
     } satisfies DiscoveryAdapterResult)
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [], duplicates: [] })
     vi.mocked(publishSourceHealthStatus).mockReset()
   })
 
@@ -102,6 +105,13 @@ describe('runDiscoveryIngestionJob', () => {
       clientId: source.clientId,
       success: true,
     }))
+    expect(saveDiscoveryItems).toHaveBeenCalledWith({
+      clientId: source.clientId,
+      sourceId: source.id,
+      items: [],
+    })
+    const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
+    expect(metrics).toMatchObject({ normalizedCount: 0, insertedCount: 0, duplicateCount: 0 })
   })
 
   it('queues sources beyond worker limit and processes sequentially', async () => {
@@ -205,6 +215,7 @@ describe('runDiscoveryIngestionJob', () => {
         ]),
       }),
     }))
+    expect(saveDiscoveryItems).not.toHaveBeenCalled()
 
     const completionEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingestion.completed')?.[0]
     expect(completionEvent?.payload.failureReason).toBe('network_error')
@@ -220,6 +231,58 @@ describe('runDiscoveryIngestionJob', () => {
       attempt: 3,
       maxAttempts: expect.any(Number),
       retryInMinutes: 4,
+    })
+  })
+
+  it('persists normalized items and emits ingest.error when duplicates detected', async () => {
+    const source = buildSource()
+    const normalized = {
+      externalId: 'ext-1',
+      title: 'Example Title',
+      url: 'https://example.com/article',
+      contentType: 'article' as const,
+      publishedAt: now.toISOString(),
+      publishedAtSource: 'original' as const,
+      fetchedAt: now.toISOString(),
+      extractedBody: 'Body text content.',
+      excerpt: 'Body text content.',
+    }
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter).mockResolvedValue({
+      ok: true,
+      items: [
+        {
+          rawPayload: { html: '<article>Body</article>' },
+          normalized,
+          sourceMetadata: { contentType: 'article', canonicalUrl: source.canonicalUrl },
+        },
+      ],
+      metadata: { adapter: 'http', itemCount: 1, skippedCount: 0 },
+    })
+
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [], duplicates: [{ rawHash: 'hash-1' }] })
+
+    const result = await runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
+
+    expect(result.succeeded).toBe(1)
+    expect(saveDiscoveryItems).toHaveBeenCalledWith({
+      clientId: source.clientId,
+      sourceId: source.id,
+      items: expect.arrayContaining([
+        expect.objectContaining({ normalized }),
+      ]),
+    })
+
+    const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
+    expect(metrics).toMatchObject({ normalizedCount: 1, duplicateCount: 1 })
+
+    const errorEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingest.error')?.[0]
+    expect(errorEvent?.payload).toMatchObject({
+      clientId: source.clientId,
+      sourceId: source.id,
+      issues: expect.arrayContaining([expect.objectContaining({ reason: 'duplicate', count: 1 })]),
     })
   })
 

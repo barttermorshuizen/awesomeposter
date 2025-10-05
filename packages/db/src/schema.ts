@@ -1,4 +1,4 @@
-import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique, uniqueIndex, index } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
 export const clients = pgTable('clients', {
@@ -238,10 +238,33 @@ export const discoveryIngestRuns = pgTable('discovery_ingest_runs', {
   durationMs: integer('duration_ms'),
   failureReason: text('failure_reason'),
   retryInMinutes: integer('retry_in_minutes'),
+  metricsJson: jsonb('metrics_json').$type<Record<string, unknown>>().default({}),
   telemetryJson: jsonb('telemetry_json').$type<Record<string, unknown>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   runIdUnique: unique('discovery_ingest_runs_run_id_unique').on(table.runId),
+}))
+
+export const discoveryItems = pgTable('discovery_items', {
+  id: uuid('id').primaryKey(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  sourceId: uuid('source_id').references(() => discoverySources.id, { onDelete: 'cascade' }).notNull(),
+  externalId: text('external_id').notNull(),
+  rawHash: text('raw_hash').notNull(),
+  status: text('status').$type<'pending_scoring' | 'scored' | 'suppressed' | 'promoted' | 'archived'>().default('pending_scoring').notNull(),
+  title: text('title').notNull(),
+  url: text('url').notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  publishedAtSource: text('published_at_source').$type<'original' | 'fallback' | 'feed' | 'api'>().notNull(),
+  ingestedAt: timestamp('ingested_at', { withTimezone: true }).defaultNow(),
+  rawPayloadJson: jsonb('raw_payload_json').$type<Record<string, unknown>>().notNull(),
+  normalizedJson: jsonb('normalized_json').$type<Record<string, unknown>>().notNull(),
+  sourceMetadataJson: jsonb('source_metadata_json').$type<Record<string, unknown>>().notNull(),
+}, (table) => ({
+  clientHashUnique: uniqueIndex('discovery_items_client_hash_unique').on(table.clientId, table.rawHash),
+  statusIdx: index('discovery_items_status_idx').on(table.status),
+  sourceIdx: index('discovery_items_source_idx').on(table.sourceId),
 }))
 
 

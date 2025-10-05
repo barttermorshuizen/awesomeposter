@@ -1,4 +1,9 @@
-import type { DiscoverySourceType, NormalizedDiscoveryItem, DiscoveryIngestionFailureReason } from '../discovery.js'
+import type {
+  DiscoverySourceType,
+  NormalizedDiscoveryAdapterItem,
+  DiscoverySourceMetadata,
+  DiscoveryIngestionFailureReason,
+} from '../discovery.js'
 import { discoverySourceTypeSchema } from '../discovery.js'
 import { fetchHttpSource } from './adapters/http.js'
 import { fetchRssSource } from './adapters/rss.js'
@@ -19,9 +24,15 @@ export type DiscoveryIngestionAdapterInput = {
   config: Record<string, unknown> | null
 }
 
+export type NormalizedDiscoveryItemEnvelope = {
+  rawPayload: unknown
+  normalized: NormalizedDiscoveryAdapterItem
+  sourceMetadata: DiscoverySourceMetadata
+}
+
 export type DiscoveryAdapterSuccess = {
   ok: true
-  items: NormalizedDiscoveryItem[]
+  items: NormalizedDiscoveryItemEnvelope[]
   raw?: unknown
   metadata?: Record<string, unknown>
 }

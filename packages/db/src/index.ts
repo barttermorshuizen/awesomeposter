@@ -1,49 +1,12 @@
-import { drizzle } from 'drizzle-orm/node-postgres'
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
-import pg from 'pg'
-import * as schema from './schema.js'
-
-export type Database = NodePgDatabase<typeof schema>
-
-let cachedPool: pg.Pool | null = null
-let cachedDb: Database | null = null
-
-export function getPool(): pg.Pool {
-  if (cachedPool) return cachedPool
-  
-  // Try to get DATABASE_URL from runtime config first, then fall back to process.env
-  let databaseUrl: string | undefined
-  
-  try {
-    // This will work in Nuxt server context
-    const runtimeConfig = useRuntimeConfig()
-    databaseUrl = runtimeConfig.DATABASE_URL
-  } catch {
-    // Fall back to process.env for non-Nuxt contexts
-    databaseUrl = process.env.DATABASE_URL
-  }
-  
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not set in runtime config or process.env')
-  }
-  
-  cachedPool = new pg.Pool({ connectionString: databaseUrl })
-  return cachedPool
-}
-
-export function getDb() {
-  if (cachedDb) return cachedDb
-  const pool = getPool()
-  cachedDb = drizzle(pool, { schema })
-  return cachedDb
-}
-
-export * from './schema.js'
-
-
-
 import { eq } from 'drizzle-orm'
 export { eq, and, isNotNull } from 'drizzle-orm'
+import * as schema from './schema.js'
+import { getDb, getPool, type Database } from './client.js'
+
+export { getDb, getPool }
+export type { Database }
+export * from './schema.js'
+export * from './discovery/index.js'
 
 export async function getClientProfileByClientId(clientId: string) {
   const db = getDb()

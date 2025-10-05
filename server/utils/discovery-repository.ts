@@ -1,4 +1,15 @@
-import { and, eq, getDb, discoverySources, discoveryKeywords, discoveryIngestRuns } from '@awesomeposter/db'
+import {
+  and,
+  eq,
+  getDb,
+  discoverySources,
+  discoveryKeywords,
+  discoveryIngestRuns,
+  discoveryItems,
+  persistDiscoveryItems,
+  type PersistDiscoveryItemInput,
+  type PersistDiscoveryItemsResult,
+} from '@awesomeposter/db'
 import { desc, ne, or, lte, isNull } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
 import { z } from 'zod'
@@ -9,6 +20,8 @@ import {
   deriveDuplicateKey,
   DiscoverySourceType,
   normalizeDiscoveryKeyword,
+  type NormalizedDiscoveryAdapterItem,
+  type DiscoverySourceMetadata,
 } from '@awesomeposter/shared'
 import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
 
@@ -171,6 +184,7 @@ export type CompleteDiscoverySourceFetchInput = {
   failureReason?: string | null
   retryInMinutes?: number | null
   telemetry?: Record<string, unknown>
+  metrics?: Record<string, unknown>
 }
 
 export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourceFetchInput) {
@@ -190,6 +204,7 @@ export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourc
       durationMs,
       failureReason: input.failureReason ?? null,
       retryInMinutes: input.retryInMinutes ?? null,
+      metricsJson: input.metrics ?? {},
       telemetryJson: input.telemetry ?? {},
       createdAt: new Date(),
     })
@@ -205,6 +220,95 @@ export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourc
       })
       .where(eq(discoverySources.id, input.sourceId))
   })
+}
+
+export type SaveDiscoveryItemsInput = {
+  clientId: string
+  sourceId: string
+  items: Array<{
+    normalized: NormalizedDiscoveryAdapterItem
+    rawPayload: unknown
+    sourceMetadata: DiscoverySourceMetadata
+  }>
+}
+
+export async function saveDiscoveryItems(input: SaveDiscoveryItemsInput): Promise<PersistDiscoveryItemsResult> {
+  if (!input.items.length) {
+    return { inserted: [], duplicates: [] }
+  }
+
+  const payloads: PersistDiscoveryItemInput[] = input.items.map(({ normalized, rawPayload, sourceMetadata }) => ({
+    clientId: input.clientId,
+    sourceId: input.sourceId,
+    externalId: normalized.externalId,
+    title: normalized.title,
+    url: normalized.url,
+    fetchedAt: normalized.fetchedAt,
+    publishedAt: normalized.publishedAt,
+    publishedAtSource: normalized.publishedAtSource,
+    normalized: normalized as Record<string, unknown>,
+    rawPayload,
+    sourceMetadata: sourceMetadata as Record<string, unknown>,
+  }))
+
+  return persistDiscoveryItems(payloads)
+}
+
+export type PendingDiscoveryItem = {
+  id: string
+  clientId: string
+  sourceId: string
+  title: string
+  url: string
+  rawHash: string
+  fetchedAt: Date
+  publishedAt: Date | null
+  normalized: Record<string, unknown>
+  sourceMetadata: Record<string, unknown>
+  rawPayload: Record<string, unknown>
+}
+
+export async function listPendingDiscoveryItems(limit: number, clientId?: string): Promise<PendingDiscoveryItem[]> {
+  const db = getDb()
+  const conditions = [eq(discoveryItems.status, 'pending_scoring' as const)]
+  if (clientId) {
+    conditions.push(eq(discoveryItems.clientId, clientId))
+  }
+
+  const whereCondition = conditions.length === 1 ? conditions[0]! : and(...conditions)
+
+  const rows = await db
+    .select({
+      id: discoveryItems.id,
+      clientId: discoveryItems.clientId,
+      sourceId: discoveryItems.sourceId,
+      title: discoveryItems.title,
+      url: discoveryItems.url,
+      rawHash: discoveryItems.rawHash,
+      fetchedAt: discoveryItems.fetchedAt,
+      publishedAt: discoveryItems.publishedAt,
+      normalized: discoveryItems.normalizedJson,
+      sourceMetadata: discoveryItems.sourceMetadataJson,
+      rawPayload: discoveryItems.rawPayloadJson,
+    })
+    .from(discoveryItems)
+    .where(whereCondition)
+    .orderBy(discoveryItems.fetchedAt)
+    .limit(limit)
+
+  return rows.map((row) => ({
+    id: row.id,
+    clientId: row.clientId,
+    sourceId: row.sourceId,
+    title: row.title,
+    url: row.url,
+    rawHash: row.rawHash,
+    fetchedAt: row.fetchedAt,
+    publishedAt: row.publishedAt,
+    normalized: row.normalized,
+    sourceMetadata: row.sourceMetadata as Record<string, unknown>,
+    rawPayload: row.rawPayload as Record<string, unknown>,
+  }))
 }
 
 export type ReleaseDiscoverySourceAfterFailedCompletionInput = {
