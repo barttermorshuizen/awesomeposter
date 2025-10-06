@@ -27,19 +27,17 @@ describe('BriefsView HITL actions', () => {
   })
 
   function mockFetchWithPendingRun() {
-    return vi.spyOn(global, 'fetch' as any).mockImplementation(async (input: RequestInfo | URL) => {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url === '/api/briefs') {
-        return {
-          ok: true,
-          headers: { get: () => 'application/json' },
-          json: async () => ({ items: [briefRow] })
-        } as any
+        return new Response(JSON.stringify({ items: [briefRow] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
       }
       if (url === '/api/hitl/pending') {
-        return {
-          ok: true,
-          json: async () => ({
+        return new Response(
+          JSON.stringify({
             runs: [
               {
                 runId: 'run-1',
@@ -50,13 +48,17 @@ describe('BriefsView HITL actions', () => {
                 updatedAt: '2025-01-01T01:00:00.000Z'
               }
             ]
-          })
-        } as any
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        )
       }
-      return {
-        ok: true,
-        json: async () => ({})
-      } as any
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
     })
   }
 

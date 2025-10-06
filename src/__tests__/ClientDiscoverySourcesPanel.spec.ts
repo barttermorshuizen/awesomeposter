@@ -175,7 +175,7 @@ describe('ClientDiscoverySourcesPanel', () => {
     const wrapper = await mountPanel(fetchMock)
     await flushPromises()
 
-    const vm = wrapper.vm as unknown as { sources: Array<{ health: { status: string }; canonicalUrl: string }> }
+    const vm = wrapper.vm as unknown as { sources: Array<{ health: { status: string; consecutiveFailures?: number }; canonicalUrl: string }> }
     expect(vm.sources[0]?.health.status).toBe('healthy')
     expect(wrapper.text()).toContain('Success')
 

@@ -10,9 +10,11 @@ vi.mock('@/lib/discovery-sse', () => ({
 }))
 
 describe('ClientDiscoveryKeywordsPanel', () => {
+  const subscribeMock = vi.mocked(subscribeToDiscoveryEvents)
+
   beforeEach(() => {
     vi.clearAllMocks()
-    ;(subscribeToDiscoveryEvents as unknown as vi.Mock).mockReturnValue(() => {})
+    subscribeMock.mockReturnValue(() => {})
   })
 
   afterEach(() => {
@@ -20,7 +22,7 @@ describe('ClientDiscoveryKeywordsPanel', () => {
   })
 
   async function mountPanel(fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
-    vi.spyOn(global, 'fetch').mockImplementation(fetchImpl)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchImpl)
     const wrapper = mount(ClientDiscoveryKeywordsPanel, {
       props: { clientId: '123' },
       global: { plugins: [vuetify] },
@@ -89,7 +91,7 @@ describe('ClientDiscoveryKeywordsPanel', () => {
   })
 
   it('stops new entries when the keyword limit is reached', async () => {
-    const wrapper = await mountPanel(async (input, init) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url.includes('/keywords') && !init?.method) {
         return new Response(JSON.stringify({
@@ -109,6 +111,8 @@ describe('ClientDiscoveryKeywordsPanel', () => {
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
 
+    const wrapper = await mountPanel(fetchMock)
+
     const vm = wrapper.vm as unknown as {
       submit: () => Promise<void>
       form: { keyword: string }
@@ -117,14 +121,14 @@ describe('ClientDiscoveryKeywordsPanel', () => {
     vm.form.keyword = 'new keyword'
     await vm.submit()
     await flushPromises()
-    const postCalls = (fetch as unknown as vi.Mock).mock.calls.filter(([, requestInit]) => requestInit?.method === 'POST')
+    const postCalls = fetchMock.mock.calls.filter(([, requestInit]) => requestInit?.method === 'POST')
     expect(postCalls).toHaveLength(0)
     expect(wrapper.html()).toContain('Keyword limit reached (20)')
   })
 
   it('reloads keywords when SSE keyword updates arrive', async () => {
     const listeners: DiscoveryEventHandlers[] = []
-    ;(subscribeToDiscoveryEvents as unknown as vi.Mock).mockImplementation((_clientId, handler) => {
+    subscribeMock.mockImplementation((_clientId, handler) => {
       listeners.push(handler)
       return () => {}
     })
