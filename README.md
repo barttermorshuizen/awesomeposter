@@ -132,5 +132,7 @@ Pass the same `threadId` to resume a suspended run. Omitting it starts a new orc
 - Technical design notes: `agentic_ai_social_poster_technical_design.md`
 - Human-in-the-loop runbook: `docs/orchestrator-hitl-runbook.md`
 - Discovery pilot onboarding: `docs/discovery-agent-dev-setup.md`
+- Discovery scoring implementation: `docs/discovery-scoring-implementation-notes.md`
+- Reviewer scoring guide: `docs/discovery-scoring-reviewer-guide.md`
 
 Keep the README in sync with the codebase; update the sections above when capabilities graduate from TODO to production-ready.
