@@ -1,6 +1,6 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError, r as readBody } from '../../../../nitro/nitro.mjs';
 import { F as FEATURE_DISCOVERY_AGENT, e as emitDiscoveryFlagChanged, p as publishFeatureFlagUpdate, D as DISCOVERY_FLAG_CHANGED_EVENT } from '../../../../_/feature-flags.mjs';
-import crypto from 'node:crypto';
+import nodeCrypto from 'node:crypto';
 import { eq, and } from 'drizzle-orm';
 import { g as getDb, c as clients, d as clientFeatures, e as clientFeatureToggleAudits } from '../../../../_/client.mjs';
 import 'node:http';
@@ -76,7 +76,7 @@ async function setDiscoveryFlag({
       });
     }
     await tx.insert(clientFeatureToggleAudits).values({
-      id: crypto.randomUUID(),
+      id: nodeCrypto.randomUUID(),
       clientId,
       feature: FEATURE_DISCOVERY_AGENT,
       previousEnabled: currentEnabled,

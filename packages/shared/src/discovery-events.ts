@@ -133,6 +133,58 @@ export const discoveryKeywordUpdatedEventSchema = z.object({
 
 export type DiscoveryKeywordUpdatedEvent = z.infer<typeof discoveryKeywordUpdatedEventSchema>
 
+export const discoveryScoreCompleteEventSchema = z.object({
+  type: z.literal('discovery.score.complete'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    itemId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    score: z.number().min(0).max(1),
+    status: z.enum(['scored', 'suppressed']),
+    components: z.object({
+      keyword: z.number().min(0).max(1),
+      recency: z.number().min(0).max(1),
+      source: z.number().min(0).max(1),
+    }).catchall(z.number()),
+    appliedThreshold: z.number().min(0).max(1),
+    weightsVersion: z.number().int().min(1),
+    scoredAt: z.string(),
+  }),
+})
+
+export type DiscoveryScoreCompleteEvent = z.infer<typeof discoveryScoreCompleteEventSchema>
+
+export const discoveryQueueUpdatedEventSchema = z.object({
+  type: z.literal('discovery.queue.updated'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    pendingCount: z.number().int().min(0),
+    scoredDelta: z.number().int().min(0).optional(),
+    suppressedDelta: z.number().int().min(0).optional(),
+    updatedAt: z.string(),
+    reason: z.enum(['scoring', 'backlog', 'manual']).optional(),
+  }),
+})
+
+export type DiscoveryQueueUpdatedEvent = z.infer<typeof discoveryQueueUpdatedEventSchema>
+
+export const discoveryScoringFailedEventSchema = z.object({
+  type: z.literal('discovery.scoring.failed'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    itemIds: z.array(z.string().uuid()).optional(),
+    errorCode: z.string(),
+    errorMessage: z.string(),
+    details: z.record(z.unknown()).optional(),
+    occurredAt: z.string(),
+  }),
+})
+
+export type DiscoveryScoringFailedEvent = z.infer<typeof discoveryScoringFailedEventSchema>
+
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
   ingestionStartedEventSchema,
@@ -140,6 +192,9 @@ export const discoveryEventEnvelopeSchema = z.union([
   ingestionFailedEventSchema,
   sourceHealthEventSchema,
   discoveryKeywordUpdatedEventSchema,
+  discoveryScoreCompleteEventSchema,
+  discoveryQueueUpdatedEventSchema,
+  discoveryScoringFailedEventSchema,
 ])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>
@@ -164,9 +219,39 @@ const discoveryKeywordUpdatedTelemetrySchema = z.object({
   payload: discoveryKeywordUpdatedEventSchema.shape.payload,
 })
 
+const discoveryScoreCompleteTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('discovery.score.complete'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryScoreCompleteEventSchema.shape.payload,
+})
+
+const discoveryQueueUpdatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('discovery.queue.updated'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryQueueUpdatedEventSchema.shape.payload,
+})
+
+const discoveryScoringFailedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('discovery.scoring.failed'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryScoringFailedEventSchema.shape.payload,
+})
+
 export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoverySourceCreatedTelemetrySchema,
   discoveryKeywordUpdatedTelemetrySchema,
+  discoveryScoreCompleteTelemetrySchema,
+  discoveryQueueUpdatedTelemetrySchema,
+  discoveryScoringFailedTelemetrySchema,
   z.object({
     schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
     eventType: z.literal('ingestion.started'),

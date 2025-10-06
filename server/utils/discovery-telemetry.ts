@@ -62,6 +62,33 @@ export function toDiscoveryTelemetryEvent(envelope: DiscoveryEventEnvelope): Dis
         timestamp: envelope.payload.updatedAt,
         payload: envelope.payload,
       }
+    case 'discovery.score.complete':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.score.complete',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.itemId,
+        timestamp: envelope.payload.scoredAt,
+        payload: envelope.payload,
+      }
+    case 'discovery.queue.updated':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.queue.updated',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.clientId,
+        timestamp: envelope.payload.updatedAt,
+        payload: envelope.payload,
+      }
+    case 'discovery.scoring.failed':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.scoring.failed',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.clientId,
+        timestamp: envelope.payload.occurredAt,
+        payload: envelope.payload,
+      }
     default:
       return null
   }

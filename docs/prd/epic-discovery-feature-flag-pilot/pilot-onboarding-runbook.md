@@ -188,3 +188,25 @@ Keep appendices in this file; update after each pilot milestone.
 - **Approval**: Support Lead and Ops Lead sign-off recorded in `docs/internal/contact-sheet.md` once the pilot cohort is onboarded.
 
 Revisit this section after each cohort to log additional feedback items and document follow-up actions.
+
+---
+
+## 11. Scoring Utility Disable & Rollback
+Use this playbook when the shared scoring helper needs to be paused or rolled back for a client.
+
+1. **Disable the client flag immediately**
+   - Command: `pnpm run flags:set discovery-agent --client <clientId> --disabled`
+   - Admin UI alternative: toggle **Discovery Agent** → **Disabled** and capture the audit note.
+   - Confirm the `feature.flags.updated` event appears in telemetry within 2 minutes.
+2. **Quarantine affected items**
+   - Verification: `SELECT status FROM discovery_items WHERE client_id = '<clientId>' AND status IN ('scored','suppressed') LIMIT 20;`
+   - Expectation: no new `scored` entries after the toggle timestamp; ingestion continues marking items `pending_scoring`.
+3. **Run regression validations** (automated in staging, sampled in production):
+   - Execute `npm run test -- tests/api/discovery` – ingestion + scoring integration suite must pass.
+   - Run `node scripts/discovery-seed.mjs --smoke` with the pilot client to ensure ingestion pipelines stay healthy.
+   - Spot check the reviewer dashboard suppressed queue against the latest Day-1 accuracy export; deltas >5% trigger escalation.
+4. **Decide on rollback vs. resume**
+   - Resume scoring: re-enable the flag (`--enabled`) after integration tests pass and accuracy variance <5%.
+   - Rollback scoring: keep the flag disabled, reset affected items to `pending_scoring` (see engineering runbook), and communicate status in `#discovery-pilot`.
+
+Document outcomes and follow-up actions in Appendix A for traceability.

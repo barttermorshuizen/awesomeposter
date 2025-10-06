@@ -4,6 +4,7 @@ import type { DiscoveryAdapterResult } from '@awesomeposter/shared'
 import {
   executeIngestionAdapter,
   discoveryIngestionFailureReasonSchema,
+  FEATURE_DISCOVERY_AGENT,
   type DiscoveryIngestionFailureReason,
 } from '@awesomeposter/shared'
 import {
@@ -12,11 +13,20 @@ import {
   completeDiscoverySourceFetch,
   releaseDiscoverySourceAfterFailedCompletion,
   saveDiscoveryItems,
+  persistDiscoveryScores,
+  resetDiscoveryItemsToPending,
+  countPendingDiscoveryItemsForClient,
   type DiscoverySourceWithCadence,
   type DiscoverySourceHealthUpdate,
 } from '../../utils/discovery-repository'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
 import { publishSourceHealthStatus } from '../../utils/discovery-health'
+import { isFeatureEnabled } from '../../utils/client-config/feature-flags'
+import {
+  scoreDiscoveryItems,
+  type ScoreDiscoveryError,
+  type ScoreDiscoveryItemsSuccess,
+} from '../../utils/discovery/scoring'
 
 const DEFAULT_WORKER_LIMIT = 3
 const MAX_BATCH_MULTIPLIER = 4
@@ -25,6 +35,8 @@ const DEFAULT_MAX_RETRY_ATTEMPTS = 3
 const DEFAULT_MAX_RETRY_DELAY_MINUTES = 15
 const BASE_RETRY_DELAY_MINUTES = 1
 const YOUTUBE_MAX_RESULTS_CAP = 50
+const DEFAULT_SCORING_PENDING_THRESHOLD = 500
+const SCORING_EVENT_VERSION = 1
 
 type IngestionRunnerOptions = {
   now: () => Date
@@ -49,6 +61,18 @@ type AttemptTelemetry = {
   retryReason?: RetryClassification['reason']
   retryAfterOverride?: boolean
   durationMs: number
+}
+
+type InlineScoringMetrics = {
+  attempted: boolean
+  durationMs?: number
+  pendingBefore?: number
+  pendingAfter?: number
+  scoredCount?: number
+  suppressedCount?: number
+  skippedReason?: 'no_new_items' | 'feature_disabled' | 'backlog' | 'error'
+  errorCode?: string
+  errorMessage?: string
 }
 
 export type DiscoveryIngestionJobOptions = {
@@ -103,6 +127,23 @@ function resolveMaxRetryDelayMinutes(): number {
     min: BASE_RETRY_DELAY_MINUTES,
     max: 60,
   })
+}
+
+let cachedScoringPendingThreshold: number | null = null
+
+function resolveScoringPendingThreshold(): number {
+  if (cachedScoringPendingThreshold !== null) {
+    return cachedScoringPendingThreshold
+  }
+
+  const raw = Number.parseInt(process.env.DISCOVERY_SCORING_PENDING_THRESHOLD ?? '', 10)
+  if (Number.isFinite(raw) && raw >= 0) {
+    cachedScoringPendingThreshold = raw === 0 ? Number.POSITIVE_INFINITY : Math.min(Math.max(raw, 1), 100_000)
+    return cachedScoringPendingThreshold
+  }
+
+  cachedScoringPendingThreshold = DEFAULT_SCORING_PENDING_THRESHOLD
+  return cachedScoringPendingThreshold
 }
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY ?? undefined
@@ -265,6 +306,189 @@ function classifyFailure(
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+function extractItemIdsFromError(error: ScoreDiscoveryError['error']): string[] {
+  const { details } = error
+  if (!details || typeof details !== 'object') {
+    return []
+  }
+
+  const fromItemIds = Array.isArray((details as { itemIds?: unknown }).itemIds)
+    ? ((details as { itemIds: unknown[] }).itemIds)
+        .map((value) => (typeof value === 'string' ? value : null))
+        .filter((value): value is string => Boolean(value))
+    : []
+
+  if (fromItemIds.length) {
+    return fromItemIds
+  }
+
+  const invalidItems = Array.isArray((details as { invalidItems?: unknown }).invalidItems)
+    ? ((details as { invalidItems: Array<{ itemId?: unknown }> }).invalidItems)
+    : []
+
+  if (invalidItems.length) {
+    const collected = invalidItems
+      .map((entry) => (typeof entry.itemId === 'string' ? entry.itemId : null))
+      .filter((value): value is string => Boolean(value))
+    return collected
+  }
+
+  return []
+}
+
+async function runInlineScoring({
+  clientId,
+  sourceId,
+  itemIds,
+  now,
+}: {
+  clientId: string
+  sourceId: string
+  itemIds: string[]
+  now: () => Date
+}): Promise<InlineScoringMetrics> {
+  if (itemIds.length === 0) {
+    return { attempted: false, skippedReason: 'no_new_items' }
+  }
+
+  const metrics: InlineScoringMetrics = { attempted: false }
+  const threshold = resolveScoringPendingThreshold()
+
+  try {
+    const enabled = await isFeatureEnabled(clientId, FEATURE_DISCOVERY_AGENT)
+    if (!enabled) {
+      metrics.skippedReason = 'feature_disabled'
+      console.info('[discovery.ingest] inline scoring skipped; feature disabled', { clientId, sourceId })
+      return metrics
+    }
+
+    const pendingBefore = await countPendingDiscoveryItemsForClient(clientId)
+    metrics.pendingBefore = pendingBefore
+
+    if (pendingBefore > threshold) {
+      metrics.skippedReason = 'backlog'
+      console.warn('[discovery.ingest] inline scoring deferred due to backlog', {
+        clientId,
+        sourceId,
+        pending: pendingBefore,
+        threshold,
+      })
+      emitDiscoveryEventSafely({
+        type: 'discovery.queue.updated',
+        version: SCORING_EVENT_VERSION,
+        payload: {
+          clientId,
+          pendingCount: pendingBefore,
+          updatedAt: now().toISOString(),
+          reason: 'backlog',
+        },
+      })
+      return metrics
+    }
+
+    metrics.attempted = true
+    const scoringStart = now()
+    const response = await scoreDiscoveryItems(itemIds, { now })
+    const scoringEnd = now()
+    metrics.durationMs = Math.max(0, scoringEnd.getTime() - scoringStart.getTime())
+
+    if (!response.ok) {
+      metrics.skippedReason = 'error'
+      metrics.errorCode = response.error.code
+      metrics.errorMessage = response.error.message
+      const failedIds = extractItemIdsFromError(response.error)
+      const resetIds = failedIds.length ? failedIds : itemIds
+      await resetDiscoveryItemsToPending(resetIds)
+      emitDiscoveryEventSafely({
+        type: 'discovery.scoring.failed',
+        version: SCORING_EVENT_VERSION,
+        payload: {
+          clientId,
+          itemIds: resetIds,
+          errorCode: response.error.code,
+          errorMessage: response.error.message,
+          details: response.error.details ?? undefined,
+          occurredAt: scoringEnd.toISOString(),
+        },
+      })
+      console.error('[discovery.ingest] inline scoring failed', {
+        clientId,
+        sourceId,
+        error: response.error,
+      })
+      return metrics
+    }
+
+    metrics.scoredCount = response.results.filter((result) => result.status === 'scored').length
+    metrics.suppressedCount = response.results.filter((result) => result.status === 'suppressed').length
+
+    const scoredAt = now()
+    const scoredAtIso = scoredAt.toISOString()
+
+    await persistDiscoveryScores(
+      response.results.map((result) => ({
+        itemId: result.itemId,
+        clientId: result.clientId,
+        sourceId: result.sourceId,
+        score: result.score,
+        keywordScore: result.components.keyword,
+        recencyScore: result.components.recency,
+        sourceScore: result.components.source,
+        appliedThreshold: result.appliedThreshold,
+        status: result.status,
+        weightsVersion: result.weightsVersion,
+        components: result.components,
+        metadata: { configSnapshot: response.config },
+        scoredAt,
+      })),
+    )
+
+    const pendingAfter = await countPendingDiscoveryItemsForClient(clientId)
+    metrics.pendingAfter = pendingAfter
+
+    for (const result of response.results) {
+      emitDiscoveryEventSafely({
+        type: 'discovery.score.complete',
+        version: SCORING_EVENT_VERSION,
+        payload: {
+          clientId: result.clientId,
+          itemId: result.itemId,
+          sourceId: result.sourceId,
+          score: result.score,
+          status: result.status,
+          components: result.components,
+          appliedThreshold: result.appliedThreshold,
+          weightsVersion: result.weightsVersion,
+          scoredAt: scoredAtIso,
+        },
+      })
+    }
+
+    emitDiscoveryEventSafely({
+      type: 'discovery.queue.updated',
+      version: SCORING_EVENT_VERSION,
+      payload: {
+        clientId,
+        pendingCount: pendingAfter,
+        scoredDelta: metrics.scoredCount ?? 0,
+        suppressedDelta: metrics.suppressedCount ?? 0,
+        updatedAt: scoredAtIso,
+        reason: 'scoring',
+      },
+    })
+  } catch (error) {
+    metrics.skippedReason = 'error'
+    metrics.errorMessage = (error as Error).message
+    console.error('[discovery.ingest] inline scoring encountered unexpected error', {
+      clientId,
+      sourceId,
+      error,
+    })
+  }
+
+  return metrics
+}
+
 async function processSource(
   source: DiscoverySourceWithCadence,
   options: IngestionRunnerOptions,
@@ -395,6 +619,14 @@ async function processSource(
           if (persistence.duplicates.length) {
             ingestionIssues.push({ reason: 'duplicate', count: persistence.duplicates.length })
           }
+
+          const scoringMetrics = await runInlineScoring({
+            clientId: claimed.clientId,
+            sourceId: claimed.id,
+            itemIds: persistence.inserted.map((item) => item.id),
+            now: options.now,
+          })
+          runMetrics.scoring = scoringMetrics
 
           success = true
           failureReason = null

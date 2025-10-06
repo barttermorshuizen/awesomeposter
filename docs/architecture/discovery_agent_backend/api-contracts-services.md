@@ -14,3 +14,25 @@ Promotion/archival endpoints wrap a shared service that sets `discovery_items.st
 
 ## Configuration Discovery Service
 `server/services/discovery-config-suggestions.ts` encapsulates DOM fetching, selector heuristics, confidence scoring, and schema validation before returning results to the new API endpoint. This isolates parsing complexity from the route handler and keeps it reusable for future UI tooling.
+
+## Scoring Utility {#scoring-utility}
+`server/utils/discovery/scoring.ts` provides read-only helpers that expose the shared relevance model to any Nitro workflow:
+
+- `scoreDiscoveryItem(itemId: string)` – Returns `{ ok: true, result, config }` on success.
+- `scoreDiscoveryItems(itemIds: string[])` – Batch variant that preserves the input order and short-circuits on invalid entries.
+
+Each `result` contains the normalized score (`0–1`), applied threshold, status (`scored` or `suppressed`), and component breakdown `{ keyword, recency, source }`. Errors adopt the standard envelope:
+
+```ts
+const response = await scoreDiscoveryItems(['item-1', 'item-2'])
+if (!response.ok) {
+  console.error(response.error.code, response.error.details)
+  return
+}
+
+for (const scored of response.results) {
+  console.log(scored.itemId, scored.score, scored.components)
+}
+```
+
+The helper enforces the `discovery-agent` feature flag before loading keywords or computing scores and never mutates state. Callers should persist the returned breakdown (and threshold) via their own repository layer if needed.

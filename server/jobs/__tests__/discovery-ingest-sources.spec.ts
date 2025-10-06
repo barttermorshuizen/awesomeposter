@@ -6,6 +6,17 @@ vi.mock('../../utils/discovery-repository', () => ({
   completeDiscoverySourceFetch: vi.fn(),
   releaseDiscoverySourceAfterFailedCompletion: vi.fn(),
   saveDiscoveryItems: vi.fn(),
+  persistDiscoveryScores: vi.fn(),
+  resetDiscoveryItemsToPending: vi.fn(),
+  countPendingDiscoveryItemsForClient: vi.fn(),
+}))
+
+vi.mock('../../utils/client-config/feature-flags', () => ({
+  isFeatureEnabled: vi.fn(),
+}))
+
+vi.mock('../../utils/discovery/scoring', () => ({
+  scoreDiscoveryItems: vi.fn(),
 }))
 
 vi.mock('@awesomeposter/shared', async (importOriginal) => {
@@ -36,14 +47,25 @@ import {
   completeDiscoverySourceFetch,
   releaseDiscoverySourceAfterFailedCompletion,
   saveDiscoveryItems,
+  persistDiscoveryScores,
+  resetDiscoveryItemsToPending,
+  countPendingDiscoveryItemsForClient,
   type DiscoverySourceHealthUpdate,
 } from '../../utils/discovery-repository'
 import { executeIngestionAdapter } from '@awesomeposter/shared'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
 import { publishSourceHealthStatus } from '../../utils/discovery-health'
+import { isFeatureEnabled } from '../../utils/client-config/feature-flags'
+import { scoreDiscoveryItems } from '../../utils/discovery/scoring'
 
 describe('runDiscoveryIngestionJob', () => {
   const now = new Date('2025-04-01T10:00:00Z')
+  const defaultScoringConfig = {
+    weights: { keyword: 0.5, recency: 0.3, source: 0.2 },
+    threshold: 0.6,
+    recencyHalfLifeHours: 48,
+    weightsVersion: 1,
+  }
 
   const baseSource = {
     id: 'source-1',
@@ -92,6 +114,15 @@ describe('runDiscoveryIngestionJob', () => {
       metadata: { adapter: 'http' },
     } satisfies DiscoveryAdapterResult)
     vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [], duplicates: [] })
+    vi.mocked(persistDiscoveryScores).mockResolvedValue()
+    vi.mocked(resetDiscoveryItemsToPending).mockResolvedValue()
+    vi.mocked(countPendingDiscoveryItemsForClient).mockResolvedValue(0)
+    vi.mocked(isFeatureEnabled).mockResolvedValue(true)
+    vi.mocked(scoreDiscoveryItems).mockResolvedValue({
+      ok: true,
+      results: [],
+      config: defaultScoringConfig,
+    })
     vi.mocked(publishSourceHealthStatus).mockReset()
   })
 
@@ -128,6 +159,125 @@ describe('runDiscoveryIngestionJob', () => {
       status: 'healthy',
       consecutiveFailures: 0,
     }))
+  })
+
+  it('scores newly inserted items inline when conditions allow', async () => {
+    const source = buildSource()
+    const normalized = {
+      externalId: 'ext-inline-1',
+      title: 'Inline Score',
+      url: 'https://example.com/inline',
+      contentType: 'article' as const,
+      publishedAt: now.toISOString(),
+      publishedAtSource: 'original' as const,
+      fetchedAt: now.toISOString(),
+      extractedBody: 'Body text',
+      excerpt: 'Body text',
+    }
+    const insertedId = 'item-inline-1'
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter).mockResolvedValue({
+      ok: true,
+      items: [
+        {
+          rawPayload: { body: '<p>Inline</p>' },
+          normalized,
+          sourceMetadata: { contentType: 'article' },
+        },
+      ],
+      metadata: { adapter: 'http' },
+    })
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [{ id: insertedId, rawHash: 'hash-inline' }], duplicates: [] })
+    vi.mocked(countPendingDiscoveryItemsForClient)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(0)
+    vi.mocked(scoreDiscoveryItems).mockResolvedValue({
+      ok: true,
+      results: [
+        {
+          itemId: insertedId,
+          clientId: source.clientId,
+          sourceId: source.id,
+          score: 0.92,
+          components: { keyword: 0.95, recency: 0.9, source: 0.85 },
+          appliedThreshold: 0.6,
+          status: 'scored',
+          weightsVersion: 1,
+        },
+      ],
+      config: defaultScoringConfig,
+    })
+
+    const result = await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    expect(result.succeeded).toBe(1)
+    expect(scoreDiscoveryItems).toHaveBeenCalledWith([insertedId], { now: expect.any(Function) })
+    expect(persistDiscoveryScores).toHaveBeenCalledWith([
+      expect.objectContaining({ itemId: insertedId, score: 0.92, status: 'scored' }),
+    ])
+    expect(emitDiscoveryEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'discovery.score.complete' }))
+    expect(emitDiscoveryEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'discovery.queue.updated' }))
+  })
+
+  it('skips inline scoring when the feature flag is disabled', async () => {
+    const source = buildSource()
+    const insertedId = 'item-flagged'
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [{ id: insertedId, rawHash: 'hash-flagged' }], duplicates: [] })
+    vi.mocked(isFeatureEnabled).mockResolvedValue(false)
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    expect(isFeatureEnabled).toHaveBeenCalled()
+    expect(countPendingDiscoveryItemsForClient).not.toHaveBeenCalled()
+    expect(scoreDiscoveryItems).not.toHaveBeenCalled()
+    expect(persistDiscoveryScores).not.toHaveBeenCalled()
+  })
+
+  it('defers inline scoring when backlog exceeds threshold', async () => {
+    const source = buildSource()
+    const insertedId = 'item-backlog'
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [{ id: insertedId, rawHash: 'hash-backlog' }], duplicates: [] })
+    vi.mocked(countPendingDiscoveryItemsForClient).mockResolvedValue(505)
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    expect(scoreDiscoveryItems).not.toHaveBeenCalled()
+    expect(persistDiscoveryScores).not.toHaveBeenCalled()
+    const backlogEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'discovery.queue.updated')?.[0]
+    expect(backlogEvent?.payload.reason).toBe('backlog')
+  })
+
+  it('emits scoring failure and resets items when scoring returns an error', async () => {
+    const source = buildSource()
+    const insertedId = 'item-error'
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(saveDiscoveryItems).mockResolvedValue({ inserted: [{ id: insertedId, rawHash: 'hash-error' }], duplicates: [] })
+    vi.mocked(countPendingDiscoveryItemsForClient).mockResolvedValueOnce(1)
+    vi.mocked(scoreDiscoveryItems).mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'DISCOVERY_SCORING_INVALID_ITEM',
+        message: 'invalid',
+        details: { itemIds: [insertedId] },
+      },
+    })
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    expect(resetDiscoveryItemsToPending).toHaveBeenCalledWith([insertedId])
+    expect(persistDiscoveryScores).not.toHaveBeenCalled()
+    const failureEvent = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'discovery.scoring.failed')?.[0]
+    expect(failureEvent?.payload.itemIds).toContain(insertedId)
   })
 
   it('queues sources beyond worker limit and processes sequentially', async () => {

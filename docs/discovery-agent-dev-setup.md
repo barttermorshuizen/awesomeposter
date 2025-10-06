@@ -32,6 +32,8 @@ pnpm run build:types # ensures shared contracts compile before first dev server 
 | --- | --- | --- |
 | `DISCOVERY_ENABLE` | `.env.local`, `server/.env` | Feature flag to expose discovery routes/UI. Default `false`. |
 | `DISCOVERY_API_KEY` | `server/.env` | Bearer token for Nitro discovery endpoints; reuse existing API auth helpers. |
+| `DISCOVERY_SCORING_ENABLED` | `server/.env` | Enables synchronous scoring during ingestion. Keep `false` until you are ready to exercise scoring paths. |
+| `DISCOVERY_SCORING_PENDING_THRESHOLD` | `server/.env` | Inline scoring backlog guard (defaults to `500`). Lower it locally to force deferral during testing. |
 | `YOUTUBE_API_KEY` | `.env.discovery.local` | Required for YouTube channel polling. |
 | `DISCOVERY_SSE_ORIGIN` | `.env.local` | Base URL for SSE connections (`http://localhost:3000`). |
 | `DATABASE_URL_DISCOVERY` | `packages/db/.env` | Points to discovery-aware schema (same database, different schema). |
@@ -50,6 +52,8 @@ pnpm run build:types # ensures shared contracts compile before first dev server 
 
 Bring services up in this order to ensure migrations apply before jobs emit events.
 
+> **Inline Scoring Tip**: After enabling `DISCOVERY_SCORING_ENABLED`, run `pnpm run dev:jobs -- discovery` and tail the logs for `[discovery.ingest] inline scoring`. You should see `discovery.score.complete` frames on `/api/discovery/events.stream`. Set `DISCOVERY_SCORING_PENDING_THRESHOLD=2` to exercise backlog deferral quickly.
+
 ---
 
 ## 3. API Contracts & Routes
@@ -60,13 +64,13 @@ Bring services up in this order to ensure migrations apply before jobs emit even
 | `/api/discovery/briefs` | GET | Filterable briefs list. | Same as above |
 | `/api/discovery/briefs/:id/promote` | POST | Promote brief to `Approved`. | Same |
 | `/api/discovery/briefs/:id/archive` | POST | Archive brief with note. | Same |
-| `/api/discovery/events.stream` | GET (SSE) | Real-time telemetry (ingestion, scoring). | Cookie + bearer |
+| `/api/discovery/events.stream` | GET (SSE) | Real-time telemetry (ingestion, scoring). Emits `discovery.score.complete`, `discovery.queue.updated`, `discovery.scoring.failed`. | Cookie + bearer |
 
 Contracts live in `packages/shared/src/schemas/discovery.ts`. Update schema first, regenerate types (`pnpm run build:types`), then confirm Nitro + SPA compile.
 
 ### Agents Server Hooks
 - `DiscoveryIngestionJob` → pulls from `discovery_sources`, enqueues normalized items.
-- `DiscoveryScoringAgent` → scores items, emits SSE events (`brief.scored`, `duplicate.suppressed`).
+- `DiscoveryScoringAgent` → scores items, emits SSE events (`brief.scored`, `duplicate.suppressed`). When synchronous scoring is enabled the ingestion job calls the shared scoring utility first; the periodic agent only handles backlog retries and items flagged by `discovery.scoring.failed`.
 - `DiscoveryTelemetryPublisher` → writes aggregated metrics to `discovery_metrics`.
 
 Add new capabilities behind `DISCOVERY_ENABLE` and wrap with feature-flag guard helpers in `packages/shared/src/config.ts`.
@@ -85,8 +89,15 @@ Add new tests under:
 - `tests/server/discovery/*.test.ts` for Nitro handlers.
 - `tests/agents/discovery/*.test.ts` for orchestrator workflows.
 - `tests/ui/discovery/*.spec.ts` for SPA components.
+- `server/jobs/__tests__/discovery-ingest-sources.spec.ts` for inline scoring (enabled, disabled, backlog, failure).
 
 > Ensure fixtures include sample RSS/YouTube payloads in `tests/fixtures/discovery/`.
+
+Run targeted inline scoring tests with:
+
+```bash
+pnpm vitest run server/jobs/__tests__/discovery-ingest-sources.spec.ts
+```
 
 ---
 
@@ -106,6 +117,7 @@ Add new tests under:
 5. Promote to production with flag disabled.
 6. Post-release, enable flag for internal pilot only. Monitor logs/metrics (see operator runbook).
 7. **Rollback**: disable feature flag (immediate), redeploy previous Nitro/SPA if needed, revert migrations using `pnpm run db:rollback --filter discovery` only if necessary and confirmed no data needed.
+8. Review `docs/internal/scoring-sync-rollout.md` for synchronous scoring backlog thresholds, telemetry expectations, and operator communication steps.
 
 Document deployment status in `docs/plans/discovery-agent-sprint-plan.md` under Sprint Notes.
 

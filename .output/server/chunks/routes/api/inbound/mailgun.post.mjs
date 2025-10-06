@@ -1,5 +1,5 @@
 import { d as defineEventHandler, r as readBody, c as createError } from '../../../nitro/nitro.mjs';
-import crypto from 'node:crypto';
+import nodeCrypto from 'node:crypto';
 import { g as getEnv } from '../../../_/env.mjs';
 import { g as getDb, f as emailsIngested } from '../../../_/client.mjs';
 import 'node:http';
@@ -17,10 +17,10 @@ import 'drizzle-orm/pg-core';
 import 'drizzle-orm';
 
 function verifyMailgunSignature(timestamp, token, signature, key) {
-  const hmac = crypto.createHmac("sha256", key);
+  const hmac = nodeCrypto.createHmac("sha256", key);
   hmac.update(timestamp + token);
   const digest = hmac.digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
+  return nodeCrypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
 }
 const mailgun_post = defineEventHandler(async (event) => {
   var _a, _b;
@@ -36,7 +36,7 @@ const mailgun_post = defineEventHandler(async (event) => {
   }
   const msg = eventData.message;
   const db = getDb();
-  const id = crypto.randomUUID();
+  const id = nodeCrypto.randomUUID();
   await db.insert(emailsIngested).values({
     id,
     provider: "mailgun",

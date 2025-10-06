@@ -13,46 +13,63 @@ function getDefaultChatModelName() {
   return (m).toString().trim();
 }
 
+// Platform-specific rules and constraints
 const platformRules = {
-  linkedin: {
-    maxChars: 3e3,
-    maxHashtags: 5,
-    recommendedLength: 1300,
-    hashtagPlacement: "end"
-  },
-  x: {
-    maxChars: 280,
-    maxHashtags: 3,
-    recommendedLength: 200,
-    hashtagPlacement: "inline"
-  }
+    linkedin: {
+        maxChars: 3000,
+        maxHashtags: 5,
+        recommendedLength: 1300,
+        hashtagPlacement: "end"
+    },
+    x: {
+        maxChars: 280,
+        maxHashtags: 3,
+        recommendedLength: 200,
+        hashtagPlacement: "inline"
+    }
 };
+// Scoring weights for composite score calculation
 const scoringWeights = {
-  readability: 0.35,
-  objectiveFit: 0.35,
-  clarity: 0.2,
-  brandRisk: -0.2
-  // magnitude used in composite; brand risk is applied inversely (brandSafety = 1 - brandRisk) with an offset to preserve scale
+    readability: 0.35,
+    objectiveFit: 0.35,
+    clarity: 0.20,
+    brandRisk: -0.2 // magnitude used in composite; brand risk is applied inversely (brandSafety = 1 - brandRisk) with an offset to preserve scale
 };
+// Thresholds for agent decisions
 const agentThresholds = {
-  minCompositeScore: 0.78,
-  maxBrandRisk: 0.2,
-  maxRevisionCycles: 2,
-  minVariantsToGenerate: 3,
-  maxVariantsToGenerate: 5
+    minCompositeScore: 0.78,
+    maxBrandRisk: 0.2,
+    maxRevisionCycles: 2,
+    minVariantsToGenerate: 3,
+    maxVariantsToGenerate: 5
 };
 
+// Shared scoring helpers used across agents and tools
+// Centralizes composite score calculation so the UI and backend stay consistent.
 const clamp01 = (n) => Math.max(0, Math.min(1, n));
+/**
+ * Compute weighted composite quality score.
+ * Brand risk is applied inversely (low risk increases score) while preserving
+ * the previous calibration by subtracting the weight magnitude as an offset.
+ *
+ * Formula (expanded):
+ *  r*w_r + c*w_c + o*w_o + |w_br|*(1 - br) - |w_br|
+ * which is algebraically equivalent to: r*w_r + c*w_c + o*w_o - |w_br|*br
+ */
 function computeCompositeScore({ readability, clarity, objectiveFit, brandRisk }, opts) {
-  const r = clamp01(Number(readability != null ? readability : 0));
-  const c = clamp01(Number(clarity != null ? clarity : 0));
-  const o = clamp01(Number(objectiveFit != null ? objectiveFit : 0));
-  const br = clamp01(Number(brandRisk != null ? brandRisk : 0));
-  const base = scoringWeights;
-  let w = base;
-  const brW = Math.abs(w.brandRisk);
-  const score = r * w.readability + o * w.objectiveFit + c * w.clarity + brW * (1 - br) - brW;
-  return clamp01(score);
+    const r = clamp01(Number(readability ?? 0));
+    const c = clamp01(Number(clarity ?? 0));
+    const o = clamp01(Number(objectiveFit ?? 0));
+    const br = clamp01(Number(brandRisk ?? 0));
+    const base = scoringWeights;
+    let w = base;
+    const brW = Math.abs(w.brandRisk);
+    const score = (r * w.readability +
+        o * w.objectiveFit +
+        c * w.clarity +
+        brW * (1 - br) -
+        brW);
+    return clamp01(score);
 }
 
 var __defProp$2 = Object.defineProperty;

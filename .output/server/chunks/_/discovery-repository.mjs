@@ -1,75 +1,216 @@
-import { and, eq, inArray, desc, or, isNull, lte, ne } from 'drizzle-orm';
-import { g as getDb, j as discoveryItems, k as discoveryKeywords, l as discoverySources, m as discoveryIngestRuns } from './client.mjs';
+import { and, eq, inArray, sql, desc, ne, or, isNull, lte } from 'drizzle-orm';
+import { g as getDb, j as discoveryItems, k as discoveryScores, l as discoveryKeywords, m as discoverySources, n as discoveryIngestRuns } from './client.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { r as requireDiscoveryFeatureEnabled } from './feature-flags.mjs';
 import { n as normalizeDiscoveryKeyword, c as createDiscoverySourceInputSchema, a as normalizeDiscoverySourceUrl, d as deriveDuplicateKey } from './discovery.mjs';
 
 function stableStringify(value) {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`);
-  return `{${entries.join(",")}}`;
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+    }
+    const entries = Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`);
+    return `{${entries.join(',')}}`;
 }
 function computeRawHash(rawPayload) {
-  const serialized = stableStringify(rawPayload);
-  return createHash("sha256").update(serialized).digest("hex");
+    const serialized = stableStringify(rawPayload);
+    return createHash('sha256').update(serialized).digest('hex');
 }
 function toDate(value) {
-  if (!value)
-    return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+    if (!value)
+        return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 async function persistDiscoveryItems(inputs) {
-  if (!inputs.length) {
-    return { inserted: [], duplicates: [] };
-  }
-  const db = getDb();
-  const itemsWithHash = inputs.map((input) => ({
-    input,
-    rawHash: computeRawHash(input.rawPayload)
-  }));
-  const clientIds = new Set(itemsWithHash.map((item) => item.input.clientId));
-  if (clientIds.size !== 1) {
-    throw new Error("persistDiscoveryItems expects all inputs to share the same clientId");
-  }
-  const [clientId] = [...clientIds];
-  const rawHashes = itemsWithHash.map((item) => item.rawHash);
-  const existing = await db.select({ rawHash: discoveryItems.rawHash }).from(discoveryItems).where(and(eq(discoveryItems.clientId, clientId), inArray(discoveryItems.rawHash, rawHashes)));
-  const existingSet = new Set(existing.map((row) => row.rawHash));
-  const toInsert = itemsWithHash.filter((item) => !existingSet.has(item.rawHash));
-  const rows = toInsert.map(({ input, rawHash }) => ({
-    id: randomUUID(),
-    clientId: input.clientId,
-    sourceId: input.sourceId,
-    externalId: input.externalId,
-    rawHash,
-    status: "pending_scoring",
-    title: input.title,
-    url: input.url,
-    fetchedAt: new Date(input.fetchedAt),
-    publishedAt: toDate(input.publishedAt),
-    publishedAtSource: input.publishedAtSource,
-    rawPayloadJson: input.rawPayload,
-    normalizedJson: input.normalized,
-    sourceMetadataJson: input.sourceMetadata
-  }));
-  let inserted = [];
-  if (rows.length) {
-    inserted = await db.insert(discoveryItems).values(rows).returning({ id: discoveryItems.id, rawHash: discoveryItems.rawHash });
-  }
-  const duplicates = itemsWithHash.filter((item) => existingSet.has(item.rawHash)).map((item) => ({ rawHash: item.rawHash }));
-  return { inserted, duplicates };
+    if (!inputs.length) {
+        return { inserted: [], duplicates: [] };
+    }
+    const db = getDb();
+    const itemsWithHash = inputs.map((input) => ({
+        input,
+        rawHash: computeRawHash(input.rawPayload),
+    }));
+    const clientIds = new Set(itemsWithHash.map((item) => item.input.clientId));
+    if (clientIds.size !== 1) {
+        throw new Error('persistDiscoveryItems expects all inputs to share the same clientId');
+    }
+    const [clientId] = [...clientIds];
+    const rawHashes = itemsWithHash.map((item) => item.rawHash);
+    const existing = await db
+        .select({ rawHash: discoveryItems.rawHash })
+        .from(discoveryItems)
+        .where(and(eq(discoveryItems.clientId, clientId), inArray(discoveryItems.rawHash, rawHashes)));
+    const existingSet = new Set(existing.map((row) => row.rawHash));
+    const toInsert = itemsWithHash.filter((item) => !existingSet.has(item.rawHash));
+    const rows = toInsert.map(({ input, rawHash }) => ({
+        id: randomUUID(),
+        clientId: input.clientId,
+        sourceId: input.sourceId,
+        externalId: input.externalId,
+        rawHash,
+        status: 'pending_scoring',
+        title: input.title,
+        url: input.url,
+        fetchedAt: new Date(input.fetchedAt),
+        publishedAt: toDate(input.publishedAt),
+        publishedAtSource: input.publishedAtSource,
+        rawPayloadJson: input.rawPayload,
+        normalizedJson: input.normalized,
+        sourceMetadataJson: input.sourceMetadata,
+    }));
+    let inserted = [];
+    if (rows.length) {
+        inserted = await db
+            .insert(discoveryItems)
+            .values(rows)
+            .returning({ id: discoveryItems.id, rawHash: discoveryItems.rawHash });
+    }
+    const duplicates = itemsWithHash
+        .filter((item) => existingSet.has(item.rawHash))
+        .map((item) => ({ rawHash: item.rawHash }));
+    return { inserted, duplicates };
+}
+async function countPendingDiscoveryItems(clientId) {
+    const db = getDb();
+    const baseCondition = eq(discoveryItems.status, 'pending_scoring');
+    const whereCondition = clientId ? and(baseCondition, eq(discoveryItems.clientId, clientId)) : baseCondition;
+    const [row] = await db
+        .select({ count: sql `count(*)` })
+        .from(discoveryItems)
+        .where(whereCondition);
+    return Number(row?.count ?? 0);
+}
+async function fetchDiscoveryItemsByIds(ids) {
+    if (!ids.length)
+        return [];
+    const db = getDb();
+    return db
+        .select()
+        .from(discoveryItems)
+        .where(inArray(discoveryItems.id, ids));
+}
+async function resetDiscoveryItemsToPending$1(itemIds) {
+    if (!itemIds.length)
+        return;
+    const db = getDb();
+    await db
+        .update(discoveryItems)
+        .set({ status: 'pending_scoring' })
+        .where(inArray(discoveryItems.id, itemIds));
+}
+async function upsertDiscoveryScore(input) {
+    const db = getDb();
+    const scoredAt = input.scoredAt ?? new Date();
+    await db.transaction(async (tx) => {
+        const decimal = (value) => value.toString();
+        const components = input.components ?? {
+            keyword: input.keywordScore,
+            recency: input.recencyScore,
+            source: input.sourceScore,
+        };
+        const values = {
+            itemId: input.itemId,
+            score: decimal(input.score),
+            keywordScore: decimal(input.keywordScore),
+            recencyScore: decimal(input.recencyScore),
+            sourceScore: decimal(input.sourceScore),
+            appliedThreshold: decimal(input.appliedThreshold),
+            weightsVersion: input.weightsVersion ?? 1,
+            componentsJson: components,
+            rationaleJson: input.rationale ?? null,
+            knobsHintJson: input.knobsHint ?? null,
+            metadataJson: input.metadata ?? {},
+            statusOutcome: input.status,
+            scoredAt,
+        };
+        await tx
+            .insert(discoveryScores)
+            .values(values)
+            .onConflictDoUpdate({
+            target: discoveryScores.itemId,
+            set: {
+                score: values.score,
+                keywordScore: values.keywordScore,
+                recencyScore: values.recencyScore,
+                sourceScore: values.sourceScore,
+                appliedThreshold: values.appliedThreshold,
+                weightsVersion: values.weightsVersion,
+                componentsJson: values.componentsJson,
+                rationaleJson: values.rationaleJson,
+                knobsHintJson: values.knobsHintJson,
+                metadataJson: values.metadataJson,
+                statusOutcome: values.statusOutcome,
+                scoredAt: values.scoredAt,
+            },
+        });
+        await tx
+            .update(discoveryItems)
+            .set({ status: input.status })
+            .where(eq(discoveryItems.id, input.itemId));
+    });
 }
 
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
 var __publicField = (obj, key, value) => __defNormalProp(obj, key + "" , value);
+function coerceNumber(value, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+function readStreakCount(health, expectedType) {
+  if (!health || typeof health !== "object") {
+    return 0;
+  }
+  const rawStreak = health.streak;
+  if (!rawStreak || typeof rawStreak !== "object") {
+    return 0;
+  }
+  if (rawStreak.type !== expectedType) {
+    return 0;
+  }
+  return coerceNumber(rawStreak.count, 0);
+}
+function toIsoString(value) {
+  if (!value) {
+    return null;
+  }
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+function buildHealthJson(snapshot, streak) {
+  const payload = {
+    status: snapshot.status,
+    observedAt: snapshot.observedAt.toISOString(),
+    lastFetchedAt: toIsoString(snapshot.lastFetchedAt),
+    lastSuccessAt: toIsoString(snapshot.lastSuccessAt),
+    consecutiveFailures: snapshot.consecutiveFailures,
+    streak: {
+      type: streak.type,
+      count: streak.count,
+      updatedAt: snapshot.observedAt.toISOString()
+    }
+  };
+  if (snapshot.failureReason) {
+    payload.failureReason = snapshot.failureReason;
+  }
+  if (snapshot.staleSince) {
+    payload.staleSince = snapshot.staleSince.toISOString();
+  }
+  return payload;
+}
 class InvalidDiscoverySourceError extends Error {
   constructor(message) {
     super(message);
@@ -173,8 +314,32 @@ async function completeDiscoverySourceFetch(input) {
   const db = getDb();
   const durationMs = Math.max(0, input.completedAt.getTime() - input.startedAt.getTime());
   const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes);
-  await db.transaction(async (tx) => {
-    var _a, _b, _c, _d, _e;
+  return db.transaction(async (tx) => {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const [current] = await tx.select({
+      consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+      lastSuccessAt: discoverySources.lastSuccessAt,
+      healthJson: discoverySources.healthJson
+    }).from(discoverySources).where(eq(discoverySources.id, input.sourceId)).limit(1);
+    const previousFailures = (_a = current == null ? void 0 : current.consecutiveFailureCount) != null ? _a : 0;
+    const previousSuccessAt = (_b = current == null ? void 0 : current.lastSuccessAt) != null ? _b : null;
+    const previousHealthJson = (_c = current == null ? void 0 : current.healthJson) != null ? _c : null;
+    const nextFailures = input.success ? 0 : previousFailures + 1;
+    const lastSuccessAt = input.success ? input.completedAt : previousSuccessAt;
+    const status = input.success ? "healthy" : nextFailures >= 3 ? "error" : "warning";
+    const failureReason = input.success ? null : (_d = input.failureReason) != null ? _d : null;
+    const observedAt = input.completedAt;
+    const streakType = input.success ? "success" : "failure";
+    const streakCount = input.success ? readStreakCount(previousHealthJson, "success") + 1 : nextFailures;
+    const snapshot = {
+      status,
+      observedAt,
+      lastFetchedAt: input.completedAt,
+      consecutiveFailures: nextFailures,
+      lastSuccessAt,
+      failureReason: failureReason != null ? failureReason : void 0
+    };
+    const healthJson = buildHealthJson(snapshot, { type: streakType, count: streakCount });
     await tx.insert(discoveryIngestRuns).values({
       id: crypto.randomUUID(),
       runId: input.runId,
@@ -184,19 +349,23 @@ async function completeDiscoverySourceFetch(input) {
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       durationMs,
-      failureReason: (_a = input.failureReason) != null ? _a : null,
-      retryInMinutes: (_b = input.retryInMinutes) != null ? _b : null,
-      metricsJson: (_c = input.metrics) != null ? _c : {},
-      telemetryJson: (_d = input.telemetry) != null ? _d : {},
+      failureReason,
+      retryInMinutes: (_e = input.retryInMinutes) != null ? _e : null,
+      metricsJson: (_f = input.metrics) != null ? _f : {},
+      telemetryJson: (_g = input.telemetry) != null ? _g : {},
       createdAt: /* @__PURE__ */ new Date()
     });
     await tx.update(discoverySources).set({
       lastFetchStatus: input.success ? "success" : "failure",
       lastFetchCompletedAt: input.completedAt,
-      lastFailureReason: (_e = input.failureReason) != null ? _e : null,
+      lastFailureReason: failureReason,
       nextFetchAt,
-      updatedAt: /* @__PURE__ */ new Date()
+      updatedAt: observedAt,
+      lastSuccessAt,
+      consecutiveFailureCount: nextFailures,
+      healthJson
     }).where(eq(discoverySources.id, input.sourceId));
+    return snapshot;
   });
 }
 async function saveDiscoveryItems(input) {
@@ -218,17 +387,157 @@ async function saveDiscoveryItems(input) {
   }));
   return persistDiscoveryItems(payloads);
 }
+async function persistDiscoveryScores(inputs) {
+  if (!inputs.length) return;
+  await Promise.all(
+    inputs.map(
+      (input) => {
+        var _a, _b;
+        return upsertDiscoveryScore({
+          itemId: input.itemId,
+          score: input.score,
+          keywordScore: input.keywordScore,
+          recencyScore: input.recencyScore,
+          sourceScore: input.sourceScore,
+          appliedThreshold: input.appliedThreshold,
+          status: input.status,
+          weightsVersion: input.weightsVersion,
+          components: (_a = input.components) != null ? _a : {
+            keyword: input.keywordScore,
+            recency: input.recencyScore,
+            source: input.sourceScore
+          },
+          metadata: {
+            clientId: input.clientId,
+            sourceId: input.sourceId,
+            ...(_b = input.metadata) != null ? _b : {}
+          },
+          scoredAt: input.scoredAt
+        });
+      }
+    )
+  );
+}
+async function resetDiscoveryItemsToPending(itemIds) {
+  if (!itemIds.length) return;
+  await resetDiscoveryItemsToPending$1(itemIds);
+}
+async function countPendingDiscoveryItemsForClient(clientId) {
+  return countPendingDiscoveryItems(clientId);
+}
+async function fetchDiscoveryItemsForScoring(itemIds) {
+  if (!itemIds.length) {
+    return [];
+  }
+  const rows = await fetchDiscoveryItemsByIds(itemIds);
+  return rows.map((row) => ({
+    id: row.id,
+    clientId: row.clientId,
+    sourceId: row.sourceId,
+    fetchedAt: row.fetchedAt,
+    publishedAt: row.publishedAt,
+    normalized: row.normalizedJson,
+    sourceMetadata: row.sourceMetadataJson
+  }));
+}
 async function releaseDiscoverySourceAfterFailedCompletion(input) {
-  var _a;
+  var _a, _b, _c, _d;
   const db = getDb();
   const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes);
+  const [current] = await db.select({
+    consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+    lastSuccessAt: discoverySources.lastSuccessAt,
+    healthJson: discoverySources.healthJson
+  }).from(discoverySources).where(eq(discoverySources.id, input.sourceId)).limit(1);
+  const previousFailures = (_a = current == null ? void 0 : current.consecutiveFailureCount) != null ? _a : 0;
+  const previousSuccessAt = (_b = current == null ? void 0 : current.lastSuccessAt) != null ? _b : null;
+  const previousHealthJson = (_c = current == null ? void 0 : current.healthJson) != null ? _c : null;
+  const nextFailures = input.success ? 0 : previousFailures + 1;
+  const lastSuccessAt = input.success ? input.completedAt : previousSuccessAt;
+  const status = input.success ? "healthy" : nextFailures >= 3 ? "error" : "warning";
+  const failureReason = input.success ? null : (_d = input.failureReason) != null ? _d : null;
+  const observedAt = input.completedAt;
+  const streakType = input.success ? "success" : "failure";
+  const streakCount = input.success ? readStreakCount(previousHealthJson, "success") + 1 : nextFailures;
+  const snapshot = {
+    status,
+    observedAt,
+    lastFetchedAt: input.completedAt,
+    consecutiveFailures: nextFailures,
+    lastSuccessAt,
+    failureReason: failureReason != null ? failureReason : void 0
+  };
+  const healthJson = buildHealthJson(snapshot, { type: streakType, count: streakCount });
   await db.update(discoverySources).set({
     lastFetchStatus: input.success ? "success" : "failure",
     lastFetchCompletedAt: input.completedAt,
-    lastFailureReason: (_a = input.failureReason) != null ? _a : null,
+    lastFailureReason: failureReason,
     nextFetchAt,
-    updatedAt: /* @__PURE__ */ new Date()
+    updatedAt: observedAt,
+    lastSuccessAt,
+    consecutiveFailureCount: nextFailures,
+    healthJson
   }).where(eq(discoverySources.id, input.sourceId));
+  return snapshot;
+}
+async function markStaleDiscoverySources(cutoff, now = /* @__PURE__ */ new Date()) {
+  const db = getDb();
+  const rows = await db.select({
+    id: discoverySources.id,
+    clientId: discoverySources.clientId,
+    sourceType: discoverySources.sourceType,
+    lastFetchCompletedAt: discoverySources.lastFetchCompletedAt,
+    lastSuccessAt: discoverySources.lastSuccessAt,
+    lastFailureReason: discoverySources.lastFailureReason,
+    consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+    healthJson: discoverySources.healthJson,
+    createdAt: discoverySources.createdAt
+  }).from(discoverySources).where(and(
+    ne(discoverySources.lastFetchStatus, "running"),
+    or(
+      and(isNull(discoverySources.lastFetchCompletedAt), lte(discoverySources.createdAt, cutoff)),
+      lte(discoverySources.lastFetchCompletedAt, cutoff)
+    )
+  ));
+  if (!rows.length) {
+    return [];
+  }
+  const updates = [];
+  await db.transaction(async (tx) => {
+    var _a, _b, _c, _d, _e, _f;
+    for (const row of rows) {
+      const previousFailures = (_a = row.consecutiveFailureCount) != null ? _a : 0;
+      const consecutiveFailures = previousFailures > 0 ? previousFailures : 1;
+      const status = consecutiveFailures >= 3 ? "error" : "warning";
+      const lastFetchedAt = (_b = row.lastFetchCompletedAt) != null ? _b : null;
+      const lastSuccessAt = (_c = row.lastSuccessAt) != null ? _c : null;
+      const staleSince = (_e = (_d = lastFetchedAt != null ? lastFetchedAt : lastSuccessAt) != null ? _d : row.createdAt) != null ? _e : cutoff;
+      const failureReason = (_f = row.lastFailureReason) != null ? _f : void 0;
+      const streakCount = readStreakCount(row.healthJson, "stale") + 1;
+      const snapshot = {
+        status,
+        observedAt: now,
+        lastFetchedAt,
+        consecutiveFailures,
+        lastSuccessAt,
+        failureReason,
+        staleSince
+      };
+      const healthJson = buildHealthJson(snapshot, { type: "stale", count: streakCount });
+      await tx.update(discoverySources).set({
+        consecutiveFailureCount: consecutiveFailures,
+        updatedAt: now,
+        healthJson
+      }).where(eq(discoverySources.id, row.id));
+      updates.push({
+        clientId: row.clientId,
+        sourceId: row.id,
+        sourceType: row.sourceType,
+        health: snapshot
+      });
+    }
+  });
+  return updates;
 }
 async function createDiscoverySource(input) {
   var _a, _b;
@@ -260,6 +569,13 @@ async function createDiscoverySource(input) {
   }
   const now = /* @__PURE__ */ new Date();
   const id = crypto.randomUUID();
+  const initialHealth = {
+    status: "healthy",
+    observedAt: now,
+    lastFetchedAt: null,
+    consecutiveFailures: 0,
+    lastSuccessAt: null
+  };
   const payload = {
     id,
     clientId: parsed.data.clientId,
@@ -275,6 +591,9 @@ async function createDiscoverySource(input) {
     lastFetchStartedAt: null,
     lastFetchCompletedAt: null,
     lastFailureReason: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    healthJson: buildHealthJson(initialHealth, { type: "success", count: 0 }),
     createdAt: now,
     updatedAt: now
   };
@@ -441,5 +760,5 @@ async function deleteDiscoveryKeyword(input) {
   return (_a = deleted == null ? void 0 : deleted.id) != null ? _a : null;
 }
 
-export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, listDiscoverySourcesDue as i, claimDiscoverySourceForFetch as j, completeDiscoverySourceFetch as k, listDiscoveryKeywords as l, releaseDiscoverySourceAfterFailedCompletion as r, saveDiscoveryItems as s, updateDiscoveryKeyword as u };
+export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, fetchDiscoveryItemsForScoring as i, listDiscoverySourcesDue as j, claimDiscoverySourceForFetch as k, listDiscoveryKeywords as l, completeDiscoverySourceFetch as m, countPendingDiscoveryItemsForClient as n, resetDiscoveryItemsToPending as o, persistDiscoveryScores as p, markStaleDiscoverySources as q, releaseDiscoverySourceAfterFailedCompletion as r, saveDiscoveryItems as s, updateDiscoveryKeyword as u };
 //# sourceMappingURL=discovery-repository.mjs.map

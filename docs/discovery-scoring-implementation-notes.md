@@ -14,17 +14,20 @@ This guide supplements architecture docs with actionable steps for engineers imp
 ## 2. Configuration Helpers & Fallbacks
 - `packages/agents-server/src/utils/discovery-scoring-config.ts` owns environment parsing and normalization (keyword/recency/source weights, threshold, half-life). It falls back to documented defaults and logs invalid overrides via the shared logger.
 - Sibling helpers (`server/utils/client-config/feature-flags.ts`, `packages/agents-server/src/utils/feature-flags.ts`) continue to surface high-level discovery toggles; scoring reads `DISCOVERY_SCORING_ENABLED` before touching the queue.
+- Inline scoring honours `DISCOVERY_SCORING_PENDING_THRESHOLD` (defaults to `500`). When the count of `pending_scoring` items for a client exceeds this threshold the ingestion job defers scoring and leaves the batch queued for the periodic runner while emitting a backlog telemetry frame.
 - Cache configuration results in-memory (already handled by the helper) and surface a `weightsVersion` integer so SSE consumers can correlate telemetry with rollout notes.
 
 ## 3. Repository & Agent Changes
 - `packages/agents-server/src/services/discovery-repository.ts` wraps Drizzle helpers to upsert `discovery_scores`, transition `discovery_items.status`, and expose backfill utilities.
-- `packages/agents-server/src/agents/discovery-scoring.ts` calculates keyword/recency/source components, persists the breakdown, and emits both `discovery.score.complete` and `discovery.queue.updated` agent events. Suppression calls `removeFromReviewerQueue` so dashboard queues never contain stale work.
+- `server/utils/discovery-repository.ts` now exposes `persistDiscoveryScores`, `countPendingDiscoveryItemsForClient`, and `resetDiscoveryItemsToPending` so the ingestion task can manage synchronous scoring without bypassing repository rules.
+- `server/jobs/discovery/ingest-sources.ts` collects inserted IDs from `saveDiscoveryItems`, checks the backlog threshold, and invokes `scoreDiscoveryItems`. Successful runs persist to `discovery_scores`, emit `discovery.score.complete`/`discovery.queue.updated`, and record scoring telemetry (`runMetrics.scoring`). Structured errors reset the affected IDs to `pending_scoring` and emit `discovery.scoring.failed` for the periodic runner to pick up.
+- `packages/agents-server/src/agents/discovery-scoring.ts` remains responsible for the periodic backfill/queue sweep. Suppression continues to call `removeFromReviewerQueue` so dashboard queues never contain stale work.
 - Keyword lookups live in `packages/agents-server/src/services/discovery-keywords.ts` (simple TTL cache); queue signalling resides in `packages/agents-server/src/services/discovery-queue.ts`.
 
 ## 4. SSE & API Contracts
-- `packages/shared/src/discovery-events.ts` now defines `discovery.score.complete` and `discovery.queue.updated` envelopes plus telemetry shapes.
-- `server/utils/discovery-telemetry.ts` converts both events into consumer-ready SSE frames/namespaced telemetry for dashboards.
-- Vitest coverage (`packages/agents-server/__tests__/discovery/discovery-scoring.agent.spec.ts`) verifies persistence wiring, queue notifications, and emitted telemetry payloads.
+- `packages/shared/src/discovery-events.ts` defines discovery ingestion envelopes, including `discovery.score.complete`, `discovery.queue.updated`, and `discovery.scoring.failed`.
+- `server/utils/discovery-telemetry.ts` maps the new scoring events into consumer-ready SSE frames so dashboards receive inline scoring state, backlog notifications, and failure telemetry.
+- Vitest coverage (`server/jobs/__tests__/discovery-ingest-sources.spec.ts`) verifies inline scoring delegation, backlog deferral, failure handling, and emitted telemetry payloads.
 
 ## 5. Deployment & Rollback Checklist
 1. Apply schema migration in staging (`pnpm run db:migrate --filter discovery`).

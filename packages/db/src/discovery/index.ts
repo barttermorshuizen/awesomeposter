@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from '../client.js'
 import { discoveryItems, discoveryScores } from '../schema.js'
 
@@ -152,6 +152,19 @@ export async function listDiscoveryItemsByStatus(status: DiscoveryItemStatus, li
 
 export async function listPendingDiscoveryItems(limit = 50) {
   return listDiscoveryItemsByStatus('pending_scoring', limit)
+}
+
+export async function countPendingDiscoveryItems(clientId?: string): Promise<number> {
+  const db = getDb()
+  const baseCondition = eq(discoveryItems.status, 'pending_scoring')
+  const whereCondition = clientId ? and(baseCondition, eq(discoveryItems.clientId, clientId)) : baseCondition
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(discoveryItems)
+    .where(whereCondition)
+
+  return Number(row?.count ?? 0)
 }
 
 export async function fetchDiscoveryItemsByIds(ids: string[]) {

@@ -5,7 +5,11 @@ import {
   discoveryKeywords,
   discoveryIngestRuns,
   discoveryItems,
+  fetchDiscoveryItemsByIds,
   persistDiscoveryItems,
+  resetDiscoveryItemsToPending as resetDiscoveryItemsToPendingDb,
+  upsertDiscoveryScore,
+  countPendingDiscoveryItems,
   type PersistDiscoveryItemInput,
   type PersistDiscoveryItemsResult,
 } from '@awesomeposter/db'
@@ -383,6 +387,61 @@ export async function saveDiscoveryItems(input: SaveDiscoveryItemsInput): Promis
   return persistDiscoveryItems(payloads)
 }
 
+export type DiscoveryScorePersistenceInput = {
+  itemId: string
+  clientId: string
+  sourceId: string
+  score: number
+  keywordScore: number
+  recencyScore: number
+  sourceScore: number
+  appliedThreshold: number
+  status: 'scored' | 'suppressed'
+  weightsVersion: number
+  components?: Record<string, number>
+  metadata?: Record<string, unknown>
+  scoredAt?: Date
+}
+
+export async function persistDiscoveryScores(inputs: DiscoveryScorePersistenceInput[]): Promise<void> {
+  if (!inputs.length) return
+
+  await Promise.all(
+    inputs.map((input) =>
+      upsertDiscoveryScore({
+        itemId: input.itemId,
+        score: input.score,
+        keywordScore: input.keywordScore,
+        recencyScore: input.recencyScore,
+        sourceScore: input.sourceScore,
+        appliedThreshold: input.appliedThreshold,
+        status: input.status,
+        weightsVersion: input.weightsVersion,
+        components: input.components ?? {
+          keyword: input.keywordScore,
+          recency: input.recencyScore,
+          source: input.sourceScore,
+        },
+        metadata: {
+          clientId: input.clientId,
+          sourceId: input.sourceId,
+          ...(input.metadata ?? {}),
+        },
+        scoredAt: input.scoredAt,
+      }),
+    ),
+  )
+}
+
+export async function resetDiscoveryItemsToPending(itemIds: string[]): Promise<void> {
+  if (!itemIds.length) return
+  await resetDiscoveryItemsToPendingDb(itemIds)
+}
+
+export async function countPendingDiscoveryItemsForClient(clientId: string): Promise<number> {
+  return countPendingDiscoveryItems(clientId)
+}
+
 export type PendingDiscoveryItem = {
   id: string
   clientId: string
@@ -395,6 +454,33 @@ export type PendingDiscoveryItem = {
   normalized: Record<string, unknown>
   sourceMetadata: Record<string, unknown>
   rawPayload: Record<string, unknown>
+}
+
+export type DiscoveryItemForScoring = {
+  id: string
+  clientId: string
+  sourceId: string
+  fetchedAt: Date
+  publishedAt: Date | null
+  normalized: Record<string, unknown>
+  sourceMetadata: Record<string, unknown>
+}
+
+export async function fetchDiscoveryItemsForScoring(itemIds: string[]): Promise<DiscoveryItemForScoring[]> {
+  if (!itemIds.length) {
+    return []
+  }
+
+  const rows = await fetchDiscoveryItemsByIds(itemIds)
+  return rows.map((row) => ({
+    id: row.id,
+    clientId: row.clientId,
+    sourceId: row.sourceId,
+    fetchedAt: row.fetchedAt,
+    publishedAt: row.publishedAt,
+    normalized: row.normalizedJson,
+    sourceMetadata: row.sourceMetadataJson as Record<string, unknown>,
+  }))
 }
 
 export async function listPendingDiscoveryItems(limit: number, clientId?: string): Promise<PendingDiscoveryItem[]> {

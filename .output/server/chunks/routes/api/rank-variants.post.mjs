@@ -1,8 +1,6 @@
 import { d as defineEventHandler, r as readBody } from '../../nitro/nitro.mjs';
 import { r as requireDiscoveryFeatureEnabled, a as FeatureFlagDisabledError } from '../../_/feature-flags.mjs';
-import { eq } from 'drizzle-orm';
-import { g as getDb, k as discoveryKeywords } from '../../_/client.mjs';
-import { o as onDiscoveryEvent } from '../../_/discovery-events.mjs';
+import { g as getKeywordThemesForClient } from '../../_/discovery-keyword-cache.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -12,36 +10,12 @@ import 'node:path';
 import 'node:crypto';
 import 'node:url';
 import '@upstash/redis';
+import 'drizzle-orm';
+import '../../_/client.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';
-
-const keywordCache = /* @__PURE__ */ new Map();
-let subscribed = false;
-function ensureSubscription() {
-  if (subscribed) return;
-  onDiscoveryEvent((event) => {
-    if (event.type === "keyword.updated") {
-      handleKeywordEvent(event);
-    }
-  });
-  subscribed = true;
-}
-function handleKeywordEvent(event) {
-  keywordCache.delete(event.payload.clientId);
-}
-async function getKeywordThemesForClient(clientId) {
-  ensureSubscription();
-  const cached = keywordCache.get(clientId);
-  if (cached) {
-    return cached.keywords;
-  }
-  const db = getDb();
-  const rows = await db.select({ keyword: discoveryKeywords.keyword }).from(discoveryKeywords).where(eq(discoveryKeywords.clientId, clientId)).orderBy(discoveryKeywords.keyword);
-  const keywords = rows.map((row) => row.keyword);
-  keywordCache.set(clientId, { keywords, timestamp: Date.now() });
-  return keywords;
-}
+import '../../_/discovery-events.mjs';
 
 const KEYWORD_BONUS_PER_MATCH = 0.1;
 const MAX_KEYWORD_BONUS = 0.4;

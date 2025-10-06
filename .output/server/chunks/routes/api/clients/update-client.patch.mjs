@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { g as getDb, c as clients, n as clientProfiles, a as assets } from '../../../_/client.mjs';
+import { g as getDb, c as clients, o as clientProfiles, a as assets } from '../../../_/client.mjs';
 import { d as defineEventHandler, r as readBody, c as createError } from '../../../nitro/nitro.mjs';
 import { u as updateClientSchema } from '../../../_/schemas.mjs';
 import 'drizzle-orm/node-postgres';

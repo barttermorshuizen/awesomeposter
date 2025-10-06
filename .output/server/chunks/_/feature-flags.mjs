@@ -3,9 +3,9 @@ import { Redis } from '@upstash/redis';
 import { and, eq } from 'drizzle-orm';
 import { g as getDb, d as clientFeatures } from './client.mjs';
 
-const FEATURE_DISCOVERY_AGENT = "discovery-agent";
-const FEATURE_FLAG_PUBSUB_TOPIC = "feature.flags.updated";
-const DISCOVERY_FLAG_CHANGED_EVENT = "discovery.flagChanged";
+const FEATURE_DISCOVERY_AGENT = 'discovery-agent';
+const FEATURE_FLAG_PUBSUB_TOPIC = 'feature.flags.updated';
+const DISCOVERY_FLAG_CHANGED_EVENT = 'discovery.flagChanged';
 
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
