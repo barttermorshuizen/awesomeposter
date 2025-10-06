@@ -5,11 +5,11 @@ Implement a scoring engine that evaluates normalized items for relevance, tracti
 
 ## Problem Statement
 - Raw ingestion contains noise and repeats; without scoring, reviewers face overload and miss valuable nuggets.
-- The business requires ≥95% accuracy in surfacing correctly scoped, timely, relevant briefs.
+- The business requires ≥95% accuracy in surfacing correctly scoped, timely, relevant discovery items that reviewers can confidently promote into briefs.
 
 ## Objectives & Success Metrics
-- Deliver scored items with precision ≥95% based on reviewer validation.
-- Reduce duplicate briefs by at least 90% compared to raw ingestion volume.
+- Deliver scored discovery items with precision ≥95% based on reviewer validation.
+- Reduce duplicate discovery items by at least 90% compared to raw ingestion volume before promotion.
 - Enable rapid threshold adjustments per client without redeployments.
 
 ## Scope (In)
@@ -37,7 +37,7 @@ Implement a scoring engine that evaluates normalized items for relevance, tracti
 ## Dependencies & Assumptions
 - Consumes normalized items (with source-type metadata) from ingestion pipeline.
 - Requires configuration service to expose source weights and traction toggles per client.
-- Persists to shared brief datastore before dashboard consumption.
+- Persists discovery items (including score metadata) to the shared datastore consumed by the review dashboard; briefs are only created once reviewers promote an item.
 - Reviewers provide feedback separately to inform tuning.
 
 ## Risks & Mitigations
@@ -46,6 +46,6 @@ Implement a scoring engine that evaluates normalized items for relevance, tracti
 - External traction providers exceeding rate limits or failing → use configurable rate limiter, caching, and graceful fallback to relevance-only scoring.
 
 ## Definition of Done
-- Scored items populate the brief queue with metadata accessible in UI.
+- Scored items populate the discovery item review queue with metadata accessible in UI.
 - Accuracy validated via pilot reviewer sampling achieving ≥95% precision.
 - Documentation outlines tuning process and default weights per client segment.

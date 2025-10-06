@@ -3,36 +3,28 @@
 This guide supplements architecture docs with actionable steps for engineers implementing Story 4.1. It covers schema rollout, configuration hooks, and API/SSE contracts introduced by the scoring agent.
 
 ## 1. Schema & Migration Sequencing
-1. Generate a Drizzle migration that creates `discovery_scores` (table + indexes) without touching other discovery tables.
+1. Generate a Drizzle migration that creates `discovery_scores` (table + indexes) without touching other discovery tables. (See `packages/db/migrations/20250403_create_discovery_scores.sql`).
 2. Follow with a dedicated data migration that backfills existing `discovery_items`:
    - Select items lacking a `discovery_scores` row.
    - Reset their status to `pending_scoring` and enqueue them for the scoring agent, or insert default score rows if queuing is unavailable.
    - Make the migration idempotent so re-runs are safe.
-3. Record both migrations in `packages/db/migrations` and update `packages/db/dist` via `pnpm run build` after validation.
-4. Smoke test locally: `pnpm run db:migrate --filter discovery` followed by the backfill script/job.
+3. Record both migrations in `packages/db/migrations` and update `packages/db/dist` via `pnpm run build` after validation (`20250404_discovery_scores_constraints.sql` adds range checks/indexes).
+4. Smoke test locally: `pnpm run db:migrate --filter discovery` followed by the Node helper `node scripts/discovery-backfill-scores.mjs` (idempotent; accepts optional batch size).
 
 ## 2. Configuration Helpers & Fallbacks
-- Extend `server/utils/client-config/feature-flags.ts` and `packages/agents-server/src/utils/feature-flags.ts` with helper methods that expose scoring weights/thresholds.
-- Add Vitest coverage to exercise cache hit/miss, Redis pub/sub invalidation, and fallback defaults.
-- Latch the last known weights in Redis (or in-memory) and define baseline defaults from the PRD so scoring can continue when the configuration service is unavailable. Use exponential backoff (1s, 2s, 4s, capped at 30s) before treating a fetch as failed.
-- Gate scoring with a dedicated flag (e.g., `DISCOVERY_SCORING_ENABLED`). All scoring entry points must respect this flag so operators can disable the pipeline instantly.
+- `packages/agents-server/src/utils/discovery-scoring-config.ts` owns environment parsing and normalization (keyword/recency/source weights, threshold, half-life). It falls back to documented defaults and logs invalid overrides via the shared logger.
+- Sibling helpers (`server/utils/client-config/feature-flags.ts`, `packages/agents-server/src/utils/feature-flags.ts`) continue to surface high-level discovery toggles; scoring reads `DISCOVERY_SCORING_ENABLED` before touching the queue.
+- Cache configuration results in-memory (already handled by the helper) and surface a `weightsVersion` integer so SSE consumers can correlate telemetry with rollout notes.
 
 ## 3. Repository & Agent Changes
-- Update `packages/agents-server/src/services/discovery-repository.ts` with upsert helpers that:
-  - Write to `discovery_scores` alongside `discovery_items` status transitions (`pending_scoring` → `scored`/`suppressed`).
-  - Emit queue cleanup for suppressed items so reviewer lists never reference them.
-- Implement `DiscoveryScoringAgent` to:
-  - Fetch weights via the updated configuration helpers.
-  - Calculate keyword/recency/source-weight components and persist the breakdown JSON.
-  - Respect suppression rollback rules (reset statuses on failure, publish `discovery.queue.updated`).
+- `packages/agents-server/src/services/discovery-repository.ts` wraps Drizzle helpers to upsert `discovery_scores`, transition `discovery_items.status`, and expose backfill utilities.
+- `packages/agents-server/src/agents/discovery-scoring.ts` calculates keyword/recency/source components, persists the breakdown, and emits both `discovery.score.complete` and `discovery.queue.updated` agent events. Suppression calls `removeFromReviewerQueue` so dashboard queues never contain stale work.
+- Keyword lookups live in `packages/agents-server/src/services/discovery-keywords.ts` (simple TTL cache); queue signalling resides in `packages/agents-server/src/services/discovery-queue.ts`.
 
 ## 4. SSE & API Contracts
-- Extend the `discovery.score.complete` SSE payload with:
-  - `itemId`, `clientId`, `score`, and per-component contributions (`keyword`, `recency`, `sourceWeight`).
-  - `statusOutcome` (`scored` or `suppressed`).
-  - `threshold` and `weightsVersion` metadata so consumers can trace configuration history.
-- Document the contract in `packages/shared/src/events/discovery.ts` and update any frontend/telemetry consumers accordingly.
-- Add regression tests in `packages/agents-server/__tests__/discovery` to assert payload shape and suppression event ordering.
+- `packages/shared/src/discovery-events.ts` now defines `discovery.score.complete` and `discovery.queue.updated` envelopes plus telemetry shapes.
+- `server/utils/discovery-telemetry.ts` converts both events into consumer-ready SSE frames/namespaced telemetry for dashboards.
+- Vitest coverage (`packages/agents-server/__tests__/discovery/discovery-scoring.agent.spec.ts`) verifies persistence wiring, queue notifications, and emitted telemetry payloads.
 
 ## 5. Deployment & Rollback Checklist
 1. Apply schema migration in staging (`pnpm run db:migrate --filter discovery`).
@@ -47,4 +39,3 @@ This guide supplements architecture docs with actionable steps for engineers imp
    - If schema issues arise, execute `pnpm run db:rollback --filter discovery` and rerun the backfill once resolved.
 
 Keep this document updated as the scoring feature evolves; link new helpers or payload changes here to maintain a single source for engineering hand-offs.
-

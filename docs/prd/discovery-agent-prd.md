@@ -12,8 +12,10 @@ This overview links the six epics that comprise the Discovery Agent MVP. Each ep
 
 ## Program Goals
 - Surface high-signal news nuggets for B2B tech marketing teams with ≥95% accuracy.
-- Provide daily workflows for reviewers to promote `Spotted` briefs to `Approved` for downstream strategist/content writer agents.
+- Provide daily workflows for reviewers to promote `Spotted` discovery items ("nuggets") to `Approved` briefs for downstream strategist/content writer agents.
 - Maintain operational control via telemetry, feature flags, and pilot gating while we tune accuracy.
+
+> Terminology: Intake records live as discovery items (often referred to as "nuggets") inside the review queue until a reviewer explicitly promotes them, at which point a brief is created. Both terms are used interchangeably when describing the pre-promotion state.
 
 ## Key Assumptions
 - Review cadence is offline (daily/twice daily); notifications are future scope.

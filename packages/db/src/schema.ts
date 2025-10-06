@@ -270,6 +270,25 @@ export const discoveryItems = pgTable('discovery_items', {
   sourceIdx: index('discovery_items_source_idx').on(table.sourceId),
 }))
 
+export const discoveryScores = pgTable('discovery_scores', {
+  itemId: uuid('item_id')
+    .references(() => discoveryItems.id, { onDelete: 'cascade' })
+    .primaryKey()
+    .notNull(),
+  score: numeric('score').notNull(),
+  keywordScore: numeric('keyword_score').default('0').notNull(),
+  recencyScore: numeric('recency_score').default('0').notNull(),
+  sourceScore: numeric('source_score').default('0').notNull(),
+  appliedThreshold: numeric('applied_threshold').notNull(),
+  weightsVersion: integer('weights_version').default(1).notNull(),
+  componentsJson: jsonb('components_json').$type<Record<string, unknown>>().default({}).notNull(),
+  rationaleJson: jsonb('rationale_json').$type<Record<string, unknown> | null>().default(null),
+  knobsHintJson: jsonb('knobs_hint_json').$type<Record<string, unknown> | null>().default(null),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  statusOutcome: text('status_outcome').$type<'scored' | 'suppressed'>().notNull(),
+  scoredAt: timestamp('scored_at', { withTimezone: true }).defaultNow().notNull(),
+})
+
 
 export const orchestratorRuns = pgTable('orchestrator_runs', {
   runId: text('run_id').primaryKey(),

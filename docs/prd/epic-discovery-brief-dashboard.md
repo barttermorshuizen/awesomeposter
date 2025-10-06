@@ -1,7 +1,7 @@
 # Epic: Brief Management Dashboard
 
 ## Epic Goal
-Provide reviewers with a focused workspace to inspect `Spotted` briefs, filter and search nuggets, capture notes, and promote items to `Approved` for downstream agents.
+Provide reviewers with a focused workspace to inspect `Spotted` discovery items ("nuggets"), filter and search them, capture notes, and promote selected items to `Approved` briefs for downstream agents.
 
 ## Problem Statement
 - Without a dedicated dashboard, reviewers must stitch together data from multiple tools, slowing response times.
@@ -13,11 +13,11 @@ Provide reviewers with a focused workspace to inspect `Spotted` briefs, filter a
 - Track adoption: at least 80% of pilot reviewers actively use the dashboard each week.
 
 ## Scope (In)
-- Brief listing with filters (source, topic, date range, status) and keyword search.
+- Discovery item listing with filters (source, topic, date range, status) and keyword search.
 - Detail view displaying metadata, scoring rationale, duplicate links, and notes.
-- Status transitions from `Spotted` to `Approved`, including required note input.
+- Status transitions from `Spotted` discovery item to `Approved` brief, including required note input.
 - Bulk actions (promote, archive) with undo window.
-- Inline status history visible per brief.
+- Inline status history visible per discovery item/brief promotion record.
 
 ## Scope (Out)
 - Integration with external workflow or publishing tools.
@@ -36,15 +36,15 @@ Provide reviewers with a focused workspace to inspect `Spotted` briefs, filter a
 - Accessibility: follow existing UI standards (keyboard navigation, contrast ratios).
 
 ## Dependencies & Assumptions
-- Relies on scored briefs from scoring/deduplication epic.
+- Relies on scored discovery items from the scoring/deduplication epic.
 - Uses existing frontend stack (Vue 3 + Vite + Vuetify) and auth sessions.
-- Status updates persisted in database shared with other agents.
+- Status updates persisted in database shared with other agents and create briefs only when reviewers promote an item.
 
 ## Risks & Mitigations
 - Information overload on list view → provide sensible default filters (recent `Spotted`, high score).
 - Promotion errors due to conflicting edits → implement optimistic updates with server confirmation and conflict messaging.
 
 ## Definition of Done
-- Reviewers can discover, inspect, and act on briefs fully within the dashboard.
-- Status history and notes are persisted and visible for every brief.
+- Reviewers can discover, inspect, and act on discovery items within the dashboard and create briefs through explicit promotion.
+- Status history and notes are persisted and visible for every discovery item and resulting brief.
 - Usability validated via pilot feedback sessions; issues triaged for follow-up.

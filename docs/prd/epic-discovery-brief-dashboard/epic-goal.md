@@ -1,2 +1,2 @@
 # Epic Goal
-Provide reviewers with a focused workspace to inspect `Spotted` briefs, filter and search nuggets, capture notes, and promote items to `Approved` for downstream agents.
+Provide reviewers with a focused workspace to inspect `Spotted` discovery items ("nuggets"), filter and search them, capture notes, and promote selected items to `Approved` briefs for downstream agents.

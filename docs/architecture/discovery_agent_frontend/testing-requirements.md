@@ -11,11 +11,11 @@ import { render, screen, fireEvent } from '@testing-library/vue'
 import DiscoveryDashboardView from '@/views/discovery/DiscoveryDashboardView.vue'
 import { createTestingPinia } from '@pinia/testing'
 
-it('renders brief list and triggers bulk promote', async () => {
+it('renders discovery item list and triggers bulk promote', async () => {
   const pinia = createTestingPinia({ stubActions: false })
   const { getByRole, emitted } = render(DiscoveryDashboardView, { global: { plugins: [pinia] } })
 
-  await screen.findByText('Spotted briefs')
+  await screen.findByText('Spotted items')
   await fireEvent.click(getByRole('checkbox', { name: /select row/i }))
   await fireEvent.click(getByRole('button', { name: /promote/i }))
 

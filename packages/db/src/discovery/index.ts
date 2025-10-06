@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { getDb } from '../client.js'
-import { discoveryItems } from '../schema.js'
+import { discoveryItems, discoveryScores } from '../schema.js'
 
 export type DiscoveryItemStatus = 'pending_scoring' | 'scored' | 'suppressed' | 'promoted' | 'archived'
 
@@ -22,6 +22,35 @@ export type PersistDiscoveryItemInput = {
 export type PersistDiscoveryItemsResult = {
   inserted: Array<{ id: string; rawHash: string }>
   duplicates: Array<{ rawHash: string }>
+}
+
+export type DiscoveryItemRecord = typeof discoveryItems.$inferSelect
+
+export type DiscoveryScoreRecord = typeof discoveryScores.$inferSelect
+
+export type DiscoveryScoreStatus = 'scored' | 'suppressed'
+
+export type DiscoveryScoreComponents = {
+  keyword: number
+  recency: number
+  source: number
+  [key: string]: number
+}
+
+export type UpsertDiscoveryScoreInput = {
+  itemId: string
+  score: number
+  keywordScore: number
+  recencyScore: number
+  sourceScore: number
+  appliedThreshold: number
+  weightsVersion?: number
+  status: DiscoveryScoreStatus
+  components?: Record<string, unknown>
+  rationale?: Record<string, unknown> | null
+  knobsHint?: Record<string, unknown> | null
+  metadata?: Record<string, unknown>
+  scoredAt?: Date
 }
 
 function stableStringify(value: unknown): string {
@@ -109,4 +138,99 @@ export async function persistDiscoveryItems(
     .map((item) => ({ rawHash: item.rawHash }))
 
   return { inserted, duplicates }
+}
+
+export async function listDiscoveryItemsByStatus(status: DiscoveryItemStatus, limit = 50) {
+  const db = getDb()
+  return db
+    .select()
+    .from(discoveryItems)
+    .where(eq(discoveryItems.status, status))
+    .orderBy(desc(discoveryItems.ingestedAt), desc(discoveryItems.fetchedAt))
+    .limit(limit)
+}
+
+export async function listPendingDiscoveryItems(limit = 50) {
+  return listDiscoveryItemsByStatus('pending_scoring', limit)
+}
+
+export async function fetchDiscoveryItemsByIds(ids: string[]) {
+  if (!ids.length) return []
+  const db = getDb()
+  return db
+    .select()
+    .from(discoveryItems)
+    .where(inArray(discoveryItems.id, ids))
+}
+
+export async function updateDiscoveryItemStatus(itemId: string, status: DiscoveryItemStatus) {
+  const db = getDb()
+  await db
+    .update(discoveryItems)
+    .set({ status })
+    .where(eq(discoveryItems.id, itemId))
+}
+
+export async function resetDiscoveryItemsToPending(itemIds: string[]) {
+  if (!itemIds.length) return
+  const db = getDb()
+  await db
+    .update(discoveryItems)
+    .set({ status: 'pending_scoring' })
+    .where(inArray(discoveryItems.id, itemIds))
+}
+
+export async function upsertDiscoveryScore(input: UpsertDiscoveryScoreInput) {
+  const db = getDb()
+  const scoredAt = input.scoredAt ?? new Date()
+  await db.transaction(async (tx) => {
+    const decimal = (value: number) => value.toString()
+    const components = input.components ?? {
+      keyword: input.keywordScore,
+      recency: input.recencyScore,
+      source: input.sourceScore,
+    }
+
+    const values: typeof discoveryScores.$inferInsert = {
+      itemId: input.itemId,
+      score: decimal(input.score),
+      keywordScore: decimal(input.keywordScore),
+      recencyScore: decimal(input.recencyScore),
+      sourceScore: decimal(input.sourceScore),
+      appliedThreshold: decimal(input.appliedThreshold),
+      weightsVersion: input.weightsVersion ?? 1,
+      componentsJson: components,
+      rationaleJson: input.rationale ?? null,
+      knobsHintJson: input.knobsHint ?? null,
+      metadataJson: input.metadata ?? {},
+      statusOutcome: input.status,
+      scoredAt,
+    }
+
+    await tx
+      .insert(discoveryScores)
+      .values(values)
+      .onConflictDoUpdate({
+        target: discoveryScores.itemId,
+        set: {
+          score: values.score,
+          keywordScore: values.keywordScore,
+          recencyScore: values.recencyScore,
+          sourceScore: values.sourceScore,
+          appliedThreshold: values.appliedThreshold,
+          weightsVersion: values.weightsVersion,
+          componentsJson: values.componentsJson,
+          rationaleJson: values.rationaleJson,
+          knobsHintJson: values.knobsHintJson,
+          metadataJson: values.metadataJson,
+          statusOutcome: values.statusOutcome,
+          scoredAt: values.scoredAt,
+        },
+      })
+
+    await tx
+      .update(discoveryItems)
+      .set({ status: input.status })
+      .where(eq(discoveryItems.id, input.itemId))
+  })
 }

@@ -76,6 +76,14 @@ APP_BASE_URL=http://localhost:5173
 | `SSE_CONCURRENCY` / `SSE_MAX_PENDING` | Tune streaming concurrency/backlog for agents server. |
 | `DISCOVERY_ENABLE` | Gate discovery pilot UI/API routes. |
 | `DISCOVERY_API_KEY` | Required when discovery routes are enabled. |
+| `DISCOVERY_SCORING_ENABLED` | Toggle the Discovery scoring agent. Defaults to `false`. |
+| `DISCOVERY_SCORING_THRESHOLD` | Relevance threshold (0–1). Scores below this are suppressed. Default `0.6`. |
+| `DISCOVERY_SCORING_KEYWORD_WEIGHT` | Raw weight for keyword alignment. Default `0.5`. |
+| `DISCOVERY_SCORING_RECENCY_WEIGHT` | Raw weight for recency decay. Default `0.3`. |
+| `DISCOVERY_SCORING_SOURCE_WEIGHT` | Raw weight for source reliability. Default `0.2`. |
+| `DISCOVERY_SCORING_RECENCY_HALF_LIFE_HOURS` | Half-life (hours) used for recency decay. Default `48`. |
+| `DISCOVERY_SCORING_SOURCE_WEIGHT_ARTICLE` / `RSS` / `YOUTUBE` | Per-source multipliers (0–1). Defaults `1 / 0.85 / 0.75`. |
+| `DISCOVERY_SCORING_WEIGHTS_VERSION` | Integer tag surfaced in telemetry to identify weight sets. Default `1`. |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Used by optional caching utilities. |
 
 ## Local Development
@@ -96,6 +104,7 @@ The SPA expects both the API (`3001`) and agents server (`3002`) when exercising
 - Apply new migrations: `cd packages/db && npm run push` (Drizzle will diff the schema against Neon).
 - Generate SQL from schema changes: `npm run gen` inside `packages/db`.
 - Type build for shared contracts: `npm run build` at repo root includes `tsc --build` and Vite build.
+- Discovery scoring backfill: `node scripts/discovery-backfill-scores.mjs [batchSize]` resets legacy discovery items to `pending_scoring` when no `discovery_scores` row exists.
 
 ## Testing & Quality
 - `npm run test:unit` – Vitest suite covering stores, composables, agents helpers.
