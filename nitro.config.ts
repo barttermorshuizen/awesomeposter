@@ -12,9 +12,14 @@ export default defineNitroConfig({
       handler: '~/jobs/discovery/ingest-sources',
       description: 'Fetch discovery sources on cadence',
     },
+    'discovery-mark-stale': {
+      handler: '~/jobs/discovery/mark-stale-sources',
+      description: 'Mark stale discovery sources warning/error states',
+    },
   },
   scheduledTasks: {
     '*/5 * * * *': 'discovery-ingestion',
+    '0 * * * *': 'discovery-mark-stale',
   },
   runtimeConfig: {
     DATABASE_URL: process.env.DATABASE_URL,

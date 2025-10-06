@@ -13,6 +13,7 @@ import {
   releaseDiscoverySourceAfterFailedCompletion,
   saveDiscoveryItems,
   type DiscoverySourceWithCadence,
+  type DiscoverySourceHealthUpdate,
 } from '../../utils/discovery-repository'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
 import { publishSourceHealthStatus } from '../../utils/discovery-health'
@@ -302,6 +303,7 @@ async function processSource(
   let permanentFailureNotice: { failureReason: DiscoveryIngestionFailureReason; attempt: number } | null = null
   let runMetrics: Record<string, unknown> = {}
   const ingestionIssues: Array<{ reason: string; count: number; details?: unknown }> = []
+  let healthUpdate: DiscoverySourceHealthUpdate | null = null
 
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -457,7 +459,7 @@ async function processSource(
     }
 
     try {
-      await completeDiscoverySourceFetch({
+      healthUpdate = await completeDiscoverySourceFetch({
         runId,
         sourceId: claimed.id,
         clientId: claimed.clientId,
@@ -487,7 +489,7 @@ async function processSource(
         error,
       })
       try {
-        await releaseDiscoverySourceAfterFailedCompletion({
+        healthUpdate = await releaseDiscoverySourceAfterFailedCompletion({
           sourceId: claimed.id,
           completedAt,
           fetchIntervalMinutes: claimed.fetchIntervalMinutes,
@@ -542,19 +544,6 @@ async function processSource(
           nextRetryAt: nextRetryAt ? nextRetryAt.toISOString() : undefined,
         },
       })
-
-      if (permanentFailureNotice) {
-        publishSourceHealthStatus({
-          clientId: claimed.clientId,
-          sourceId: claimed.id,
-          sourceType: claimed.sourceType,
-          status: 'error',
-          lastFetchedAt: completedAt,
-          observedAt: completedAt,
-          failureReason: permanentFailureNotice.failureReason,
-          attempt: permanentFailureNotice.attempt,
-        })
-      }
     } else if (ingestionIssues.length) {
       emitDiscoveryEventSafely({
         type: 'ingest.error',
@@ -566,6 +555,21 @@ async function processSource(
           sourceType: claimed.sourceType,
           issues: ingestionIssues,
         },
+      })
+    }
+
+    if (healthUpdate) {
+      publishSourceHealthStatus({
+        clientId: claimed.clientId,
+        sourceId: claimed.id,
+        sourceType: claimed.sourceType,
+        status: healthUpdate.status,
+        lastFetchedAt: healthUpdate.lastFetchedAt ?? undefined,
+        observedAt: healthUpdate.observedAt,
+        failureReason: healthUpdate.failureReason ?? undefined,
+        consecutiveFailures: healthUpdate.consecutiveFailures,
+        attempt: !success ? permanentFailureNotice?.attempt ?? attempts.length : undefined,
+        staleSince: healthUpdate.staleSince ?? undefined,
       })
     }
   }

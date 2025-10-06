@@ -5,6 +5,9 @@ import {
   normalizeDiscoverySourceUrl,
   type DiscoverySourceType,
   type DiscoverySourceCreatedEvent,
+  type DiscoveryTelemetryEvent,
+  type SourceHealthEvent,
+  type DiscoveryIngestionFailureReason,
 } from '@awesomeposter/shared'
 import { subscribeToDiscoveryEvents, type DiscoveryFeatureDisabledPayload } from '@/lib/discovery-sse'
 import { useNotificationsStore } from '@/stores/notifications'
@@ -37,6 +40,19 @@ const disabledBannerMessage = computed(() => {
   return featureDisabled.value ? featureDisabledMessage.value : null
 })
 
+type SourceHealthStatus = 'healthy' | 'warning' | 'error'
+
+type SourceHealthState = {
+  status: SourceHealthStatus
+  observedAt: string
+  lastFetchedAt: string | null
+  failureReason?: DiscoveryIngestionFailureReason | null
+  consecutiveFailures: number
+  staleSince?: string | null
+}
+
+type SourceHealthTelemetryEvent = Extract<DiscoveryTelemetryEvent, { eventType: 'source.health' }>
+
 type SourceItem = {
   id: string
   clientId: string
@@ -47,8 +63,111 @@ type SourceItem = {
   notes: string | null
   createdAt: string
   updatedAt: string
+  lastFetchStatus: 'idle' | 'running' | 'success' | 'failure'
+  lastFetchCompletedAt: string | null
+  lastFailureReason: DiscoveryIngestionFailureReason | null
+  lastSuccessAt: string | null
+  consecutiveFailureCount: number
+  health: SourceHealthState
   pending?: boolean
   pendingKey?: string
+}
+
+const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000
+
+const failureReasonMessages: Record<DiscoveryIngestionFailureReason, string> = {
+  network_error: 'Network error',
+  http_4xx: 'HTTP 4xx response',
+  http_5xx: 'HTTP 5xx response',
+  youtube_quota: 'YouTube quota exceeded',
+  youtube_not_found: 'YouTube resource not found',
+  timeout: 'Timed out',
+  parser_error: 'Feed parser error',
+  unknown_error: 'Unknown error',
+}
+
+function formatFailureReason(reason?: DiscoveryIngestionFailureReason | null) {
+  if (!reason) return null
+  return failureReasonMessages[reason] ?? reason
+}
+
+function createDefaultHealth(observedAt = new Date().toISOString()): SourceHealthState {
+  return {
+    status: 'healthy',
+    observedAt,
+    lastFetchedAt: null,
+    consecutiveFailures: 0,
+  }
+}
+
+const HEALTH_STATUSES: readonly SourceHealthStatus[] = ['healthy', 'warning', 'error']
+
+function isValidHealthStatus(value: unknown): value is SourceHealthStatus {
+  return typeof value === 'string' && (HEALTH_STATUSES as readonly string[]).includes(value)
+}
+
+function parseHealthState(raw: unknown, fallbackObservedAt: string): SourceHealthState {
+  const base = createDefaultHealth(fallbackObservedAt)
+  if (!raw || typeof raw !== 'object') {
+    return base
+  }
+
+  const data = raw as Record<string, unknown>
+  const status = isValidHealthStatus(data.status) ? (data.status as SourceHealthStatus) : base.status
+  const observedAt = typeof data.observedAt === 'string' ? data.observedAt : base.observedAt
+  const lastFetchedAt = typeof data.lastFetchedAt === 'string'
+    ? data.lastFetchedAt
+    : data.lastFetchedAt === null
+      ? null
+      : base.lastFetchedAt
+  const consecutiveFailures = typeof data.consecutiveFailures === 'number' && Number.isFinite(data.consecutiveFailures)
+    ? data.consecutiveFailures
+    : base.consecutiveFailures
+  const failureReason = typeof data.failureReason === 'string'
+    ? (data.failureReason as DiscoveryIngestionFailureReason)
+    : undefined
+  const staleSince = typeof data.staleSince === 'string'
+    ? data.staleSince
+    : undefined
+
+  return {
+    status,
+    observedAt,
+    lastFetchedAt,
+    consecutiveFailures,
+    failureReason,
+    staleSince: staleSince ?? undefined,
+  }
+}
+
+function coerceIsoString(value: unknown): string | null {
+  if (typeof value === 'string' && value) {
+    return value
+  }
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+  return null
+}
+
+function coerceNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return fallback
+}
+
+function coerceFailureReason(value: unknown): DiscoveryIngestionFailureReason | null {
+  if (typeof value === 'string' && value in failureReasonMessages) {
+    return value as DiscoveryIngestionFailureReason
+  }
+  return null
 }
 
 const sources = ref<SourceItem[]>([])
@@ -124,6 +243,141 @@ watch(
   },
 )
 
+function mapSourceRecord(record: Record<string, any>): SourceItem {
+  const createdAt = coerceIsoString(record.createdAt) ?? new Date().toISOString()
+  const updatedAt = coerceIsoString(record.updatedAt) ?? createdAt
+  const health = parseHealthState(record.healthJson, updatedAt)
+  const lastFailureReason = coerceFailureReason(record.lastFailureReason)
+  const consecutiveFailures = coerceNumber(
+    record.consecutiveFailureCount ?? health.consecutiveFailures,
+    health.consecutiveFailures,
+  )
+
+  return {
+    id: String(record.id),
+    clientId: String(record.clientId),
+    url: String(record.url),
+    canonicalUrl: String(record.canonicalUrl ?? record.url),
+    sourceType: record.sourceType as DiscoverySourceType,
+    identifier: String(record.identifier),
+    notes: typeof record.notes === 'string' && record.notes.length ? record.notes : null,
+    createdAt,
+    updatedAt,
+    lastFetchStatus: (record.lastFetchStatus as SourceItem['lastFetchStatus']) ?? 'idle',
+    lastFetchCompletedAt: coerceIsoString(record.lastFetchCompletedAt),
+    lastFailureReason,
+    lastSuccessAt: coerceIsoString(record.lastSuccessAt),
+    consecutiveFailureCount: consecutiveFailures,
+    health: {
+      ...health,
+      consecutiveFailures,
+    },
+    ...(record.pending ? { pending: true as const } : {}),
+    ...(record.pendingKey ? { pendingKey: String(record.pendingKey) } : {}),
+  }
+}
+
+function createPendingSourceItem(input: {
+  id: string
+  clientId: string
+  url: string
+  canonicalUrl: string
+  sourceType: DiscoverySourceType
+  identifier: string
+  notes: string | null
+  pendingKey: string
+}): SourceItem {
+  const nowIso = new Date().toISOString()
+  return {
+    id: input.id,
+    clientId: input.clientId,
+    url: input.url,
+    canonicalUrl: input.canonicalUrl,
+    sourceType: input.sourceType,
+    identifier: input.identifier,
+    notes: input.notes,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    lastFetchStatus: 'idle',
+    lastFetchCompletedAt: null,
+    lastFailureReason: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    health: createDefaultHealth(nowIso),
+    pending: true,
+    pendingKey: input.pendingKey,
+  }
+}
+
+function statusMeta(item: SourceItem) {
+  switch (item.health.status) {
+    case 'healthy':
+      return { label: 'Success', color: 'success' as const }
+    case 'warning':
+      return { label: 'Warning', color: 'warning' as const }
+    case 'error':
+      return { label: 'Error', color: 'error' as const }
+    default:
+      return { label: 'Unknown', color: 'surface-variant' as const }
+  }
+}
+
+function formatTimestamp(timestamp: string | null) {
+  if (!timestamp) {
+    return 'Never'
+  }
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown'
+  }
+  return date.toLocaleString()
+}
+
+function isFetchStale(health: SourceHealthState) {
+  if (!health.lastFetchedAt) return false
+  const date = new Date(health.lastFetchedAt)
+  if (Number.isNaN(date.getTime())) return false
+  return Date.now() - date.getTime() > STALE_THRESHOLD_MS
+}
+
+function displayLastFetch(item: SourceItem) {
+  const timestamp = item.health.lastFetchedAt ?? item.lastFetchCompletedAt ?? item.lastSuccessAt
+  return formatTimestamp(timestamp)
+}
+
+function statusTooltip(item: SourceItem) {
+  if (item.pending) return null
+  const { health } = item
+  if (health.status === 'healthy') {
+    if (!health.lastFetchedAt) {
+      return 'Awaiting first successful fetch'
+    }
+    return `Last fetch succeeded at ${formatTimestamp(health.lastFetchedAt)}`
+  }
+
+  const parts: string[] = []
+  if (health.consecutiveFailures > 0) {
+    parts.push(`${health.consecutiveFailures} consecutive failure${health.consecutiveFailures === 1 ? '' : 's'}`)
+  }
+  if (health.failureReason) {
+    const reason = formatFailureReason(health.failureReason)
+    if (reason) {
+      parts.push(`Last failure: ${reason}`)
+    }
+  }
+  if (health.status === 'warning') {
+    if (health.staleSince) {
+      parts.push(`Stale since ${formatTimestamp(health.staleSince)}`)
+    } else if (isFetchStale(health)) {
+      parts.push('Last fetch over 24 hours ago')
+    }
+  }
+  if (!parts.length) {
+    parts.push('Source health warning')
+  }
+  return parts.join(' • ')
+}
+
 const duplicateKeySet = computed(() => {
   const set = new Set<string>()
   for (const item of sources.value) {
@@ -190,7 +444,8 @@ async function loadSources() {
     }
 
     const data = payload ?? {}
-    sources.value = Array.isArray((data as any)?.items) ? (data as any).items : []
+    const items = Array.isArray((data as any)?.items) ? (data as any).items : []
+    sources.value = items.map((item: any) => mapSourceRecord(item))
     featureDisabled.value = false
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
@@ -205,6 +460,7 @@ function attachSse() {
   if (!clientId || disabled.value) return
   unsubscribeFromSse = subscribeToDiscoveryEvents(clientId, {
     onSourceCreated: handleSourceCreated,
+    onEvent: handleDiscoveryEvent,
     onFeatureDisabled: handleFeatureDisabled,
   })
 }
@@ -239,7 +495,7 @@ async function submit() {
 
   submitLoading.value = true
   const optimisticId = `tmp-${Date.now()}`
-  const pendingItem: SourceItem = {
+  const pendingItem = createPendingSourceItem({
     id: optimisticId,
     clientId,
     url: form.url,
@@ -247,11 +503,8 @@ async function submit() {
     sourceType: normalized.sourceType,
     identifier: normalized.identifier,
     notes: form.notes || null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    pending: true,
     pendingKey: dupKey,
-  }
+  })
   sources.value = [pendingItem, ...sources.value]
 
   try {
@@ -291,16 +544,14 @@ async function submit() {
     }
 
     const data = payload ?? {}
-    const record = (data as any)?.source as SourceItem | undefined
+    const record = (data as any)?.source
     if (record) {
+      const mapped = mapSourceRecord(record)
       const idx = sources.value.findIndex((s) => s.pending && s.pendingKey === dupKey)
       if (idx !== -1) {
-        sources.value.splice(idx, 1, {
-          ...record,
-          pending: false,
-        })
+        sources.value.splice(idx, 1, mapped)
       } else {
-        sources.value = [record, ...sources.value]
+        sources.value = [mapped, ...sources.value]
       }
     }
 
@@ -377,20 +628,69 @@ function handleSourceCreated(payload: DiscoverySourceCreatedEvent['payload']) {
   const dupKey = `${payload.sourceType}::${payload.identifier.toLowerCase()}`
   if (duplicateKeySet.value.has(dupKey)) return
 
-  sources.value = [
-    {
-      id: payload.id,
-      clientId: payload.clientId,
-      url: payload.url,
-      canonicalUrl: payload.canonicalUrl,
-      sourceType: payload.sourceType,
-      identifier: payload.identifier,
-      notes: null,
-      createdAt: payload.createdAt,
-      updatedAt: payload.createdAt,
-    },
-    ...sources.value,
-  ]
+  const mapped = mapSourceRecord({
+    id: payload.id,
+    clientId: payload.clientId,
+    url: payload.url,
+    canonicalUrl: payload.canonicalUrl,
+    sourceType: payload.sourceType,
+    identifier: payload.identifier,
+    notes: null,
+    createdAt: payload.createdAt,
+    updatedAt: payload.createdAt,
+    lastFetchStatus: 'idle',
+    lastFetchCompletedAt: null,
+    lastFailureReason: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    healthJson: createDefaultHealth(payload.createdAt),
+  })
+
+  sources.value = [mapped, ...sources.value]
+}
+
+function handleDiscoveryEvent(event: DiscoveryTelemetryEvent) {
+  if (event.eventType !== 'source.health') return
+  const payload = (event as SourceHealthTelemetryEvent).payload
+  if (payload.clientId !== props.clientId) return
+  applySourceHealthUpdate(payload)
+}
+
+function applySourceHealthUpdate(payload: SourceHealthEvent['payload']) {
+  const index = sources.value.findIndex((item) => item.id === payload.sourceId)
+  if (index === -1) return
+
+  const existing = sources.value[index]
+  const rawHealth = {
+    status: payload.status,
+    observedAt: payload.observedAt,
+    lastFetchedAt: payload.lastFetchedAt ?? null,
+    failureReason: payload.failureReason ?? null,
+    consecutiveFailures: payload.consecutiveFailures ?? existing.health.consecutiveFailures,
+    staleSince: (payload as { staleSince?: string | null }).staleSince ?? existing.health.staleSince ?? undefined,
+  }
+  const health = parseHealthState(rawHealth, payload.observedAt)
+
+  const nextLastSuccessAt = payload.status === 'healthy'
+    ? payload.lastFetchedAt ?? existing.lastSuccessAt
+    : existing.lastSuccessAt
+
+  const nextLastFailureReason = payload.status !== 'healthy'
+    ? coerceFailureReason(payload.failureReason) ?? existing.lastFailureReason
+    : null
+
+  const updated: SourceItem = {
+    ...existing,
+    updatedAt: payload.observedAt,
+    lastFetchCompletedAt: payload.lastFetchedAt ?? existing.lastFetchCompletedAt,
+    lastFailureReason: nextLastFailureReason,
+    lastSuccessAt: nextLastSuccessAt,
+    consecutiveFailureCount: health.consecutiveFailures,
+    health,
+    pending: false,
+  }
+
+  sources.value.splice(index, 1, updated)
 }
 
 function handleFeatureDisabled(payload: DiscoveryFeatureDisabledPayload) {
@@ -521,7 +821,6 @@ const hasSources = computed(() => sources.value.length > 0)
                 v-for="source in sources"
                 :key="source.id"
                 :title="source.url"
-                :subtitle="new Date(source.createdAt).toLocaleString()"
               >
                 <template #prepend>
                   <v-avatar size="32" :color="source.pending ? 'surface-variant' : 'surface'">
@@ -530,9 +829,33 @@ const hasSources = computed(() => sources.value.length > 0)
                 </template>
                 <template #append>
                   <div class="d-flex align-center gap-2">
-                    <v-chip size="small" variant="tonal">
-                      {{ source.sourceType }}
-                    </v-chip>
+                    <template v-if="!source.pending">
+                      <v-tooltip v-if="statusTooltip(source)" location="top">
+                        <template #activator="{ props: tooltipProps }">
+                          <v-chip
+                            v-bind="tooltipProps"
+                            size="small"
+                            :color="statusMeta(source).color"
+                            variant="tonal"
+                            class="text-uppercase font-weight-medium"
+                          >
+                            {{ statusMeta(source).label }}
+                          </v-chip>
+                        </template>
+                        <span>{{ statusTooltip(source) }}</span>
+                      </v-tooltip>
+                      <v-chip
+                        v-else
+                        size="small"
+                        :color="statusMeta(source).color"
+                        variant="tonal"
+                        class="text-uppercase font-weight-medium"
+                      >
+                        {{ statusMeta(source).label }}
+                      </v-chip>
+                    </template>
+                    <v-progress-circular v-else size="18" width="2" indeterminate />
+                    <v-chip size="small" variant="tonal">{{ source.sourceType }}</v-chip>
                     <v-btn
                       v-if="!source.pending"
                       icon="mdi-delete"
@@ -541,13 +864,18 @@ const hasSources = computed(() => sources.value.length > 0)
                       :disabled="disabled"
                       @click="onDelete(source)"
                     />
-                    <v-progress-circular v-else size="18" width="2" indeterminate />
                   </div>
                 </template>
                 <template #subtitle>
                   <div class="text-body-2">
                     <div class="text-medium-emphasis">{{ source.canonicalUrl }}</div>
                     <div v-if="source.notes" class="text-caption">{{ source.notes }}</div>
+                    <div class="text-caption text-medium-emphasis mt-1">
+                      Last fetch: {{ displayLastFetch(source) }}
+                    </div>
+                    <div class="text-caption text-disabled">
+                      Added: {{ formatTimestamp(source.createdAt) }}
+                    </div>
                   </div>
                 </template>
               </v-list-item>
@@ -640,7 +968,6 @@ const hasSources = computed(() => sources.value.length > 0)
           v-for="source in sources"
           :key="source.id"
           :title="source.url"
-          :subtitle="new Date(source.createdAt).toLocaleString()"
         >
           <template #prepend>
             <v-avatar size="32" :color="source.pending ? 'surface-variant' : 'surface'">
@@ -649,9 +976,33 @@ const hasSources = computed(() => sources.value.length > 0)
           </template>
           <template #append>
             <div class="d-flex align-center gap-2">
-              <v-chip size="small" variant="tonal">
-                {{ source.sourceType }}
-              </v-chip>
+              <template v-if="!source.pending">
+                <v-tooltip v-if="statusTooltip(source)" location="top">
+                  <template #activator="{ props: tooltipProps }">
+                    <v-chip
+                      v-bind="tooltipProps"
+                      size="small"
+                      :color="statusMeta(source).color"
+                      variant="tonal"
+                      class="text-uppercase font-weight-medium"
+                    >
+                      {{ statusMeta(source).label }}
+                    </v-chip>
+                  </template>
+                  <span>{{ statusTooltip(source) }}</span>
+                </v-tooltip>
+                <v-chip
+                  v-else
+                  size="small"
+                  :color="statusMeta(source).color"
+                  variant="tonal"
+                  class="text-uppercase font-weight-medium"
+                >
+                  {{ statusMeta(source).label }}
+                </v-chip>
+              </template>
+              <v-progress-circular v-else size="18" width="2" indeterminate />
+              <v-chip size="small" variant="tonal">{{ source.sourceType }}</v-chip>
               <v-btn
                 v-if="!source.pending"
                 icon="mdi-delete"
@@ -659,13 +1010,18 @@ const hasSources = computed(() => sources.value.length > 0)
                 variant="text"
                 @click="onDelete(source)"
               />
-              <v-progress-circular v-else size="18" width="2" indeterminate />
             </div>
           </template>
           <template #subtitle>
             <div class="text-body-2">
               <div class="text-medium-emphasis">{{ source.canonicalUrl }}</div>
               <div v-if="source.notes" class="text-caption">{{ source.notes }}</div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                Last fetch: {{ displayLastFetch(source) }}
+              </div>
+              <div class="text-caption text-disabled">
+                Added: {{ formatTimestamp(source.createdAt) }}
+              </div>
             </div>
           </template>
         </v-list-item>

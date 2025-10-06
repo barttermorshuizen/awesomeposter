@@ -92,6 +92,17 @@ describe('ClientDiscoverySourcesPanel', () => {
               notes: null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
+              lastFetchStatus: 'idle',
+              lastFetchCompletedAt: null,
+              lastFailureReason: null,
+              lastSuccessAt: null,
+              consecutiveFailureCount: 0,
+              healthJson: {
+                status: 'healthy',
+                observedAt: new Date().toISOString(),
+                lastFetchedAt: null,
+                consecutiveFailures: 0,
+              },
             },
           ],
         }), {
@@ -121,5 +132,76 @@ describe('ClientDiscoverySourcesPanel', () => {
     expect(vm.featureDisabled).toBe(true)
     expect(vm.featureDisabledMessage).toBe('Discovery temporarily disabled.')
     expect(vm.sources.length).toBe(0)
+  })
+
+  it('updates status badges when source.health events arrive', async () => {
+    const initialObserved = new Date('2025-04-02T08:00:00Z').toISOString()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.includes('/sources') && !init?.method) {
+        return new Response(JSON.stringify({
+          items: [
+            {
+              id: 'source-h1',
+              clientId: 'client-1',
+              url: 'https://example.com/feed.xml',
+              canonicalUrl: 'https://example.com/feed.xml',
+              sourceType: 'rss',
+              identifier: 'https://example.com/feed.xml',
+              notes: null,
+              createdAt: initialObserved,
+              updatedAt: initialObserved,
+              lastFetchStatus: 'success',
+              lastFetchCompletedAt: initialObserved,
+              lastFailureReason: null,
+              lastSuccessAt: initialObserved,
+              consecutiveFailureCount: 0,
+              healthJson: {
+                status: 'healthy',
+                observedAt: initialObserved,
+                lastFetchedAt: initialObserved,
+                consecutiveFailures: 0,
+              },
+            },
+          ],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+
+    const wrapper = await mountPanel(fetchMock)
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { sources: Array<{ health: { status: string }; canonicalUrl: string }> }
+    expect(vm.sources[0]?.health.status).toBe('healthy')
+    expect(wrapper.text()).toContain('Success')
+
+    const observedAt = new Date('2025-04-02T12:00:00Z').toISOString()
+    lastHandler.onEvent?.({
+      eventType: 'source.health',
+      schemaVersion: 1,
+      clientId: 'client-1',
+      entityId: 'source-h1',
+      timestamp: observedAt,
+      payload: {
+        clientId: 'client-1',
+        sourceId: 'source-h1',
+        sourceType: 'rss',
+        status: 'error',
+        lastFetchedAt: observedAt,
+        failureReason: 'http_5xx',
+        observedAt,
+        consecutiveFailures: 4,
+        staleSince: null,
+      },
+    })
+    await flushPromises()
+
+    expect(vm.sources[0]?.health.status).toBe('error')
+    expect(vm.sources[0]?.health.consecutiveFailures).toBe(4)
+    expect(wrapper.text()).toContain('Error')
   })
 })

@@ -1,5 +1,4 @@
 import {
-  and,
   eq,
   getDb,
   discoverySources,
@@ -10,7 +9,7 @@ import {
   type PersistDiscoveryItemInput,
   type PersistDiscoveryItemsResult,
 } from '@awesomeposter/db'
-import { desc, ne, or, lte, isNull } from 'drizzle-orm'
+import { and, desc, ne, or, lte, isNull } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
 import { z } from 'zod'
 import {
@@ -22,7 +21,9 @@ import {
   normalizeDiscoveryKeyword,
   type NormalizedDiscoveryAdapterItem,
   type DiscoverySourceMetadata,
+  type DiscoveryIngestionFailureReason,
 } from '@awesomeposter/shared'
+import type { SourceHealthStatus } from './discovery-health'
 import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
 
 export type DiscoverySourceRecord = InferModel<typeof discoverySources>
@@ -36,6 +37,90 @@ export type DiscoverySourceWithCadence = DiscoverySourceRecord & {
   lastFetchStartedAt: Date | null
   lastFetchCompletedAt: Date | null
   lastFailureReason: string | null
+  lastSuccessAt: Date | null
+  consecutiveFailureCount: number
+  healthJson: Record<string, unknown> | null
+}
+
+export type DiscoverySourceHealthUpdate = {
+  status: SourceHealthStatus
+  observedAt: Date
+  lastFetchedAt: Date | null
+  consecutiveFailures: number
+  lastSuccessAt: Date | null
+  failureReason?: DiscoveryIngestionFailureReason | null
+  staleSince?: Date | null
+}
+
+export type MarkedStaleDiscoverySource = {
+  clientId: string
+  sourceId: string
+  sourceType: DiscoverySourceType
+  health: DiscoverySourceHealthUpdate
+}
+
+type StreakType = 'success' | 'failure' | 'stale'
+
+function coerceNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return fallback
+}
+
+function readStreakCount(health: Record<string, unknown> | null | undefined, expectedType: StreakType): number {
+  if (!health || typeof health !== 'object') {
+    return 0
+  }
+  const rawStreak = (health as { streak?: { type?: unknown; count?: unknown } }).streak
+  if (!rawStreak || typeof rawStreak !== 'object') {
+    return 0
+  }
+  if ((rawStreak as { type?: unknown }).type !== expectedType) {
+    return 0
+  }
+  return coerceNumber((rawStreak as { count?: unknown }).count, 0)
+}
+
+function toIsoString(value: Date | null | undefined): string | null {
+  if (!value) {
+    return null
+  }
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+function buildHealthJson(
+  snapshot: DiscoverySourceHealthUpdate,
+  streak: { type: StreakType; count: number },
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    status: snapshot.status,
+    observedAt: snapshot.observedAt.toISOString(),
+    lastFetchedAt: toIsoString(snapshot.lastFetchedAt),
+    lastSuccessAt: toIsoString(snapshot.lastSuccessAt),
+    consecutiveFailures: snapshot.consecutiveFailures,
+    streak: {
+      type: streak.type,
+      count: streak.count,
+      updatedAt: snapshot.observedAt.toISOString(),
+    },
+  }
+
+  if (snapshot.failureReason) {
+    payload.failureReason = snapshot.failureReason
+  }
+
+  if (snapshot.staleSince) {
+    payload.staleSince = snapshot.staleSince.toISOString()
+  }
+
+  return payload
 }
 
 export class InvalidDiscoverySourceError extends Error {
@@ -187,12 +272,51 @@ export type CompleteDiscoverySourceFetchInput = {
   metrics?: Record<string, unknown>
 }
 
-export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourceFetchInput) {
+export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourceFetchInput): Promise<DiscoverySourceHealthUpdate> {
   const db = getDb()
   const durationMs = Math.max(0, input.completedAt.getTime() - input.startedAt.getTime())
   const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes)
 
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({
+        consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+        lastSuccessAt: discoverySources.lastSuccessAt,
+        healthJson: discoverySources.healthJson,
+      })
+      .from(discoverySources)
+      .where(eq(discoverySources.id, input.sourceId))
+      .limit(1)
+
+    const previousFailures = current?.consecutiveFailureCount ?? 0
+    const previousSuccessAt = current?.lastSuccessAt ?? null
+    const previousHealthJson = current?.healthJson ?? null
+
+    const nextFailures = input.success ? 0 : previousFailures + 1
+    const lastSuccessAt = input.success ? input.completedAt : previousSuccessAt
+    const status: SourceHealthStatus = input.success
+      ? 'healthy'
+      : nextFailures >= 3
+        ? 'error'
+        : 'warning'
+    const failureReason = input.success ? null : input.failureReason ?? null
+    const observedAt = input.completedAt
+    const streakType: StreakType = input.success ? 'success' : 'failure'
+    const streakCount = input.success
+      ? readStreakCount(previousHealthJson, 'success') + 1
+      : nextFailures
+
+    const snapshot: DiscoverySourceHealthUpdate = {
+      status,
+      observedAt,
+      lastFetchedAt: input.completedAt,
+      consecutiveFailures: nextFailures,
+      lastSuccessAt,
+      failureReason: failureReason ?? undefined,
+    }
+
+    const healthJson = buildHealthJson(snapshot, { type: streakType, count: streakCount })
+
     await tx.insert(discoveryIngestRuns).values({
       id: crypto.randomUUID(),
       runId: input.runId,
@@ -202,7 +326,7 @@ export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourc
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       durationMs,
-      failureReason: input.failureReason ?? null,
+      failureReason: failureReason,
       retryInMinutes: input.retryInMinutes ?? null,
       metricsJson: input.metrics ?? {},
       telemetryJson: input.telemetry ?? {},
@@ -214,11 +338,16 @@ export async function completeDiscoverySourceFetch(input: CompleteDiscoverySourc
       .set({
         lastFetchStatus: input.success ? 'success' : 'failure',
         lastFetchCompletedAt: input.completedAt,
-        lastFailureReason: input.failureReason ?? null,
+        lastFailureReason: failureReason,
         nextFetchAt,
-        updatedAt: new Date(),
+        updatedAt: observedAt,
+        lastSuccessAt,
+        consecutiveFailureCount: nextFailures,
+        healthJson,
       })
       .where(eq(discoverySources.id, input.sourceId))
+
+    return snapshot
   })
 }
 
@@ -322,20 +451,140 @@ export type ReleaseDiscoverySourceAfterFailedCompletionInput = {
 
 export async function releaseDiscoverySourceAfterFailedCompletion(
   input: ReleaseDiscoverySourceAfterFailedCompletionInput,
-) {
+): Promise<DiscoverySourceHealthUpdate> {
   const db = getDb()
   const nextFetchAt = computeNextFetchAt(input.completedAt, input.fetchIntervalMinutes, input.retryInMinutes)
+
+  const [current] = await db
+    .select({
+      consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+      lastSuccessAt: discoverySources.lastSuccessAt,
+      healthJson: discoverySources.healthJson,
+    })
+    .from(discoverySources)
+    .where(eq(discoverySources.id, input.sourceId))
+    .limit(1)
+
+  const previousFailures = current?.consecutiveFailureCount ?? 0
+  const previousSuccessAt = current?.lastSuccessAt ?? null
+  const previousHealthJson = current?.healthJson ?? null
+
+  const nextFailures = input.success ? 0 : previousFailures + 1
+  const lastSuccessAt = input.success ? input.completedAt : previousSuccessAt
+  const status: SourceHealthStatus = input.success
+    ? 'healthy'
+    : nextFailures >= 3
+      ? 'error'
+      : 'warning'
+  const failureReason = input.success ? null : input.failureReason ?? null
+  const observedAt = input.completedAt
+  const streakType: StreakType = input.success ? 'success' : 'failure'
+  const streakCount = input.success
+    ? readStreakCount(previousHealthJson, 'success') + 1
+    : nextFailures
+
+  const snapshot: DiscoverySourceHealthUpdate = {
+    status,
+    observedAt,
+    lastFetchedAt: input.completedAt,
+    consecutiveFailures: nextFailures,
+    lastSuccessAt,
+    failureReason: failureReason ?? undefined,
+  }
+
+  const healthJson = buildHealthJson(snapshot, { type: streakType, count: streakCount })
 
   await db
     .update(discoverySources)
     .set({
       lastFetchStatus: input.success ? 'success' : 'failure',
       lastFetchCompletedAt: input.completedAt,
-      lastFailureReason: input.failureReason ?? null,
+      lastFailureReason: failureReason,
       nextFetchAt,
-      updatedAt: new Date(),
+      updatedAt: observedAt,
+      lastSuccessAt,
+      consecutiveFailureCount: nextFailures,
+      healthJson,
     })
     .where(eq(discoverySources.id, input.sourceId))
+
+  return snapshot
+}
+
+export async function markStaleDiscoverySources(
+  cutoff: Date,
+  now = new Date(),
+): Promise<MarkedStaleDiscoverySource[]> {
+  const db = getDb()
+  const rows = await db
+    .select({
+      id: discoverySources.id,
+      clientId: discoverySources.clientId,
+      sourceType: discoverySources.sourceType,
+      lastFetchCompletedAt: discoverySources.lastFetchCompletedAt,
+      lastSuccessAt: discoverySources.lastSuccessAt,
+      lastFailureReason: discoverySources.lastFailureReason,
+      consecutiveFailureCount: discoverySources.consecutiveFailureCount,
+      healthJson: discoverySources.healthJson,
+      createdAt: discoverySources.createdAt,
+    })
+    .from(discoverySources)
+    .where(and(
+      ne(discoverySources.lastFetchStatus, 'running'),
+      or(
+        and(isNull(discoverySources.lastFetchCompletedAt), lte(discoverySources.createdAt, cutoff)),
+        lte(discoverySources.lastFetchCompletedAt, cutoff),
+      ),
+    ))
+
+  if (!rows.length) {
+    return []
+  }
+
+  const updates: MarkedStaleDiscoverySource[] = []
+
+  await db.transaction(async (tx) => {
+    for (const row of rows) {
+      const previousFailures = row.consecutiveFailureCount ?? 0
+      const consecutiveFailures = previousFailures > 0 ? previousFailures : 1
+      const status: SourceHealthStatus = consecutiveFailures >= 3 ? 'error' : 'warning'
+      const lastFetchedAt = row.lastFetchCompletedAt ?? null
+      const lastSuccessAt = row.lastSuccessAt ?? null
+      const staleSince = lastFetchedAt ?? lastSuccessAt ?? row.createdAt ?? cutoff
+      const failureReason = row.lastFailureReason ?? undefined
+      const streakCount = readStreakCount(row.healthJson, 'stale') + 1
+
+      const snapshot: DiscoverySourceHealthUpdate = {
+        status,
+        observedAt: now,
+        lastFetchedAt,
+        consecutiveFailures,
+        lastSuccessAt,
+        failureReason,
+        staleSince,
+      }
+
+      const healthJson = buildHealthJson(snapshot, { type: 'stale', count: streakCount })
+
+      await tx
+        .update(discoverySources)
+        .set({
+          consecutiveFailureCount: consecutiveFailures,
+          updatedAt: now,
+          healthJson,
+        })
+        .where(eq(discoverySources.id, row.id))
+
+      updates.push({
+        clientId: row.clientId,
+        sourceId: row.id,
+        sourceType: row.sourceType,
+        health: snapshot,
+      })
+    }
+  })
+
+  return updates
 }
 
 export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
@@ -376,6 +625,13 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
 
   const now = new Date()
   const id = crypto.randomUUID()
+  const initialHealth: DiscoverySourceHealthUpdate = {
+    status: 'healthy',
+    observedAt: now,
+    lastFetchedAt: null,
+    consecutiveFailures: 0,
+    lastSuccessAt: null,
+  }
   const payload: DiscoverySourceRecord = {
     id,
     clientId: parsed.data.clientId,
@@ -391,6 +647,9 @@ export async function createDiscoverySource(input: CreateDiscoverySourceInput) {
     lastFetchStartedAt: null,
     lastFetchCompletedAt: null,
     lastFailureReason: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    healthJson: buildHealthJson(initialHealth, { type: 'success', count: 0 }),
     createdAt: now,
     updatedAt: now,
   }

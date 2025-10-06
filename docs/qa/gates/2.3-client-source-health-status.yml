@@ -1,0 +1,35 @@
+schema: 1
+story: '2.3'
+story_title: 'Story 2.3: Source Health Status'
+gate: PASS
+status_reason: 'Health persistence, SSE propagation, and stale sweep behaviour verified via review and targeted tests.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-06T05:42:00Z'
+top_issues: []
+waiver: { active: false }
+evidence:
+  tests_reviewed: 4
+  notes:
+    - 'vitest server/jobs/__tests__/discovery-ingest-sources.spec.ts'
+    - 'vitest server/jobs/__tests__/mark-stale-sources.spec.ts'
+    - 'vitest tests/api/discovery/events-stream.spec.ts'
+    - 'vitest src/__tests__/ClientDiscoverySourcesPanel.spec.ts'
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'SSE stream continues to require auth + feature flag gating; no new exposure points.'
+  reliability:
+    status: PASS
+    notes: 'Health updates emit on success/failure and stale sweep, keeping UI telemetry accurate.'
+  performance:
+    status: PASS
+    notes: 'Hourly sweep and bounded ingest retries keep workload predictable; no hotspots observed.'
+  maintainability:
+    status: PASS
+    notes: 'Health logic centralized in repository + utility with schema docs and tests for regression guardrails.'
+quality_score: 100
+recommendations:
+  immediate: []
+  future:
+    - action: 'Monitor production health dashboards post-deploy to confirm stale events arrive as expected.'
+      refs: []

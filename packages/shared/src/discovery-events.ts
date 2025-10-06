@@ -110,6 +110,7 @@ const sourceHealthPayloadSchema = z.object({
   observedAt: z.string(),
   consecutiveFailures: z.number().int().min(0).optional(),
   attempt: z.number().int().min(1).optional(),
+  staleSince: z.string().nullable().optional(),
 })
 
 export const sourceHealthEventSchema = z.object({

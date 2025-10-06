@@ -72,6 +72,7 @@
 
 ## Sprint 3 Outlook
 - Focus on resilience/observability to prep GA: restart/recovery controls (1.4), brief-action HITL refinements (1.5), telemetry throttling (6.4), dashboard audit log (5.4), ingestion retry health (3.3), scoring traction signal (4.4).
+- Schedule the configuration discovery tranche (Stories 3.4–3.6) here; Sprint 2 bandwidth is fully consumed by ingestion, scoring, telemetry, and dashboard commitments, and Story 3.4 depends on Sprint 2 normalization outputs.
 - Sequence resilience first (1.4/1.5) before telemetry throttling and audit log, then close with traction signal experiments and ingestion retry improvements.
 - Dependencies: Sprint 2 scoring outputs feed 4.4; telemetry retention learnings set throttling limits; dashboard bulk/promote stability required before audit log.
 - Risks: throttling may impact pilot traffic—plan shadow mode rollout; retry health requires monitoring coverage—ensure observability tasks scoped; coordinate GA gate reviews with QA/PO for release readiness.

@@ -36,6 +36,7 @@ import {
   completeDiscoverySourceFetch,
   releaseDiscoverySourceAfterFailedCompletion,
   saveDiscoveryItems,
+  type DiscoverySourceHealthUpdate,
 } from '../../utils/discovery-repository'
 import { executeIngestionAdapter } from '@awesomeposter/shared'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
@@ -68,14 +69,23 @@ describe('runDiscoveryIngestionJob', () => {
     ...overrides,
   })
 
+  const createHealth = (overrides: Partial<DiscoverySourceHealthUpdate> = {}): DiscoverySourceHealthUpdate => ({
+    status: 'healthy',
+    observedAt: new Date(now),
+    lastFetchedAt: new Date(now),
+    consecutiveFailures: 0,
+    lastSuccessAt: new Date(now),
+    ...overrides,
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
     vi.resetAllMocks()
     vi.mocked(listDiscoverySourcesDue).mockResolvedValue([])
     vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(null)
-    vi.mocked(completeDiscoverySourceFetch).mockResolvedValue(undefined)
-    vi.mocked(releaseDiscoverySourceAfterFailedCompletion).mockResolvedValue(undefined)
+    vi.mocked(completeDiscoverySourceFetch).mockResolvedValue(createHealth())
+    vi.mocked(releaseDiscoverySourceAfterFailedCompletion).mockResolvedValue(createHealth({ status: 'warning' }))
     vi.mocked(executeIngestionAdapter).mockResolvedValue({
       ok: true,
       items: [],
@@ -112,6 +122,12 @@ describe('runDiscoveryIngestionJob', () => {
     })
     const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
     expect(metrics).toMatchObject({ normalizedCount: 0, insertedCount: 0, duplicateCount: 0 })
+    expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: source.clientId,
+      sourceId: source.id,
+      status: 'healthy',
+      consecutiveFailures: 0,
+    }))
   })
 
   it('queues sources beyond worker limit and processes sequentially', async () => {
@@ -183,6 +199,12 @@ describe('runDiscoveryIngestionJob', () => {
 
     vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
     vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(completeDiscoverySourceFetch).mockResolvedValue(createHealth({
+      status: 'error',
+      consecutiveFailures: 3,
+      failureReason: 'network_error',
+      lastSuccessAt: null,
+    }))
     vi.mocked(executeIngestionAdapter).mockResolvedValue({
       ok: false,
       failureReason: 'network_error',
@@ -232,6 +254,13 @@ describe('runDiscoveryIngestionJob', () => {
       maxAttempts: expect.any(Number),
       retryInMinutes: 4,
     })
+    expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: source.clientId,
+      sourceId: source.id,
+      status: 'error',
+      failureReason: 'network_error',
+      consecutiveFailures: 3,
+    }))
   })
 
   it('persists normalized items and emits ingest.error when duplicates detected', async () => {
@@ -291,6 +320,12 @@ describe('runDiscoveryIngestionJob', () => {
 
     vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
     vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(completeDiscoverySourceFetch).mockResolvedValue(createHealth({
+      status: 'error',
+      consecutiveFailures: 3,
+      failureReason: 'http_4xx',
+      lastSuccessAt: null,
+    }))
     vi.mocked(executeIngestionAdapter).mockResolvedValue({
       ok: false,
       failureReason: 'http_4xx',
@@ -311,6 +346,7 @@ describe('runDiscoveryIngestionJob', () => {
       status: 'error',
       failureReason: 'http_4xx',
       attempt: 1,
+      consecutiveFailures: 3,
     }))
   })
 
@@ -366,6 +402,12 @@ describe('runDiscoveryIngestionJob', () => {
     vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
     const adapterError = new Error('boom')
     vi.mocked(executeIngestionAdapter).mockRejectedValue(adapterError)
+    vi.mocked(completeDiscoverySourceFetch).mockResolvedValue(createHealth({
+      status: 'warning',
+      consecutiveFailures: 1,
+      failureReason: 'unknown_error',
+      lastSuccessAt: null,
+    }))
 
     const result = await runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
 
@@ -375,6 +417,11 @@ describe('runDiscoveryIngestionJob', () => {
       failureReason: 'unknown_error',
     }))
     expect(emitDiscoveryEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ingestion.completed' }))
+    expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'warning',
+      failureReason: 'unknown_error',
+      consecutiveFailures: 1,
+    }))
   })
 
   it('releases source when completion persistence fails', async () => {
@@ -390,6 +437,12 @@ describe('runDiscoveryIngestionJob', () => {
       error: new Error('network'),
     })
     vi.mocked(completeDiscoverySourceFetch).mockRejectedValue(new Error('db offline'))
+    vi.mocked(releaseDiscoverySourceAfterFailedCompletion).mockResolvedValue(createHealth({
+      status: 'warning',
+      consecutiveFailures: 1,
+      failureReason: 'network_error',
+      lastSuccessAt: null,
+    }))
 
     const jobPromise = runDiscoveryIngestionJob({ now: () => new Date(now), workerLimit: 1 })
 
@@ -407,5 +460,10 @@ describe('runDiscoveryIngestionJob', () => {
       success: false,
     }))
     expect(releaseDiscoverySourceAfterFailedCompletion).toHaveBeenCalledTimes(1)
+    expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'warning',
+      failureReason: 'network_error',
+      consecutiveFailures: 1,
+    }))
   })
 })

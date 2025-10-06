@@ -204,6 +204,9 @@ export const discoverySources = pgTable('discovery_sources', {
   lastFetchCompletedAt: timestamp('last_fetch_completed_at', { withTimezone: true }),
   lastFetchStatus: text('last_fetch_status').$type<'idle' | 'running' | 'success' | 'failure'>().default('idle'),
   lastFailureReason: text('last_failure_reason'),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  consecutiveFailureCount: integer('consecutive_failure_count').notNull().default(0),
+  healthJson: jsonb('health_json').$type<Record<string, unknown>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
 }, (table) => ({

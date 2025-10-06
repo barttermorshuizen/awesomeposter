@@ -16,6 +16,7 @@ export type PublishSourceHealthStatusInput = {
   observedAt?: Date | string
   consecutiveFailures?: number
   attempt?: number
+  staleSince?: Date | string | null
 }
 
 function normalizeTimestamp(value: Date | string | null | undefined): string | null {
@@ -28,6 +29,7 @@ function normalizeTimestamp(value: Date | string | null | undefined): string | n
 export function publishSourceHealthStatus(input: PublishSourceHealthStatusInput) {
   const observedAtIso = normalizeTimestamp(input.observedAt) ?? new Date().toISOString()
   const lastFetchedAtIso = normalizeTimestamp(input.lastFetchedAt)
+  const staleSinceIso = normalizeTimestamp(input.staleSince)
 
   emitDiscoveryEvent({
     type: 'source.health',
@@ -44,7 +46,7 @@ export function publishSourceHealthStatus(input: PublishSourceHealthStatusInput)
         ? { consecutiveFailures: input.consecutiveFailures }
         : {}),
       ...(typeof input.attempt === 'number' ? { attempt: input.attempt } : {}),
+      ...(staleSinceIso ? { staleSince: staleSinceIso } : {}),
     },
   })
 }
-
