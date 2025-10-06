@@ -1,13 +1,16 @@
-# Discovery Agent Backend Architecture
+# Discovery Backend Architecture
 
 ## Context & Reuse
-The discovery agent rides on the same Nitro + Agents Server stack that already powers AwesomePoster. We stay inside the monorepo, keeping a single Postgres database (`packages/db`), the Nitropack API (`server/`), and the OpenAI Agents orchestrator (`packages/agents-server`). Existing utilities—Drizzle migrations, shared type contracts, SSE envelopes, feature flag helpers, and logging—are reused wholesale. New work is limited to additive tables, endpoints, and orchestrator capabilities required by the six discovery epics.
+Discovery rides on the same Nitro + server runtime that already powers AwesomePoster. We stay inside the monorepo, keeping a single Postgres database (`packages/db`), the Nitropack API (`server/`), and the processing utilities under `packages/shared`. Existing utilities—Drizzle migrations, shared type contracts, SSE envelopes, feature flag helpers, and logging—are reused wholesale. New work is limited to additive tables, endpoints, and synchronous processing helpers required by the six discovery epics.
+
+> **Terminology note**: earlier drafts referred to a “discovery agent”, but the scoring and dedup logic now run as deterministic functions invoked during ingestion. There is no separate agent runtime or queue; everything executes inline with the ingestion lifecycle alongside normalization.
 
 ## Change Log
 | Date | Version | Description | Author |
 | --- | --- | --- | --- |
+| 2025-10-06 | v0.3 | Reframed discovery scoring/dedup as synchronous ingestion helpers; removed standalone agent loop. | Winston (Architect) |
 | 2025-10-07 | v0.2 | Added configurable web list ingestion plan and configuration discovery API support. | Winston (Architect) |
-| 2025-03-30 | v0.1 | Initial backend architecture plan for discovery agent MVP. | Winston (Architect) |
+| 2025-03-30 | v0.1 | Initial backend architecture plan for discovery MVP. | Winston (Architect) |
 
 ## High-Level Architecture
 ```
@@ -27,21 +30,22 @@ Client Operators ─────────▶│ • /api/discovery/events.str
                            │ • discovery_scores, discovery_duplicates   │
                            │ • discovery_metrics (aggregates)           │
                            └──────────────▲─────────────────────────────┘
-                                          │ change feed / polling
+                                          │ ingest persistence & reads
                                           │
-      Scheduled Jobs (Nitro)              │           Orchestrator Workers
+      Scheduled Jobs (Nitro)              │           Processing Utilities
 ┌──────────────────────────────┐          │          ┌──────────────────────────────┐
-│ /jobs/discovery/ingest       │──────────┘          │ packages/agents-server        │
-│ • fetch + normalize sources  │                     │ • DiscoveryScoringAgent       │
-│ • enqueue scoring candidates │                     │ • DuplicateResolver capability│
-└──────────────────────────────┘                     │ • Emits AgentEvent telemetry  │
+│ /jobs/discovery/ingest       │──────────┘          │ packages/shared + server/utils │
+│ • fetch + normalize sources  │                     │ • normalizeDiscoveryItem       │
+│ • score + deduplicate items  │                     │ • scoreDiscoveryItem           │
+│ • emit SSE + persist metrics │                     │ • calculateDedupHash           │
+└──────────────────────────────┘                     │ • emitDiscoveryEvent           │
                                                      └──────────────▲──────────────┘
                                                                     │
-                                                Shared Contracts    │ SSE (AgentEvent)
+                                                Shared Contracts    │ SSE (Discovery event)
                          ┌──────────────────────────────────────────┴──────────────────┐
                          │ packages/shared                           │
                          │ • discovery schemas, feature flags        │
-                         │ • SSE envelopes (AgentEvent / Discovery)  │
+                         │ • SSE envelopes (discovery stream)        │
                          └────────────────────────────────────────────┘
 ```
 
@@ -54,15 +58,14 @@ Client Operators ─────────▶│ • /api/discovery/events.str
 - **Feature flags**: reuse `requireDiscoveryEnabled(event)` middleware that mirrors the `requireHitlEnabled` helper—flag values come from `packages/shared/src/config.ts` and environment variables populated at bootstrap.
 
 ### Scheduled Jobs (`server/jobs/discovery/*`)
-- **`ingest-sources.ts`** is a Nitropack job triggered via our existing `npm run dev:api` scheduler hook (use `nitro-cron` in production). It batches per-client source lists, fetches feeds with `node-fetch`, and normalizes to our in-house schema using adapters in `packages/shared/src/discovery/ingestion.ts`. When a source carries a `webList` block the job hydrates it alongside other config, iterates list containers/items, and maps configured fields before handing normalized payloads to the scoring queue.
+- **`ingest-sources.ts`** is a Nitropack job triggered via our existing `npm run dev:api` scheduler hook (use `nitro-cron` in production). It batches per-client source lists, fetches feeds with `node-fetch`, normalizes to our in-house schema using adapters in `packages/shared/src/discovery/ingestion.ts`, then calls the synchronous scoring + dedup helpers before persisting. When a source carries a `webList` block the job hydrates it alongside other config, iterates list containers/items, maps configured fields, runs dedup/scoring in-process, and commits the transaction.
 - **`hydrate-health.ts`** (follow-up job) pings configured sources asynchronously and writes freshness/latency metrics into `discovery_sources.health_json`, enabling the UI health badges without a new service.
-- Jobs enqueue “needs scoring” items by inserting into `discovery_items` with status `pending_scoring`; the agents server polls this table via the shared repository.
 
-### Agents Server (`packages/agents-server`)
-- **New capability: `DiscoveryScoringAgent`** lives under `src/agents/discovery-scoring.ts`. It reuses the existing OpenAI Agent runtime: register a tool that consumes normalized item payloads and emits score, rationale, topic tags, and dedupe signature. The orchestrator runs it as an asynchronous worker loop started alongside the existing app runner.
-- **Duplicate detection** is handled in a deterministic TypeScript utility `calculateDedupHash` under `packages/shared`, but conflict resolution (merge vs. suppress) is orchestrated by an agent capability `DiscoveryDedupTool`. When the hash already exists, the agent records the relationship in `discovery_duplicates` and sets the item status to `suppressed`.
-- **SSE telemetry**: rather than invent a new channel, the scoring loop emits `AgentEvent` frames through the existing `signalAgentEvent` helper. Nitro subscribers translate relevant frames into discovery SSE payloads for dashboard widgets.
-- **Persistence adapters**: add `DiscoveryRepository` under `packages/agents-server/src/services/discovery-repository.ts`, built with Drizzle and the same connection factory as HITL (`createDbClient`). No new ORM tooling required.
+### Processing Modules
+- **Synchronous scoring helpers** live beside normalization (`packages/shared/src/discovery`). `scoreDiscoveryItem` accepts normalized payloads and returns score, rationale, topic tags, and a dedupe signature. The ingestion job calls this function inline—no orchestrator loop is required.
+- **Deterministic dedup** uses a shared utility (`calculateDiscoveryFingerprint`) invoked during ingestion before the database write. When a fingerprint collision occurs we upsert `discovery_duplicates` and set the item status to `suppressed` within the same transaction.
+- **Lifecycle orchestration** happens in `server/utils/discovery-repository.ts`, which wraps persistence in a unit of work that writes `discovery_items`, `discovery_scores`, and metrics together before committing so scoring and dedup stay coupled to ingestion success.
+- **Telemetry emission** continues to flow through `emitDiscoveryEvent`, but frames are produced directly from ingestion once the transaction commits, eliminating the previous agent event relay.
 
 ## Data Model Additions
 All tables are additive to `packages/db/src/schema.ts` and maintain foreign-key alignment with existing entities.
@@ -72,8 +75,8 @@ All tables are additive to `packages/db/src/schema.ts` and maintain foreign-key 
 | `discovery_sources` | Canonical client inputs (URL, type, config) | `client_id`, `source_type`, `config_json`, `health_json`, `last_success_at` | Reuses `clients.id` FK. Stores feed metadata + validation result. |
 | `discovery_keywords` | Keyword/tag lists per client | `client_id`, `keyword`, `is_active`, `added_by` | Unique constraint `(client_id, keyword_ci)` prevents duplicates. |
 | `discovery_ingest_runs` | Log of ingestion sweeps | `id`, `client_id`, `started_at`, `finished_at`, `status`, `metrics_json` | Enables telemetry counters + retry gating. |
-| `discovery_items` | Normalized nuggets ready for scoring | `id`, `client_id`, `source_id`, `raw_payload_json`, `normalized_json`, `status`, `ingested_at` | `status` enum: `pending_scoring`, `scored`, `suppressed`, `promoted`, `archived`. |
-| `discovery_scores` | Agent output per item | `item_id`, `score`, `confidence`, `rationale_json`, `knobs_hint_json`, `scored_at` | Connected 1:1 with `discovery_items`. |
+| `discovery_items` | Normalized nuggets ready for review | `id`, `client_id`, `source_id`, `raw_payload_json`, `normalized_json`, `status`, `ingested_at` | `status` enum: `scored`, `suppressed`, `promoted`, `archived`. Default `scored`; ingestion sets `suppressed` during the same transaction when dedup hits. |
+| `discovery_scores` | Scoring output per item | `item_id`, `score`, `confidence`, `rationale_json`, `knobs_hint_json`, `scored_at` | Connected 1:1 with `discovery_items`; written in the same transaction as the parent item. |
 | `discovery_duplicates` | Cluster relationships | `item_id`, `duplicate_of_item_id`, `reason`, `confidence` | Maintains dedup chains without deleting source data. |
 | `discovery_metrics` | Daily aggregates for telemetry cards | `client_id`, `metric_date`, `spotted_count`, `promoted_count`, `avg_score`, `duplicate_count` | Simple materialized view table refreshed nightly by Nitro job. |
 
@@ -93,27 +96,27 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 
 ## Jobs, Scheduling, and Throughput
 - **Triggering**: rely on Nitro’s built-in `crons` configuration (supported in `nitro.config.ts`) to run `discovery-ingest` every 30 minutes per enabled client. For local dev we reuse `npm run dev:api` watchers.
-- **Backpressure**: ingestion job checks the count of `pending_scoring` items per client; if above a configurable threshold (default 500), it pauses pulling new content and raises a telemetry warning event so operators can react.
+- **Backpressure**: ingestion inspects the volume of unreviewed `scored` items per client (default ceiling 500). When the threshold is exceeded it pauses new fetches, logs a structured warning, and emits a discovery backlog SSE frame so operators can react before reviewers are overwhelmed.
 - **Retries**: store fetch errors in `discovery_ingest_runs.metrics_json`. A follow-up job `retry-failed-items.ts` requeues entries flagged as transient failures.
-- **Scoring Loop**: the agents server polls `discovery_items` every few seconds using an indexed `status = 'pending_scoring'` query. It leverages the existing `withConcurrencyLimit` utility to keep parallel scoring runs under the same knob (defaults to 4) to manage token usage.
-- **Telemetry**: ingestion metrics track list awareness (`webListApplied`, `listItemCount`, `paginationDepth`) and flow into both `discovery_ingest_runs.metrics_json` and AgentEvent SSE frames so operators can troubleshoot selector efficacy without SQL access.
+- **Inline scoring**: scoring and dedup run in the same worker pool as normalization. We reuse `withConcurrencyLimit` inside the ingestion job (defaults to 4 parallel item processors) to bound CPU/token usage without a secondary loop.
+- **Telemetry**: ingestion metrics track list awareness (`webListApplied`, `listItemCount`, `paginationDepth`) and flow into both `discovery_ingest_runs.metrics_json` and discovery SSE frames so operators can troubleshoot selector efficacy without SQL access.
 
 
 ### Ingestion Pipeline
 - **Adapter matrix**: `server/jobs/discovery/ingest-sources.ts` calls adapter helpers defined under `packages/shared/src/discovery/ingestion.ts` and typed by `NormalizedDiscoveryItem` in `packages/shared/src/discovery.ts`.
-  - HTTP/JSON sources map to `adapters/http.ts`, which performs `GET` requests with shared headers, throttles by tenant, and validates body schemas before handing normalized payloads back to the orchestrator.
-  - RSS/Atom feeds use `adapters/rss.ts` (driven by `feedparser-promised`) to unwrap entries, canonicalize permalinks, and collapse duplicates by GUID + published timestamp.
-  - YouTube playlists and channels leverage `adapters/youtube.ts`, preferring the official Data API when credentials exist and falling back to the RSS facade; both normalize into the same shape while capturing `videoId`, `channelId`, and duration metadata.
-- **Normalization contract**: every adapter returns `{ rawPayload, normalized, sourceMetadata }`; the job records the raw payload in `discovery_items.raw_payload_json`, stores the normalized summary in `normalized_json`, and logs adapter metrics/errors into `discovery_ingest_runs.metrics_json` for observability. Rejections bubble an `ingest.error` event before the item is skipped.
+  - HTTP/JSON sources map to `adapters/http.ts`, which performs `GET` requests with shared headers, throttles by tenant, and validates body schemas before handing normalized payloads into the synchronous processing pipeline.
+  - RSS/Atom feeds use `adapters/rss.ts` (driven by `feedparser-promised`) to unwrap entries, canonicalize permalinks, and collapse duplicates by GUID + published timestamp before they hit scoring/dedup.
+  - YouTube playlists and channels leverage `adapters/youtube.ts`, preferring the official Data API when credentials exist and falling back to the RSS facade; both normalize into the same shape while capturing `videoId`, `channelId`, and duration metadata for the downstream scoring helpers.
+- **Normalization contract**: every adapter returns `{ rawPayload, normalized, sourceMetadata }`; the job records the raw payload in `discovery_items.raw_payload_json`, stores the normalized summary in `normalized_json`, runs scoring + dedup on the normalized payload, and logs adapter metrics/errors into `discovery_ingest_runs.metrics_json` for observability. Rejections bubble an `ingest.error` event before the item is skipped.
 - **List extraction mode**: when `webList` is configured the adapter uses the provided container/item selectors, applies configured field mappings with graceful fallbacks to legacy heuristics, and emits one normalized payload per discovered article. Pagination follows the configured `next_page` selector up to a safety ceiling (default 5 pages) while deduplicating URLs to avoid loops.
-- **Worker pool configuration**: ingestion runs per-client batches with `MAX_CONCURRENT_FETCHES` (default 3) enforced inside the job via `p-limit`. Cron cadence (30 minutes) is adjustable per client flag, and a circuit breaker pauses HTTP fetches when `pending_scoring` exceeds the configured backlog threshold. The scoring side retains `withConcurrencyLimit(4)`; these two knobs are tuned together so the queue drains within one cycle without starving other Nitro jobs.
+- **Worker pool configuration**: ingestion runs per-client batches with `MAX_CONCURRENT_FETCHES` (default 3) enforced inside the job via `p-limit`. Cron cadence (30 minutes) is adjustable per client flag, and the backlog guard now keyes off unreviewed `scored` items instead of a separate queue to keep throughput predictable.
 
 
 ## Observability & Logging
 - Nitro endpoints log via `useNitroLogger` wrapper already in place; add structured fields (`clientId`, `sourceId`, `itemId`).
-- Agents server uses `getLogger().info` / `.error` with event names (`discovery.ingest.start`, `discovery.score.complete`). Since we reuse the Winston logger, logs pick up correlation IDs automatically when the scoring loop is triggered from API requests.
-- Metrics: reuse the StatsD hooks defined for HITL once available. MVP focuses on Postgres aggregate tables and SSE updates; we avoid new telemetry infrastructure. New counters capture list extraction throughput (items per page, pagination depth) and suggestion API usage (success vs. low-confidence responses) for trend tracking.
-- Alerting: add a simple `pending_queue_threshold` check that emits a `warning` AgentEvent and surfaces in the UI when backlog size crosses configured limits.
+- Ingestion workers share the Winston logger and emit lifecycle markers (`discovery.ingest.start`, `discovery.ingest.scored`, `discovery.ingest.suppressed`) as they process each batch. Because scoring happens inline the correlation ID flows naturally from the job context.
+- Metrics: reuse the StatsD hooks defined for HITL once available. MVP focuses on Postgres aggregate tables and SSE updates; we avoid new telemetry infrastructure. New counters capture list extraction throughput (items per page, pagination depth), suggestion API usage (success vs. low-confidence responses), and synchronous scoring latency.
+- Alerting: add a `backlog_threshold` guard that emits a `warning` discovery SSE frame when unreviewed scored items exceed limits so operators can react without polling the database.
 
 ## Configuration Discovery API
 - **Route handler**: `server/api/discovery/config-suggestions.post.ts` wires auth middleware, request validation, the configuration discovery service, and response shaping. Errors surface via the standard `{ error: { code, message, details } }` contract already used in admin endpoints.
@@ -130,7 +133,7 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 ## Testing Strategy
 - **Unit**: new repositories and adapters get Vitest coverage under `packages/shared/__tests__/discovery` and `packages/agents-server/__tests__/discovery`. Use the existing in-memory Drizzle test harness.
 - **Integration**: reuse the API integration test harness (see `tests/api/hitl.spec.ts`) to add `tests/api/discovery/*.spec.ts` covering flag gating, validation errors, and SSE handshake.
-- **Load smoke**: a simple script under `scripts/discovery-seed.mjs` seeds 1k items and ensures scoring loop drains within expected time; run manually before pilot rollout.
+- **Load smoke**: a simple script under `scripts/discovery-seed.mjs` seeds 1k items and ensures the synchronous ingestion + scoring pipeline completes within expected time; run manually before pilot rollout.
 
 ## Decisions & Follow-ups
 1. **Ingestion trigger scale**: stick with per-client scheduling for MVP; revisit per-source cron only if ingestion latency becomes an issue.

@@ -16,20 +16,21 @@ Client Operators ─────────▶│ • /api/discovery/events.str
                            │ • discovery_scores, discovery_duplicates   │
                            │ • discovery_metrics (aggregates)           │
                            └──────────────▲─────────────────────────────┘
-                                          │ change feed / polling
+                                          │ ingest persistence & reads
                                           │
-      Scheduled Jobs (Nitro)              │           Orchestrator Workers
+      Scheduled Jobs (Nitro)              │           Processing Utilities
 ┌──────────────────────────────┐          │          ┌──────────────────────────────┐
-│ /jobs/discovery/ingest       │──────────┘          │ packages/agents-server        │
-│ • fetch + normalize sources  │                     │ • DiscoveryScoringAgent       │
-│ • enqueue scoring candidates │                     │ • DuplicateResolver capability│
-└──────────────────────────────┘                     │ • Emits AgentEvent telemetry  │
+│ /jobs/discovery/ingest       │──────────┘          │ packages/shared + server/utils │
+│ • fetch + normalize sources  │                     │ • normalizeDiscoveryItem       │
+│ • score + deduplicate items  │                     │ • scoreDiscoveryItem           │
+│ • emit SSE + persist metrics │                     │ • calculateDedupHash           │
+└──────────────────────────────┘                     │ • emitDiscoveryEvent           │
                                                      └──────────────▲──────────────┘
                                                                     │
-                                                Shared Contracts    │ SSE (AgentEvent)
+                                                Shared Contracts    │ SSE (Discovery event)
                          ┌──────────────────────────────────────────┴──────────────────┐
                          │ packages/shared                           │
                          │ • discovery schemas, feature flags        │
-                         │ • SSE envelopes (AgentEvent / Discovery)  │
+                         │ • SSE envelopes (discovery stream)        │
                          └────────────────────────────────────────────┘
 ```

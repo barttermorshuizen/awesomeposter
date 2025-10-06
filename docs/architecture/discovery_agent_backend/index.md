@@ -1,15 +1,15 @@
-# Discovery Agent Backend Architecture
+# Discovery Backend Architecture
 
 ## Table of Contents
 
-- [Discovery Agent Backend Architecture](#table-of-contents)
+- [Discovery Backend Architecture](#table-of-contents)
   - [Context & Reuse](./context-reuse.md)
   - [Change Log](./change-log.md)
   - [High-Level Architecture](./high-level-architecture.md)
   - [Responsibilities by Layer](./responsibilities-by-layer.md)
     - [Nitro API ()](./responsibilities-by-layer.md#nitro-api)
     - [Scheduled Jobs ()](./responsibilities-by-layer.md#scheduled-jobs)
-    - [Agents Server ()](./responsibilities-by-layer.md#agents-server)
+    - [Processing Modules](./responsibilities-by-layer.md#processing-modules)
   - [Data Model Additions](./data-model-additions.md)
     - [Configuration Schema & Storage](./data-model-additions.md#configuration-schema-storage)
   - [API Contracts & Services](./api-contracts-services.md)
