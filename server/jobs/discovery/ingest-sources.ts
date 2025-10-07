@@ -525,7 +525,7 @@ async function processSource(
   const attempts: AttemptTelemetry[] = []
   const maxAttempts = resolveMaxAttempts()
   let permanentFailureNotice: { failureReason: DiscoveryIngestionFailureReason; attempt: number } | null = null
-  let runMetrics: Record<string, unknown> = {}
+  const runMetrics: Record<string, unknown> = {}
   const ingestionIssues: Array<{ reason: string; count: number; details?: unknown }> = []
   let healthUpdate: DiscoverySourceHealthUpdate | null = null
 

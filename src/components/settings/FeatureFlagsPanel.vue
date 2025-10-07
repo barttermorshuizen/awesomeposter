@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { FEATURE_DISCOVERY_AGENT, FEATURE_DISCOVERY_FILTERS_V1 } from '@awesomeposter/shared'
 
 const PILOT_RUNBOOK_URL = 'https://github.com/AwesomePoster/awesomeposter/blob/main/docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md'
 
@@ -10,6 +11,8 @@ const clientsError = ref<string | null>(null)
 const selectedClientId = ref<string | null>(null)
 const discoveryEnabled = ref<boolean>(false)
 const discoveryOriginal = ref<boolean>(false)
+const discoveryFiltersEnabled = ref<boolean>(false)
+const discoveryFiltersOriginal = ref<boolean>(false)
 const discoveryLoaded = ref(false)
 const flagLoading = ref(false)
 const flagError = ref<string | null>(null)
@@ -61,6 +64,8 @@ watch(selectedClientId, (id) => {
   discoveryLoaded.value = false
   discoveryEnabled.value = false
   discoveryOriginal.value = false
+  discoveryFiltersEnabled.value = false
+  discoveryFiltersOriginal.value = false
   successMessage.value = null
   flagError.value = null
   reason.value = ''
@@ -91,10 +96,13 @@ async function loadFeatureFlags(clientId: string) {
     }
 
     const flags = (payload as any)?.flags ?? {}
-    const enabled = Boolean(flags?.discoveryAgent)
+    const agentEnabled = Boolean(flags?.discoveryAgent)
+    const filtersEnabled = Boolean(flags?.discoveryFiltersV1)
     if (token === lastLoadToken) {
-      discoveryEnabled.value = enabled
-      discoveryOriginal.value = enabled
+      discoveryEnabled.value = agentEnabled
+      discoveryOriginal.value = agentEnabled
+      discoveryFiltersEnabled.value = filtersEnabled
+      discoveryFiltersOriginal.value = filtersEnabled
     }
   } catch (error: unknown) {
     if (token === lastLoadToken) {
@@ -109,7 +117,11 @@ async function loadFeatureFlags(clientId: string) {
 }
 
 const isDirty = computed(() =>
-  discoveryLoaded.value && discoveryEnabled.value !== discoveryOriginal.value,
+  discoveryLoaded.value
+  && (
+    discoveryEnabled.value !== discoveryOriginal.value
+    || discoveryFiltersEnabled.value !== discoveryFiltersOriginal.value
+  ),
 )
 
 const disableSubmit = computed(() =>
@@ -131,45 +143,63 @@ async function applyChanges() {
   flagError.value = null
   successMessage.value = null
   try {
-    const res = await fetch(`/api/clients/${selectedClientId.value}/feature-flags`, {
-      method: 'PATCH',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        feature: 'discovery-agent',
-        enabled: discoveryEnabled.value,
-        actor: trimmedActor,
-        reason: reason.value.trim() || undefined,
-      }),
-    })
-
-    const contentType = res.headers.get('content-type') || ''
-    let payload: unknown = null
-    if (contentType.includes('application/json')) {
-      payload = await res.json().catch(() => null)
-    } else {
-      payload = await res.text().catch(() => '')
+    const plannedChanges: Array<{ feature: string; enabled: boolean }> = []
+    if (discoveryEnabled.value !== discoveryOriginal.value) {
+      plannedChanges.push({ feature: FEATURE_DISCOVERY_AGENT, enabled: discoveryEnabled.value })
+    }
+    if (discoveryFiltersEnabled.value !== discoveryFiltersOriginal.value) {
+      plannedChanges.push({ feature: FEATURE_DISCOVERY_FILTERS_V1, enabled: discoveryFiltersEnabled.value })
     }
 
-    if (!res.ok) {
-      const message = typeof payload === 'string'
-        ? (payload || `HTTP ${res.status}`)
-        : ((payload as any)?.statusMessage || (payload as any)?.message || (payload as any)?.error || `HTTP ${res.status}`)
-      throw new Error(message)
+    const appliedFeatures: string[] = []
+
+    for (const change of plannedChanges) {
+      const res = await fetch(`/api/clients/${selectedClientId.value}/feature-flags`, {
+        method: 'PATCH',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          feature: change.feature,
+          enabled: change.enabled,
+          actor: trimmedActor,
+          reason: reason.value.trim() || undefined,
+        }),
+      })
+
+      const contentType = res.headers.get('content-type') || ''
+      let payload: unknown = null
+      if (contentType.includes('application/json')) {
+        payload = await res.json().catch(() => null)
+      } else {
+        payload = await res.text().catch(() => '')
+      }
+
+      if (!res.ok) {
+        const message = typeof payload === 'string'
+          ? (payload || `HTTP ${res.status}`)
+          : ((payload as any)?.statusMessage || (payload as any)?.message || (payload as any)?.error || `HTTP ${res.status}`)
+        throw new Error(message)
+      }
+
+      const flag = (payload as any)?.flag ?? {}
+      const nextEnabled = Boolean(flag?.enabled)
+      if (change.feature === FEATURE_DISCOVERY_AGENT) {
+        discoveryOriginal.value = nextEnabled
+        discoveryEnabled.value = nextEnabled
+      } else if (change.feature === FEATURE_DISCOVERY_FILTERS_V1) {
+        discoveryFiltersOriginal.value = nextEnabled
+        discoveryFiltersEnabled.value = nextEnabled
+      }
+      appliedFeatures.push(change.feature)
     }
 
-    const flag = (payload as any)?.flag ?? {}
-    const nextEnabled = Boolean(flag?.enabled)
-    discoveryOriginal.value = nextEnabled
-    discoveryEnabled.value = nextEnabled
     discoveryLoaded.value = true
-
-    const changed = typeof (payload as any)?.changed === 'boolean' ? (payload as any).changed : true
-    successMessage.value = changed === false
-      ? 'Flag already matched the requested state. No change necessary.'
-      : 'Discovery agent flag updated. Propagation may take up to 2 minutes.'
+    const featureSummary = appliedFeatures.length === 0
+      ? 'No changes applied.'
+      : `Updated ${appliedFeatures.join(', ')}. Propagation may take up to 2 minutes.`
+    successMessage.value = featureSummary
 
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(actorStorageKey, trimmedActor)
@@ -280,6 +310,35 @@ async function applyChanges() {
             </v-chip>
             <v-switch
               v-model="discoveryEnabled"
+              :loading="flagLoading"
+              :disabled="flagLoading || submitting"
+              inset
+              hide-details
+              color="primary"
+            />
+          </div>
+        </div>
+
+        <v-divider class="my-4" />
+
+        <div class="d-flex align-center justify-space-between mb-3 flex-wrap gap-3">
+          <div>
+            <div class="text-subtitle-2">Discovery dashboard filters (v1)</div>
+            <div class="text-caption text-medium-emphasis">
+              Enables the virtualized filters and list shell used by pilot reviewers on the dashboard.
+            </div>
+          </div>
+          <div class="d-flex align-center gap-3">
+            <v-chip
+              v-if="discoveryLoaded"
+              :color="discoveryFiltersEnabled ? 'success' : 'grey'"
+              variant="elevated"
+              size="small"
+            >
+              {{ discoveryFiltersEnabled ? 'Enabled' : 'Disabled' }}
+            </v-chip>
+            <v-switch
+              v-model="discoveryFiltersEnabled"
               :loading="flagLoading"
               :disabled="flagLoading || submitting"
               inset

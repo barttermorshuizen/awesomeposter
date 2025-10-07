@@ -1,4 +1,8 @@
-import { isFeatureEnabled, FEATURE_DISCOVERY_AGENT } from '../../../utils/client-config/feature-flags'
+import {
+  isFeatureEnabled,
+  FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1,
+} from '../../../utils/client-config/feature-flags'
 
 export default defineEventHandler(async (event) => {
   const clientId = getRouterParam(event, 'id')
@@ -7,11 +11,15 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const enabled = await isFeatureEnabled(clientId, FEATURE_DISCOVERY_AGENT)
+    const [discoveryAgentEnabled, discoveryFiltersEnabled] = await Promise.all([
+      isFeatureEnabled(clientId, FEATURE_DISCOVERY_AGENT),
+      isFeatureEnabled(clientId, FEATURE_DISCOVERY_FILTERS_V1),
+    ])
     return {
       ok: true,
       flags: {
-        discoveryAgent: enabled,
+        discoveryAgent: discoveryAgentEnabled,
+        discoveryFiltersV1: discoveryFiltersEnabled,
       },
     }
   } catch (error) {

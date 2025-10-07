@@ -1,0 +1,36 @@
+schema: 1
+story: '5.0'
+story_title: 'Discovery Dashboard Foundation'
+gate: PASS
+status_reason: 'Flag gating restored; loader now returns the fallback shell when discovery.filters.v1 is disabled or no client is scoped.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-07T15:41:02Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 95
+evidence:
+  tests_reviewed: 5
+  risks_identified: 0
+  trace:
+    ac_covered: [1]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new exposure; feature flag guard verified.'
+  performance:
+    status: PASS
+    notes: 'Virtual scroll remains placeholder-only with no regressions.'
+  reliability:
+    status: PASS
+    notes: 'Async loader fallback tested for client/flag absence and error paths.'
+  maintainability:
+    status: PASS
+    notes: 'Unit coverage added around the loader to prevent regressions.'
+recommendations:
+  immediate: []
+  future:
+    - action: 'Add integration coverage once API-backed listings land to validate flag toggles end-to-end.'
+      refs:
+        - docs/prd/epic-discovery-feature-flag-pilot/pilot-onboarding-runbook.md

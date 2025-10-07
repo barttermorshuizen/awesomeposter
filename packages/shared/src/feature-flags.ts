@@ -1,6 +1,10 @@
 export const FEATURE_DISCOVERY_AGENT = 'discovery-agent' as const
+export const FEATURE_DISCOVERY_FILTERS_V1 = 'discovery.filters.v1' as const
 
-export type FeatureFlagName = typeof FEATURE_DISCOVERY_AGENT | (string & {})
+export type FeatureFlagName =
+  | typeof FEATURE_DISCOVERY_AGENT
+  | typeof FEATURE_DISCOVERY_FILTERS_V1
+  | (string & {})
 
 export const FEATURE_FLAG_PUBSUB_TOPIC = 'feature.flags.updated' as const
 

@@ -29,11 +29,13 @@ The discovery UI reuses the approved stack. Versions stay in lockstep with `pack
 ## Project Structure
 Discovery features follow the documented source tree. New directories sit under `src/` with domain-focused names so AI tooling can find the correct entry points.
 
+> NOTE: Story 5.0 (Discovery Dashboard Foundation) now ships the highlighted view/store scaffolding and virtualization dependency. Downstream stories (5.1+) replace the placeholder filters/list wiring with live data.
+
 ```
 src/
 ├─ views/
 │  └─ discovery/
-│     ├─ DiscoveryDashboardView.vue       # main list + detail workspace
+│     ├─ DiscoveryDashboardView.vue       # main list + detail workspace + client selector (Story 5.0)
 │     ├─ DiscoverySourcesView.vue         # client source + keyword management
 │     └─ DiscoveryTelemetryView.vue       # lightweight counts/exports
 ├─ components/
@@ -50,7 +52,7 @@ src/
 │     ├─ TelemetrySummaryCards.vue
 │     └─ TelemetryEventFeed.vue
 ├─ stores/
-│  ├─ discoveryBriefs.ts
+│  ├─ discoveryBriefs.ts            # Story 5.0 seeds list store shell; Story 5.1 fills behavior
 │  ├─ discoverySources.ts
 │  ├─ discoveryTelemetry.ts
 │  └─ discoveryConfigSuggestions.ts
@@ -70,8 +72,11 @@ src/
 ```
 
 - `packages/shared/` gains typed models (`DiscoveryBrief`, `DiscoverySource`, `DiscoveryTelemetryEvent`, `DiscoveryListConfig`, `DiscoveryConfigSuggestion`) so SPA, Nitro API, and agents server share contracts.
-- `server/api/discovery/*` handlers expose the CRUD + SSE endpoints consumed below.
+- `server/api/discovery/*` handlers expose the CRUD + SSE endpoints consumed below. Story 5.5 adds `/api/discovery/search` alongside the existing telemetry stream.
 - Feature flag plumbing (`packages/shared/src/config.ts`) centralises client enablement so SPA can hide routes when disabled.
+- Story 5.0 adds `src/stores/discoveryList.ts`, providing router-query sync, Pinia state for filters/pagination, and no-op telemetry hooks (`recordSearchLatency`, `emitSseDegraded`) that later stories hydrate with real metrics.
+- Virtual scroll scaffolding uses Vuetify Labs `VVirtualScroll` with stub data in `DiscoveryDashboardView.vue`. The component lives behind the `discovery.filters.v1` feature flag and proves responsiveness across breakpoints before API wiring.
+- Frontend feature-flag management now exposes both `discovery-agent` and `discovery.filters.v1` via `FeatureFlagsPanel.vue`; toggling either uses the shared admin API so dashboard gating stays aligned with Settings UI.
 
 ## Component Architecture
 The discovery workspace is split into focused, testable pieces.
@@ -197,22 +202,21 @@ export const useDiscoveryBriefsStore = defineStore('discoveryBriefs', () => {
 - `discoverySources` mirrors the pattern with optimistic updates, nested `webList` state management, and background refresh for source health plus list extraction flags.
 - `discoveryTelemetry` keeps rolling windows of aggregates and raw events for charting/export, now including list ingestion counters and pagination depth metrics emitted by server jobs.
 - `discoveryConfigSuggestions` caches the most recent suggestions per URL, tracks request status, and normalizes confidence scores so the dialog/composable can present deterministic UI while avoiding duplicate API calls.
-- Stores accept SSE frames so reconnect logic lives in one place rather than per component.
+- Stores accept SSE frames so reconnect logic lives in one place rather than per component. Story 5.0 introduces shared state for the selected client + feature flag evaluation; Story 5.1 layers filter/search orchestration once Story 5.5 telemetry exposes degrade signals.
 
 ## API Integration
 All calls hit Nitro endpoints (`/api/discovery/...`) on the same origin, so the existing `fetch` usage pattern remains. We add named service modules under `src/services/discovery/` to keep components thin.
 
 ```ts
-// src/services/discovery/briefs.ts
+// src/services/discovery/search.ts (Story 5.5)
 import type {
-  DiscoveryBriefFilters,
-  DiscoveryBriefListResponse,
-  DiscoveryPromotePayload,
+  DiscoverySearchFilters,
+  DiscoverySearchResponse,
 } from '@awesomeposter/shared'
 
 const baseHeaders = { 'Content-Type': 'application/json', Accept: 'application/json' }
 
-export async function fetchBriefs(filters: DiscoveryBriefFilters): Promise<DiscoveryBriefListResponse> {
+export async function fetchDiscoveryItems(filters: DiscoverySearchFilters): Promise<DiscoverySearchResponse> {
   const params = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => {
     if (value === undefined || value === null) return
@@ -224,25 +228,25 @@ export async function fetchBriefs(filters: DiscoveryBriefFilters): Promise<Disco
       params.append(key, String(value))
     }
   })
-  const res = await fetch(`/api/discovery/briefs?${params.toString()}`, { headers: baseHeaders })
-  if (!res.ok) throw new Error(`Failed to load briefs (${res.status})`)
-  return res.json()
-}
-
-export async function promoteBriefs(ids: string[], note: string): Promise<void> {
-  const payload: DiscoveryPromotePayload = { ids, note }
-  const res = await fetch('/api/discovery/briefs/promote', {
-    method: 'POST',
+  const res = await fetch(`/api/discovery/search?${params.toString()}`, {
     headers: baseHeaders,
-    body: JSON.stringify(payload),
+    credentials: 'include',
   })
-  if (!res.ok) throw new Error(`Promote failed (${res.status})`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.message ?? `Failed to load discovery items (${res.status})`)
+  }
+  return res.json()
 }
 ```
 
 - Validation errors surface via JSON body; service helpers throw typed errors so components can show inline messaging.
 - The same pattern is reused for sources (CRUD) and telemetry (fetch aggregates, request CSV export link).
+- Discovery listing uses `fetchDiscoveryItems` once Story 5.5 ships; promotion/archive helpers remain in the briefs module for Story 5.3.
 - `configSuggestions.request(url, options)` wraps `POST /api/discovery/config-suggestions`, returning `{ suggestion, alternatives, warnings }`. The helper normalizes selector casing, stamps timestamps for caching, and bubbles low-confidence flags so the dialog can prompt for manual review (Story 3.6).
+
+Feature flag management for `discovery.filters.v1` lives alongside existing admin toggles in `SettingsView.vue`; Story 5.0 extends that screen to expose the toggle after a client is selected, display per-client state, and persist changes via the shared feature-flag API so the dashboard shell reacts instantly when operators enable the experience.
+Client selection inside `DiscoveryDashboardView` reuses the same clients Pinia store and API already leveraged by Settings and the new brief UI, keeping a single source of truth for accessible clients.
 
 ## Realtime Telemetry (SSE)
 Telemetry events stream from Nitro at `/api/discovery/events.stream`. We reuse the `EventSource` primitive instead of the POST-based helper used by orchestrator runs.

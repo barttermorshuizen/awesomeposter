@@ -32,9 +32,12 @@ Give product, support, and pilot operators a clear checklist for enabling the di
 1. **Confirm Staging Success**
    - Run ingestion + dashboard smoke test in staging with pilot client flag enabled.
    - Ensure SSE stream displays ingestion events within 2 minutes.
-2. **Enable Client Flag**
-   - Command: `pnpm run flags:set discovery --client <clientId> --enabled` (or toggle in admin UI).
-   - Log change in release notes with timestamp, operator, client ID.
+2. **Enable Client Flags**
+   - CLI (preferred):
+     - `pnpm run flags -- toggle --client <clientId> --enable --actor <email> --feature discovery-agent`
+     - `pnpm run flags -- toggle --client <clientId> --enable --actor <email> --feature discovery.filters.v1`
+   - Admin UI alternative: toggle **Discovery agent** and **Discovery dashboard filters (v1)** for the pilot client.
+   - Log each change in release notes with timestamp, operator, client ID, and feature name.
 3. **Notify Operators**
    - Send kickoff email including: login link, feature overview, support contacts, rollout timeline, feedback expectations.
 4. **Verify Access**
@@ -194,8 +197,9 @@ Revisit this section after each cohort to log additional feedback items and docu
 ## 11. Scoring Utility Disable & Rollback
 Use this playbook when the shared scoring helper needs to be paused or rolled back for a client.
 
-1. **Disable the client flag immediately**
-   - Command: `pnpm run flags:set discovery-agent --client <clientId> --disabled`
+1. **Disable the client flags immediately**
+   - `pnpm run flags -- toggle --client <clientId> --disable --actor <email> --feature discovery-agent`
+   - `pnpm run flags -- toggle --client <clientId> --disable --actor <email> --feature discovery.filters.v1`
    - Admin UI alternative: toggle **Discovery Agent** → **Disabled** and capture the audit note.
    - Confirm the `feature.flags.updated` event appears in telemetry within 2 minutes.
 2. **Quarantine affected items**

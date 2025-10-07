@@ -1,10 +1,8 @@
 import {
-  FEATURE_DISCOVERY_AGENT,
-} from '../../../utils/client-config/feature-flags'
-import {
-  setDiscoveryFlag,
+  setClientFeatureFlag,
   FeatureFlagAdminError,
   ClientNotFoundError,
+  isSupportedClientFeature,
 } from '../../../utils/client-config/feature-flag-admin'
 
 export default defineEventHandler(async (event) => {
@@ -21,7 +19,7 @@ export default defineEventHandler(async (event) => {
   }>(event).catch(() => ({}))
 
   const feature = typeof body.feature === 'string' ? body.feature : ''
-  if (feature !== FEATURE_DISCOVERY_AGENT) {
+  if (!feature || !isSupportedClientFeature(feature)) {
     throw createError({ statusCode: 400, statusMessage: 'Unsupported feature flag' })
   }
 
@@ -37,8 +35,9 @@ export default defineEventHandler(async (event) => {
   const reason = typeof body.reason === 'string' ? body.reason : undefined
 
   try {
-    const result = await setDiscoveryFlag({
+    const result = await setClientFeatureFlag({
       clientId,
+      feature,
       enable: body.enabled,
       actor: actorRaw,
       reason: reason ?? null,
@@ -49,7 +48,7 @@ export default defineEventHandler(async (event) => {
       changed: result.changed,
       client: result.client,
       flag: {
-        feature: FEATURE_DISCOVERY_AGENT,
+        feature,
         enabled: result.newEnabled,
         previousEnabled: result.previousEnabled,
         occurredAt: result.occurredAt.toISOString(),

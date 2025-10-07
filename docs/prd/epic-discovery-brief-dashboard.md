@@ -39,6 +39,8 @@ Provide reviewers with a focused workspace to inspect `Spotted` discovery items 
 - Relies on scored discovery items from the scoring/deduplication epic.
 - Uses existing frontend stack (Vue 3 + Vite + Vuetify) and auth sessions.
 - Status updates persisted in database shared with other agents and create briefs only when reviewers promote an item.
+- Discovery listing depends on Story 5.0 (dashboard foundation scaffolding) and Story 5.5 (`GET /api/discovery/search` with highlighting) before filter/search UX stories commence.
+- Feature flag `discovery.filters.v1` stays operator-controlled in Settings; dashboard shell must surface a client selector so reviewers act on a specific client context before filters/search run.
 
 ## Risks & Mitigations
 - Information overload on list view → provide sensible default filters (recent `Spotted`, high score).
@@ -48,3 +50,4 @@ Provide reviewers with a focused workspace to inspect `Spotted` discovery items 
 - Reviewers can discover, inspect, and act on discovery items within the dashboard and create briefs through explicit promotion.
 - Status history and notes are persisted and visible for every discovery item and resulting brief.
 - Usability validated via pilot feedback sessions; issues triaged for follow-up.
+- Feature availability remains behind `discovery.filters.v1` until Stories 5.0/5.5 complete and telemetry confirms healthy load/pagination behavior.

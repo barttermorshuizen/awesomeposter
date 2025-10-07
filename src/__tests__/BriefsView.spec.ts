@@ -112,9 +112,9 @@ describe('BriefsView HITL actions', () => {
 
     await vm.onRemoveRun(briefRow)
 
-    expect(removeSpy).toHaveBeenCalledWith({ reason: 'Operator removed run from brief action menu' })
+    expect(removeSpy).toHaveBeenCalledExactlyOnceWith({ reason: 'Operator removed run from brief action menu' })
     expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(alertSpy).toHaveBeenCalledWith('Running create post removed.')
+    expect(alertSpy).toHaveBeenCalledExactlyOnceWith('Running create post removed.')
   })
 
   it('opens the create-post flow when resuming a suspended run', async () => {

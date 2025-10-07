@@ -46,9 +46,9 @@
 
 ### Sequencing & Owners
 1. Platform kicks off 3.1 ingestion scheduling, handing schema outputs to backend for 3.2 normalization completion.
-2. Backend/front-end pair on 2.3 health status UI once ingestion APIs are stable.
-3. Data science + platform collaborate on 4.1 relevance modelling; 4.2 duplicate suppression and 4.3 threshold tuning are re-sequenced to Sprint 3 due to low duplicate incidence and missing client-specific weights.
-4. Front-end leads 5.1 dashboard listing, then layers 5.2 detail/promote and 5.3 bulk actions with backend API support.
+2. Backend owner delivers Story 5.5 (`GET /api/discovery/search`, highlighting, load/perf script) before UI work begins.
+3. Frontend platform engineer lands Story 5.0 (dashboard foundation, route, Pinia shell, virtualization dep) immediately after the API is feature flagged for QA.
+4. Front-end leads revised Story 5.1 once 5.0/5.5 land, then layers 5.2 detail/promote and 5.3 bulk actions with backend support.
 5. Telemetry squad (platform + front-end) implements 6.2 counts UI before backend finalises 6.3 retention/backfill scripts.
 6. PM wraps pilot training/runbook updates leveraging new telemetry outputs and scoring metrics.
 
@@ -57,7 +57,7 @@
 - Reserve ≥0.5 engineer-week for regression/QA burn-down, especially around scoring and telemetry changes.
 
 ### Quality & Readiness Work
-- Expand Playwright suite to cover ingestion → dashboard promote/bulk flow.
+- Expand Playwright suite to cover ingestion → dashboard promote/bulk flow plus discovery listing smoke (filters/search, SSE degrade fallback) after Stories 5.0/5.5 land.
 - Add contract tests for scoring APIs and schema normalization invariants.
 - Run feature-flag regression checklist after telemetry retention deploy.
 - Stage telemetry backfill scripts with rollback validation for 6.3.
@@ -68,7 +68,7 @@
 - Scoring model drift could stall QA sign-off; schedule DS/platform pairing sessions and baseline metric dashboards early.
 - Deferral of 4.2/4.3 may surface duplicate edge cases later; monitor pilot feedback and queue any urgent fixes to the scoring backlog.
 - Telemetry retention touches production data; run shadow migrations and verify rollback steps.
-- Bulk actions depend on 5.1 listing stability; hold go/no-go review before front-end commits to promote/bulk scope.
+- Bulk actions depend on 5.1 listing stability; hold go/no-go review before front-end commits to promote/bulk scope and ensure Story 5.5 benchmarks meet virtualization assumptions.
 - Pilot feedback loop must stay active; maintain weekly sync to triage discoveries and adjust backlog.
 
 ## Sprint 3 Outlook

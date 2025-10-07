@@ -51,7 +51,7 @@ describe('HitlPromptPanel', () => {
     await wrapper.get('textarea').setValue('Looks good')
     await submitButton.trigger('click')
 
-    expect(submitSpy).toHaveBeenCalledWith({
+    expect(submitSpy).toHaveBeenCalledExactlyOnceWith({
       responseType: 'approval',
       approved: true,
       selectedOptionId: undefined,

@@ -9,7 +9,9 @@ import {
 } from '@awesomeposter/db'
 import {
   FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1,
   DISCOVERY_FLAG_CHANGED_EVENT,
+  type FeatureFlagName,
 } from '@awesomeposter/shared'
 import {
   publishFeatureFlagUpdate,
@@ -36,6 +38,13 @@ export class ClientNotFoundError extends FeatureFlagAdminError {
   }
 }
 
+export const SUPPORTED_CLIENT_FEATURES = [
+  FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1,
+] as const
+
+export type SupportedClientFeature = typeof SUPPORTED_CLIENT_FEATURES[number]
+
 export type DiscoveryFlagToggleInput = {
   clientId: string
   enable: boolean
@@ -43,7 +52,17 @@ export type DiscoveryFlagToggleInput = {
   reason?: string | null
 }
 
-export type DiscoveryFlagToggleResult = {
+export type ClientFeatureToggleInput = {
+  clientId: string
+  feature: FeatureFlagName
+  enable: boolean
+  actor: string
+  reason?: string | null
+}
+
+export type DiscoveryFlagToggleResult = ClientFeatureToggleResult
+
+export type ClientFeatureToggleResult = {
   changed: boolean
   previousEnabled: boolean
   newEnabled: boolean
@@ -55,15 +74,24 @@ export type DiscoveryFlagToggleResult = {
   }
 }
 
-export async function setDiscoveryFlag({
+export function isSupportedClientFeature(feature: FeatureFlagName): feature is SupportedClientFeature {
+  return SUPPORTED_CLIENT_FEATURES.includes(feature as SupportedClientFeature)
+}
+
+export async function setClientFeatureFlag({
   clientId,
+  feature,
   enable,
   actor,
   reason,
-}: DiscoveryFlagToggleInput): Promise<DiscoveryFlagToggleResult> {
+}: ClientFeatureToggleInput): Promise<ClientFeatureToggleResult> {
   const trimmedActor = actor?.trim()
   if (!trimmedActor) {
     throw new FeatureFlagAdminError('Actor is required', 400)
+  }
+
+  if (!isSupportedClientFeature(feature)) {
+    throw new FeatureFlagAdminError(`Feature ${feature} is not supported for client toggles`, 400)
   }
 
   const trimmedReason = reason?.trim() || null
@@ -83,7 +111,7 @@ export async function setDiscoveryFlag({
     const [existingFeature] = await tx
       .select({ enabled: clientFeatures.enabled })
       .from(clientFeatures)
-      .where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, FEATURE_DISCOVERY_AGENT)))
+      .where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, feature)))
       .limit(1)
 
     const currentEnabled = existingFeature?.enabled ?? false
@@ -104,11 +132,11 @@ export async function setDiscoveryFlag({
       await tx
         .update(clientFeatures)
         .set({ enabled: enable, updatedAt: timestamp })
-        .where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, FEATURE_DISCOVERY_AGENT)))
+        .where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, feature)))
     } else {
       await tx.insert(clientFeatures).values({
         clientId,
-        feature: FEATURE_DISCOVERY_AGENT,
+        feature,
         enabled: enable,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -118,7 +146,7 @@ export async function setDiscoveryFlag({
     await tx.insert(clientFeatureToggleAudits).values({
       id: crypto.randomUUID(),
       clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
+      feature,
       previousEnabled: currentEnabled,
       newEnabled: enable,
       actor: trimmedActor,
@@ -137,24 +165,31 @@ export async function setDiscoveryFlag({
 
   if (result.changed) {
     const occurredAtIso = result.occurredAt.toISOString()
-    await emitDiscoveryFlagChanged({
-      event: DISCOVERY_FLAG_CHANGED_EVENT,
-      clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
-      enabled: result.newEnabled,
-      previousEnabled: result.previousEnabled,
-      actor: trimmedActor,
-      reason: trimmedReason,
-      occurredAt: occurredAtIso,
-    })
+
+    if (feature === FEATURE_DISCOVERY_AGENT) {
+      await emitDiscoveryFlagChanged({
+        event: DISCOVERY_FLAG_CHANGED_EVENT,
+        clientId,
+        feature: FEATURE_DISCOVERY_AGENT,
+        enabled: result.newEnabled,
+        previousEnabled: result.previousEnabled,
+        actor: trimmedActor,
+        reason: trimmedReason,
+        occurredAt: occurredAtIso,
+      })
+    }
 
     await publishFeatureFlagUpdate({
       clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
+      feature,
       enabled: result.newEnabled,
       updatedAt: occurredAtIso,
     })
   }
 
   return result
+}
+
+export async function setDiscoveryFlag(input: DiscoveryFlagToggleInput): Promise<DiscoveryFlagToggleResult> {
+  return setClientFeatureFlag({ ...input, feature: FEATURE_DISCOVERY_AGENT })
 }

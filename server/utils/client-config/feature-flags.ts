@@ -3,6 +3,7 @@ import { Redis } from '@upstash/redis'
 import { and, eq, getDb, clientFeatures } from '@awesomeposter/db'
 import {
   FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1,
   FEATURE_FLAG_PUBSUB_TOPIC,
   DISCOVERY_FLAG_CHANGED_EVENT,
   type FeatureFlagName,
@@ -111,6 +112,9 @@ async function queryFeatureEnabled(clientId: string, feature: FeatureFlagName) {
 function describeFeature(feature: FeatureFlagName) {
   if (feature === FEATURE_DISCOVERY_AGENT) {
     return 'Discovery agent'
+  }
+  if (feature === FEATURE_DISCOVERY_FILTERS_V1) {
+    return 'Discovery filters v1'
   }
   return feature.replace(/[-_]/g, ' ')
 }
@@ -221,6 +225,7 @@ subscribeToFeatureFlagUpdates(({ clientId, feature }) => {
 
 export {
   FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1,
   FEATURE_FLAG_PUBSUB_TOPIC,
   DISCOVERY_FLAG_CHANGED_EVENT,
 }

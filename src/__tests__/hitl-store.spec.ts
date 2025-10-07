@@ -57,7 +57,7 @@ describe('useHitlStore', () => {
 
     await store.hydrateFromPending()
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/hitl/pending', expect.any(Object))
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/hitl/pending', expect.any(Object))
     expect(pendingRun.value.runId).toBe('run_abc')
     expect(pendingRun.value.threadId).toBe('thread-123')
     expect(pendingRun.value.briefId).toBe('brief-789')
@@ -172,7 +172,7 @@ describe('useHitlStore', () => {
 
     await store.removePendingRun({ reason: 'Stale run after restart', note: 'Cleared during QA' })
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/hitl/remove', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/hitl/remove', expect.objectContaining({
       method: 'POST'
     }))
     const requestInit = fetchMock.mock.calls[0][1] as RequestInit

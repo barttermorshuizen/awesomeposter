@@ -6,12 +6,7 @@ const router = createRouter({
     {
       path: '/',
       name: 'dashboard',
-      component: () => import('@/views/PlaceholderView.vue'),
-      props: () => ({
-        title: 'Dashboard',
-        icon: 'mdi-view-dashboard-outline',
-        description: 'Metrics tiles, activity feed, shortcuts, knob performance insights.',
-      }),
+      component: () => import('@/views/discovery/loadDiscoveryDashboard').then((mod) => mod.default()),
     },
     {
       path: '/briefs',
