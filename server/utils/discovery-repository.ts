@@ -5,6 +5,7 @@ import {
   discoveryKeywords,
   discoveryIngestRuns,
   discoveryItems,
+  discoveryScores,
   fetchDiscoveryItemsByIds,
   persistDiscoveryItems,
   resetDiscoveryItemsToPending as resetDiscoveryItemsToPendingDb,
@@ -12,8 +13,9 @@ import {
   countPendingDiscoveryItems,
   type PersistDiscoveryItemInput,
   type PersistDiscoveryItemsResult,
+  type DiscoveryItemStatus,
 } from '@awesomeposter/db'
-import { and, desc, ne, or, lte, isNull } from 'drizzle-orm'
+import { and, desc, ne, or, lte, isNull, inArray, gte, sql, type SQL } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
 import { z } from 'zod'
 import {
@@ -26,6 +28,10 @@ import {
   type NormalizedDiscoveryAdapterItem,
   type DiscoverySourceMetadata,
   type DiscoveryIngestionFailureReason,
+  type DiscoverySearchFilters,
+  type DiscoverySearchItem,
+  type DiscoverySearchHighlight,
+  type DiscoverySearchStatus,
 } from '@awesomeposter/shared'
 import type { SourceHealthStatus } from './discovery-health'
 import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
@@ -193,6 +199,114 @@ const keywordDeleteSchema = z.object({
   clientId: z.string().uuid(),
   keywordId: z.string().uuid(),
 })
+
+const DASHBOARD_TO_DB_STATUS: Record<DiscoverySearchStatus, DiscoveryItemStatus> = {
+  spotted: 'scored',
+  approved: 'promoted',
+  promoted: 'promoted',
+  suppressed: 'suppressed',
+  archived: 'archived',
+  pending: 'pending_scoring',
+}
+
+const DB_TO_DASHBOARD_STATUS: Record<DiscoveryItemStatus, DiscoverySearchStatus> = {
+  pending_scoring: 'pending',
+  scored: 'spotted',
+  suppressed: 'suppressed',
+  promoted: 'approved',
+  archived: 'archived',
+}
+
+const HIGHLIGHT_START = '__MARK__'
+const HIGHLIGHT_END = '__END__'
+const HIGHLIGHT_SPLIT_REGEX = /\s*\.\.\.\s*/g
+const HTML_ESCAPE_REGEX = /[&<>"']/g
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
+
+function mapDashboardStatuses(statuses: DiscoverySearchStatus[]): DiscoveryItemStatus[] {
+  const mapped = new Set<DiscoveryItemStatus>()
+  statuses.forEach((status) => {
+    const mappedStatus = DASHBOARD_TO_DB_STATUS[status as DiscoverySearchStatus]
+    if (mappedStatus) {
+      mapped.add(mappedStatus)
+    }
+  })
+  if (mapped.size === 0) {
+    mapped.add('scored')
+  }
+  return [...mapped]
+}
+
+function mapDbStatus(status: DiscoveryItemStatus): DiscoverySearchStatus {
+  return DB_TO_DASHBOARD_STATUS[status] ?? 'spotted'
+}
+
+function escapeHtml(input: string): string {
+  return input.replace(HTML_ESCAPE_REGEX, (char) => HTML_ESCAPE_MAP[char] ?? char)
+}
+
+function sanitizeHeadline(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  const normalized = raw.replace(/\s+/g, ' ').trim()
+  if (!normalized) return []
+  return normalized
+    .split(HIGHLIGHT_SPLIT_REGEX)
+    .map((snippet) => snippet.trim())
+    .filter((snippet) => snippet.length > 0)
+    .map((snippet) => {
+      const withPlaceholders = snippet
+        .replaceAll(HIGHLIGHT_START, '__HIGHLIGHT_START__')
+        .replaceAll(HIGHLIGHT_END, '__HIGHLIGHT_END__')
+      const escaped = escapeHtml(withPlaceholders)
+        .replaceAll('__HIGHLIGHT_START__', '<mark>')
+        .replaceAll('__HIGHLIGHT_END__', '</mark>')
+      return escaped
+    })
+}
+
+function buildHighlight(field: DiscoverySearchHighlight['field'], raw: string | null | undefined): DiscoverySearchHighlight | null {
+  const snippets = sanitizeHeadline(raw)
+  if (!snippets.length) {
+    return null
+  }
+  return {
+    field,
+    snippets,
+  }
+}
+
+function readStringField(record: Record<string, unknown> | null | undefined, key: string): string | null {
+  if (!record || typeof record !== 'object') return null
+  const value = record[key]
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function readStringArray(record: Record<string, unknown> | null | undefined, key: string): string[] {
+  if (!record || typeof record !== 'object') return []
+  const value = record[key]
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0)
+}
+
+function summarize(text: string | null | undefined, maxLength = 320): string | null {
+  if (!text) return null
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) return null
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
 
 const KEYWORD_LIMIT = 20
 
@@ -524,6 +638,190 @@ export async function listPendingDiscoveryItems(limit: number, clientId?: string
     sourceMetadata: row.sourceMetadata as Record<string, unknown>,
     rawPayload: row.rawPayload as Record<string, unknown>,
   }))
+}
+
+type DiscoverySearchRow = {
+  id: string
+  status: DiscoveryItemStatus
+  title: string
+  url: string
+  sourceId: string
+  fetchedAt: Date
+  publishedAt: Date | null
+  ingestedAt: Date
+  normalized: Record<string, unknown>
+  metadata: Record<string, unknown> | null
+  score: string | null
+  titleHeadline?: string | null
+  excerptHeadline?: string | null
+  bodyHeadline?: string | null
+  rank?: number | null
+}
+
+export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Promise<{ items: DiscoverySearchItem[]; total: number }> {
+  const db = getDb()
+  const dashboardStatuses = filters.statuses as DiscoverySearchStatus[]
+  const dbStatuses = mapDashboardStatuses(dashboardStatuses)
+  const dateFrom = filters.dateFrom ? new Date(filters.dateFrom) : null
+  const dateTo = filters.dateTo ? new Date(filters.dateTo) : null
+  const trimmedSearchTerm = typeof filters.searchTerm === 'string' ? filters.searchTerm.trim() : ''
+  const hasSearchTerm = trimmedSearchTerm.length > 0
+  const tsQuery = hasSearchTerm ? sql`websearch_to_tsquery('english', ${trimmedSearchTerm})` : null
+
+  const searchVector = sql`
+    to_tsvector(
+      'english',
+      coalesce(${discoveryItems.title}, '') || ' ' ||
+      coalesce(${discoveryItems.normalizedJson}->>'excerpt', '') || ' ' ||
+      coalesce(${discoveryItems.normalizedJson}->>'extractedBody', '')
+    )
+  `
+
+  const conditions: SQL[] = [eq(discoveryItems.clientId, filters.clientId)]
+
+  if (dbStatuses.length === 1) {
+    conditions.push(eq(discoveryItems.status, dbStatuses[0]!))
+  } else if (dbStatuses.length > 1) {
+    conditions.push(inArray(discoveryItems.status, dbStatuses))
+  }
+
+  if (filters.sourceIds.length) {
+    conditions.push(inArray(discoveryItems.sourceId, filters.sourceIds))
+  }
+
+  if (filters.topics.length) {
+    const topicsArray = sql`ARRAY[${sql.join(filters.topics.map((topic) => sql`${topic}`), sql`, `)}]::text[]`
+    conditions.push(sql`
+      EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(coalesce(${discoveryScores.metadataJson}->'topics', '[]'::jsonb)) AS topic(value)
+        WHERE topic.value = ANY(${topicsArray})
+      )
+    `)
+  }
+
+  if (dateFrom) {
+    conditions.push(gte(discoveryItems.ingestedAt, dateFrom))
+  }
+  if (dateTo) {
+    conditions.push(lte(discoveryItems.ingestedAt, dateTo))
+  }
+
+  if (tsQuery) {
+    conditions.push(sql`${searchVector} @@ ${tsQuery}`)
+  }
+
+  const whereCondition = conditions.length === 1 ? conditions[0]! : and(...conditions)
+
+  const selectFields: Record<string, unknown> = {
+    id: discoveryItems.id,
+    status: discoveryItems.status,
+    title: discoveryItems.title,
+    url: discoveryItems.url,
+    sourceId: discoveryItems.sourceId,
+    fetchedAt: discoveryItems.fetchedAt,
+    publishedAt: discoveryItems.publishedAt,
+    ingestedAt: discoveryItems.ingestedAt,
+    normalized: discoveryItems.normalizedJson,
+    metadata: discoveryScores.metadataJson,
+    score: discoveryScores.score,
+  }
+
+  if (tsQuery) {
+    const titleHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=1,MaxWords=16,MinWords=4`
+    const excerptHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=24,MinWords=5,ShortWord=3`
+    const bodyHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=18,MinWords=6,ShortWord=3`
+    Object.assign(selectFields, {
+      titleHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.title}, ''), ${tsQuery}, ${titleHeadlineOptions})`,
+      excerptHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'excerpt', ''), ${tsQuery}, ${excerptHeadlineOptions})`,
+      bodyHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'extractedBody', ''), ${tsQuery}, ${bodyHeadlineOptions})`,
+      rank: sql<number>`ts_rank_cd(${searchVector}, ${tsQuery}, 32)`,
+    })
+  }
+
+  const orderings: SQL[] = []
+  if (tsQuery) {
+    orderings.push(sql`rank DESC`)
+  }
+  orderings.push(sql`coalesce(${discoveryScores.score}, 0) DESC`)
+  orderings.push(desc(discoveryItems.ingestedAt))
+  orderings.push(desc(discoveryItems.id))
+
+  const offset = (filters.page - 1) * filters.pageSize
+
+  const rows = await db
+    .select(selectFields as Record<string, any>)
+    .from(discoveryItems)
+    .leftJoin(discoveryScores, eq(discoveryScores.itemId, discoveryItems.id))
+    .where(whereCondition)
+    .orderBy(...orderings)
+    .limit(filters.pageSize)
+    .offset(offset)
+
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(discoveryItems)
+    .leftJoin(discoveryScores, eq(discoveryScores.itemId, discoveryItems.id))
+    .where(whereCondition)
+
+  const items: DiscoverySearchItem[] = rows.map((row) => {
+    const typedRow = row as unknown as DiscoverySearchRow
+    const normalized = typedRow.normalized ?? {}
+    const metadata = typedRow.metadata ?? {}
+    const excerpt = readStringField(normalized, 'excerpt')
+    const body = readStringField(normalized, 'extractedBody')
+    const summary = summarize(excerpt ?? body)
+    const metadataTopics = readStringArray(metadata, 'topics')
+    const normalizedTopics = readStringArray(normalized, 'topics')
+    const topics = metadataTopics.length ? metadataTopics : normalizedTopics
+
+    const highlights: DiscoverySearchHighlight[] = []
+    const titleHighlight = buildHighlight('title', typedRow.titleHeadline)
+    if (titleHighlight) {
+      highlights.push(titleHighlight)
+    }
+    const excerptHighlight = buildHighlight('excerpt', typedRow.excerptHeadline)
+    if (excerptHighlight) {
+      highlights.push(excerptHighlight)
+    } else {
+      const fallbackBodyHighlight = buildHighlight('body', typedRow.bodyHeadline)
+      if (fallbackBodyHighlight) {
+        highlights.push(fallbackBodyHighlight)
+      }
+    }
+
+    const rawScore = typedRow.score
+    const numericScore = rawScore === null || rawScore === undefined ? null : Number(rawScore)
+    const normalizedScore = typeof numericScore === 'number' && Number.isFinite(numericScore) ? numericScore : null
+
+    return {
+      id: typedRow.id,
+      title: typedRow.title,
+      url: typedRow.url,
+      status: mapDbStatus(typedRow.status),
+      score: normalizedScore,
+      sourceId: typedRow.sourceId,
+      fetchedAt: typedRow.fetchedAt.toISOString(),
+      publishedAt: typedRow.publishedAt ? typedRow.publishedAt.toISOString() : null,
+      ingestedAt: typedRow.ingestedAt.toISOString(),
+      summary,
+      topics,
+      highlights,
+    }
+  })
+
+  return {
+    items,
+    total: Number(count ?? 0),
+  }
+}
+
+export const __discoverySearchInternals = {
+  sanitizeHeadline,
+  buildHighlight,
+  summarize,
+  mapDashboardStatuses,
+  mapDbStatus,
 }
 
 export type ReleaseDiscoverySourceAfterFailedCompletionInput = {

@@ -3,9 +3,10 @@ import { Redis } from '@upstash/redis';
 import { and, eq } from 'drizzle-orm';
 import { g as getDb, d as clientFeatures } from './client.mjs';
 
-const FEATURE_DISCOVERY_AGENT = 'discovery-agent';
-const FEATURE_FLAG_PUBSUB_TOPIC = 'feature.flags.updated';
-const DISCOVERY_FLAG_CHANGED_EVENT = 'discovery.flagChanged';
+const FEATURE_DISCOVERY_AGENT = "discovery-agent";
+const FEATURE_DISCOVERY_FILTERS_V1 = "discovery.filters.v1";
+const FEATURE_FLAG_PUBSUB_TOPIC = "feature.flags.updated";
+const DISCOVERY_FLAG_CHANGED_EVENT = "discovery.flagChanged";
 
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
@@ -94,6 +95,9 @@ function describeFeature(feature) {
   if (feature === FEATURE_DISCOVERY_AGENT) {
     return "Discovery agent";
   }
+  if (feature === FEATURE_DISCOVERY_FILTERS_V1) {
+    return "Discovery filters v1";
+  }
   return feature.replace(/[-_]/g, " ");
 }
 class FeatureFlagDisabledError extends Error {
@@ -179,5 +183,5 @@ subscribeToFeatureFlagUpdates(({ clientId, feature }) => {
   void invalidateFeatureFlagCache(clientId, feature);
 });
 
-export { DISCOVERY_FLAG_CHANGED_EVENT as D, FEATURE_DISCOVERY_AGENT as F, FeatureFlagDisabledError as a, emitDiscoveryFlagChanged as e, isFeatureEnabled as i, publishFeatureFlagUpdate as p, requireDiscoveryFeatureEnabled as r, subscribeToFeatureFlagUpdates as s };
+export { DISCOVERY_FLAG_CHANGED_EVENT as D, FEATURE_DISCOVERY_AGENT as F, FEATURE_DISCOVERY_FILTERS_V1 as a, FeatureFlagDisabledError as b, requireFeatureEnabled as c, emitDiscoveryFlagChanged as e, isFeatureEnabled as i, publishFeatureFlagUpdate as p, requireDiscoveryFeatureEnabled as r, subscribeToFeatureFlagUpdates as s };
 //# sourceMappingURL=feature-flags.mjs.map

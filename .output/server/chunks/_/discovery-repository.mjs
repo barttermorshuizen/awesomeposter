@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql, desc, ne, or, isNull, lte } from 'drizzle-orm';
+import { and, eq, inArray, sql, desc, gte, lte, ne, or, isNull } from 'drizzle-orm';
 import { g as getDb, j as discoveryItems, k as discoveryScores, l as discoveryKeywords, m as discoverySources, n as discoveryIngestRuns } from './client.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -6,154 +6,132 @@ import { r as requireDiscoveryFeatureEnabled } from './feature-flags.mjs';
 import { n as normalizeDiscoveryKeyword, c as createDiscoverySourceInputSchema, a as normalizeDiscoverySourceUrl, d as deriveDuplicateKey } from './discovery.mjs';
 
 function stableStringify(value) {
-    if (value === null || typeof value !== 'object') {
-        return JSON.stringify(value);
-    }
-    if (Array.isArray(value)) {
-        return `[${value.map((item) => stableStringify(item)).join(',')}]`;
-    }
-    const entries = Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`);
-    return `{${entries.join(',')}}`;
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`);
+  return `{${entries.join(",")}}`;
 }
 function computeRawHash(rawPayload) {
-    const serialized = stableStringify(rawPayload);
-    return createHash('sha256').update(serialized).digest('hex');
+  const serialized = stableStringify(rawPayload);
+  return createHash("sha256").update(serialized).digest("hex");
 }
 function toDate(value) {
-    if (!value)
-        return null;
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  if (!value)
+    return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 async function persistDiscoveryItems(inputs) {
-    if (!inputs.length) {
-        return { inserted: [], duplicates: [] };
-    }
-    const db = getDb();
-    const itemsWithHash = inputs.map((input) => ({
-        input,
-        rawHash: computeRawHash(input.rawPayload),
-    }));
-    const clientIds = new Set(itemsWithHash.map((item) => item.input.clientId));
-    if (clientIds.size !== 1) {
-        throw new Error('persistDiscoveryItems expects all inputs to share the same clientId');
-    }
-    const [clientId] = [...clientIds];
-    const rawHashes = itemsWithHash.map((item) => item.rawHash);
-    const existing = await db
-        .select({ rawHash: discoveryItems.rawHash })
-        .from(discoveryItems)
-        .where(and(eq(discoveryItems.clientId, clientId), inArray(discoveryItems.rawHash, rawHashes)));
-    const existingSet = new Set(existing.map((row) => row.rawHash));
-    const toInsert = itemsWithHash.filter((item) => !existingSet.has(item.rawHash));
-    const rows = toInsert.map(({ input, rawHash }) => ({
-        id: randomUUID(),
-        clientId: input.clientId,
-        sourceId: input.sourceId,
-        externalId: input.externalId,
-        rawHash,
-        status: 'pending_scoring',
-        title: input.title,
-        url: input.url,
-        fetchedAt: new Date(input.fetchedAt),
-        publishedAt: toDate(input.publishedAt),
-        publishedAtSource: input.publishedAtSource,
-        rawPayloadJson: input.rawPayload,
-        normalizedJson: input.normalized,
-        sourceMetadataJson: input.sourceMetadata,
-    }));
-    let inserted = [];
-    if (rows.length) {
-        inserted = await db
-            .insert(discoveryItems)
-            .values(rows)
-            .returning({ id: discoveryItems.id, rawHash: discoveryItems.rawHash });
-    }
-    const duplicates = itemsWithHash
-        .filter((item) => existingSet.has(item.rawHash))
-        .map((item) => ({ rawHash: item.rawHash }));
-    return { inserted, duplicates };
+  if (!inputs.length) {
+    return { inserted: [], duplicates: [] };
+  }
+  const db = getDb();
+  const itemsWithHash = inputs.map((input) => ({
+    input,
+    rawHash: computeRawHash(input.rawPayload)
+  }));
+  const clientIds = new Set(itemsWithHash.map((item) => item.input.clientId));
+  if (clientIds.size !== 1) {
+    throw new Error("persistDiscoveryItems expects all inputs to share the same clientId");
+  }
+  const [clientId] = [...clientIds];
+  const rawHashes = itemsWithHash.map((item) => item.rawHash);
+  const existing = await db.select({ rawHash: discoveryItems.rawHash }).from(discoveryItems).where(and(eq(discoveryItems.clientId, clientId), inArray(discoveryItems.rawHash, rawHashes)));
+  const existingSet = new Set(existing.map((row) => row.rawHash));
+  const toInsert = itemsWithHash.filter((item) => !existingSet.has(item.rawHash));
+  const rows = toInsert.map(({ input, rawHash }) => ({
+    id: randomUUID(),
+    clientId: input.clientId,
+    sourceId: input.sourceId,
+    externalId: input.externalId,
+    rawHash,
+    status: "pending_scoring",
+    title: input.title,
+    url: input.url,
+    fetchedAt: new Date(input.fetchedAt),
+    publishedAt: toDate(input.publishedAt),
+    publishedAtSource: input.publishedAtSource,
+    rawPayloadJson: input.rawPayload,
+    normalizedJson: input.normalized,
+    sourceMetadataJson: input.sourceMetadata
+  }));
+  let inserted = [];
+  if (rows.length) {
+    inserted = await db.insert(discoveryItems).values(rows).returning({ id: discoveryItems.id, rawHash: discoveryItems.rawHash });
+  }
+  const duplicates = itemsWithHash.filter((item) => existingSet.has(item.rawHash)).map((item) => ({ rawHash: item.rawHash }));
+  return { inserted, duplicates };
 }
 async function countPendingDiscoveryItems(clientId) {
-    const db = getDb();
-    const baseCondition = eq(discoveryItems.status, 'pending_scoring');
-    const whereCondition = clientId ? and(baseCondition, eq(discoveryItems.clientId, clientId)) : baseCondition;
-    const [row] = await db
-        .select({ count: sql `count(*)` })
-        .from(discoveryItems)
-        .where(whereCondition);
-    return Number(row?.count ?? 0);
+  var _a;
+  const db = getDb();
+  const baseCondition = eq(discoveryItems.status, "pending_scoring");
+  const whereCondition = clientId ? and(baseCondition, eq(discoveryItems.clientId, clientId)) : baseCondition;
+  const [row] = await db.select({ count: sql`count(*)` }).from(discoveryItems).where(whereCondition);
+  return Number((_a = row == null ? void 0 : row.count) != null ? _a : 0);
 }
 async function fetchDiscoveryItemsByIds(ids) {
-    if (!ids.length)
-        return [];
-    const db = getDb();
-    return db
-        .select()
-        .from(discoveryItems)
-        .where(inArray(discoveryItems.id, ids));
+  if (!ids.length)
+    return [];
+  const db = getDb();
+  return db.select().from(discoveryItems).where(inArray(discoveryItems.id, ids));
 }
 async function resetDiscoveryItemsToPending$1(itemIds) {
-    if (!itemIds.length)
-        return;
-    const db = getDb();
-    await db
-        .update(discoveryItems)
-        .set({ status: 'pending_scoring' })
-        .where(inArray(discoveryItems.id, itemIds));
+  if (!itemIds.length)
+    return;
+  const db = getDb();
+  await db.update(discoveryItems).set({ status: "pending_scoring" }).where(inArray(discoveryItems.id, itemIds));
 }
 async function upsertDiscoveryScore(input) {
-    const db = getDb();
-    const scoredAt = input.scoredAt ?? new Date();
-    await db.transaction(async (tx) => {
-        const decimal = (value) => value.toString();
-        const components = input.components ?? {
-            keyword: input.keywordScore,
-            recency: input.recencyScore,
-            source: input.sourceScore,
-        };
-        const values = {
-            itemId: input.itemId,
-            score: decimal(input.score),
-            keywordScore: decimal(input.keywordScore),
-            recencyScore: decimal(input.recencyScore),
-            sourceScore: decimal(input.sourceScore),
-            appliedThreshold: decimal(input.appliedThreshold),
-            weightsVersion: input.weightsVersion ?? 1,
-            componentsJson: components,
-            rationaleJson: input.rationale ?? null,
-            knobsHintJson: input.knobsHint ?? null,
-            metadataJson: input.metadata ?? {},
-            statusOutcome: input.status,
-            scoredAt,
-        };
-        await tx
-            .insert(discoveryScores)
-            .values(values)
-            .onConflictDoUpdate({
-            target: discoveryScores.itemId,
-            set: {
-                score: values.score,
-                keywordScore: values.keywordScore,
-                recencyScore: values.recencyScore,
-                sourceScore: values.sourceScore,
-                appliedThreshold: values.appliedThreshold,
-                weightsVersion: values.weightsVersion,
-                componentsJson: values.componentsJson,
-                rationaleJson: values.rationaleJson,
-                knobsHintJson: values.knobsHintJson,
-                metadataJson: values.metadataJson,
-                statusOutcome: values.statusOutcome,
-                scoredAt: values.scoredAt,
-            },
-        });
-        await tx
-            .update(discoveryItems)
-            .set({ status: input.status })
-            .where(eq(discoveryItems.id, input.itemId));
+  var _a;
+  const db = getDb();
+  const scoredAt = (_a = input.scoredAt) != null ? _a : /* @__PURE__ */ new Date();
+  await db.transaction(async (tx) => {
+    var _a2, _b, _c, _d, _e;
+    const decimal = (value) => value.toString();
+    const components = (_a2 = input.components) != null ? _a2 : {
+      keyword: input.keywordScore,
+      recency: input.recencyScore,
+      source: input.sourceScore
+    };
+    const values = {
+      itemId: input.itemId,
+      score: decimal(input.score),
+      keywordScore: decimal(input.keywordScore),
+      recencyScore: decimal(input.recencyScore),
+      sourceScore: decimal(input.sourceScore),
+      appliedThreshold: decimal(input.appliedThreshold),
+      weightsVersion: (_b = input.weightsVersion) != null ? _b : 1,
+      componentsJson: components,
+      rationaleJson: (_c = input.rationale) != null ? _c : null,
+      knobsHintJson: (_d = input.knobsHint) != null ? _d : null,
+      metadataJson: (_e = input.metadata) != null ? _e : {},
+      statusOutcome: input.status,
+      scoredAt
+    };
+    await tx.insert(discoveryScores).values(values).onConflictDoUpdate({
+      target: discoveryScores.itemId,
+      set: {
+        score: values.score,
+        keywordScore: values.keywordScore,
+        recencyScore: values.recencyScore,
+        sourceScore: values.sourceScore,
+        appliedThreshold: values.appliedThreshold,
+        weightsVersion: values.weightsVersion,
+        componentsJson: values.componentsJson,
+        rationaleJson: values.rationaleJson,
+        knobsHintJson: values.knobsHintJson,
+        metadataJson: values.metadataJson,
+        statusOutcome: values.statusOutcome,
+        scoredAt: values.scoredAt
+      }
     });
+    await tx.update(discoveryItems).set({ status: input.status }).where(eq(discoveryItems.id, input.itemId));
+  });
 }
 
 var __defProp = Object.defineProperty;
@@ -267,6 +245,97 @@ const keywordDeleteSchema = z.object({
   clientId: z.string().uuid(),
   keywordId: z.string().uuid()
 });
+const DASHBOARD_TO_DB_STATUS = {
+  spotted: "scored",
+  approved: "promoted",
+  promoted: "promoted",
+  suppressed: "suppressed",
+  archived: "archived",
+  pending: "pending_scoring"
+};
+const DB_TO_DASHBOARD_STATUS = {
+  pending_scoring: "pending",
+  scored: "spotted",
+  suppressed: "suppressed",
+  promoted: "approved",
+  archived: "archived"
+};
+const HIGHLIGHT_START = "__MARK__";
+const HIGHLIGHT_END = "__END__";
+const HIGHLIGHT_SPLIT_REGEX = /\s*\.\.\.\s*/g;
+const HTML_ESCAPE_REGEX = /[&<>"']/g;
+const HTML_ESCAPE_MAP = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;"
+};
+function mapDashboardStatuses(statuses) {
+  const mapped = /* @__PURE__ */ new Set();
+  statuses.forEach((status) => {
+    const mappedStatus = DASHBOARD_TO_DB_STATUS[status];
+    if (mappedStatus) {
+      mapped.add(mappedStatus);
+    }
+  });
+  if (mapped.size === 0) {
+    mapped.add("scored");
+  }
+  return [...mapped];
+}
+function mapDbStatus(status) {
+  var _a;
+  return (_a = DB_TO_DASHBOARD_STATUS[status]) != null ? _a : "spotted";
+}
+function escapeHtml(input) {
+  return input.replace(HTML_ESCAPE_REGEX, (char) => {
+    var _a;
+    return (_a = HTML_ESCAPE_MAP[char]) != null ? _a : char;
+  });
+}
+function sanitizeHeadline(raw) {
+  if (!raw) return [];
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  return normalized.split(HIGHLIGHT_SPLIT_REGEX).map((snippet) => snippet.trim()).filter((snippet) => snippet.length > 0).map((snippet) => {
+    const withPlaceholders = snippet.replaceAll(HIGHLIGHT_START, "__HIGHLIGHT_START__").replaceAll(HIGHLIGHT_END, "__HIGHLIGHT_END__");
+    const escaped = escapeHtml(withPlaceholders).replaceAll("__HIGHLIGHT_START__", "<mark>").replaceAll("__HIGHLIGHT_END__", "</mark>");
+    return escaped;
+  });
+}
+function buildHighlight(field, raw) {
+  const snippets = sanitizeHeadline(raw);
+  if (!snippets.length) {
+    return null;
+  }
+  return {
+    field,
+    snippets
+  };
+}
+function readStringField(record, key) {
+  if (!record || typeof record !== "object") return null;
+  const value = record[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+function readStringArray(record, key) {
+  if (!record || typeof record !== "object") return [];
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => typeof entry === "string" ? entry.trim() : "").filter((entry) => entry.length > 0);
+}
+function summarize(text, maxLength = 320) {
+  if (!text) return null;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
 const KEYWORD_LIMIT = 20;
 function computeNextFetchAt(completedAt, fetchIntervalMinutes, retryInMinutes) {
   const base = completedAt.getTime();
@@ -439,6 +508,134 @@ async function fetchDiscoveryItemsForScoring(itemIds) {
     normalized: row.normalizedJson,
     sourceMetadata: row.sourceMetadataJson
   }));
+}
+async function searchDiscoveryItems(filters) {
+  const db = getDb();
+  const dashboardStatuses = filters.statuses;
+  const dbStatuses = mapDashboardStatuses(dashboardStatuses);
+  const dateFrom = filters.dateFrom ? new Date(filters.dateFrom) : null;
+  const dateTo = filters.dateTo ? new Date(filters.dateTo) : null;
+  const trimmedSearchTerm = typeof filters.searchTerm === "string" ? filters.searchTerm.trim() : "";
+  const hasSearchTerm = trimmedSearchTerm.length > 0;
+  const tsQuery = hasSearchTerm ? sql`websearch_to_tsquery('english', ${trimmedSearchTerm})` : null;
+  const searchVector = sql`
+    to_tsvector(
+      'english',
+      coalesce(${discoveryItems.title}, '') || ' ' ||
+      coalesce(${discoveryItems.normalizedJson}->>'excerpt', '') || ' ' ||
+      coalesce(${discoveryItems.normalizedJson}->>'extractedBody', '')
+    )
+  `;
+  const conditions = [eq(discoveryItems.clientId, filters.clientId)];
+  if (dbStatuses.length === 1) {
+    conditions.push(eq(discoveryItems.status, dbStatuses[0]));
+  } else if (dbStatuses.length > 1) {
+    conditions.push(inArray(discoveryItems.status, dbStatuses));
+  }
+  if (filters.sourceIds.length) {
+    conditions.push(inArray(discoveryItems.sourceId, filters.sourceIds));
+  }
+  if (filters.topics.length) {
+    const topicsArray = sql`ARRAY[${sql.join(filters.topics.map((topic) => sql`${topic}`), sql`, `)}]::text[]`;
+    conditions.push(sql`
+      EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(coalesce(${discoveryScores.metadataJson}->'topics', '[]'::jsonb)) AS topic(value)
+        WHERE topic.value = ANY(${topicsArray})
+      )
+    `);
+  }
+  if (dateFrom) {
+    conditions.push(gte(discoveryItems.ingestedAt, dateFrom));
+  }
+  if (dateTo) {
+    conditions.push(lte(discoveryItems.ingestedAt, dateTo));
+  }
+  if (tsQuery) {
+    conditions.push(sql`${searchVector} @@ ${tsQuery}`);
+  }
+  const whereCondition = conditions.length === 1 ? conditions[0] : and(...conditions);
+  const selectFields = {
+    id: discoveryItems.id,
+    status: discoveryItems.status,
+    title: discoveryItems.title,
+    url: discoveryItems.url,
+    sourceId: discoveryItems.sourceId,
+    fetchedAt: discoveryItems.fetchedAt,
+    publishedAt: discoveryItems.publishedAt,
+    ingestedAt: discoveryItems.ingestedAt,
+    normalized: discoveryItems.normalizedJson,
+    metadata: discoveryScores.metadataJson,
+    score: discoveryScores.score
+  };
+  if (tsQuery) {
+    const titleHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=1,MaxWords=16,MinWords=4`;
+    const excerptHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=24,MinWords=5,ShortWord=3`;
+    const bodyHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=18,MinWords=6,ShortWord=3`;
+    Object.assign(selectFields, {
+      titleHeadline: sql`ts_headline('english', coalesce(${discoveryItems.title}, ''), ${tsQuery}, ${titleHeadlineOptions})`,
+      excerptHeadline: sql`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'excerpt', ''), ${tsQuery}, ${excerptHeadlineOptions})`,
+      bodyHeadline: sql`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'extractedBody', ''), ${tsQuery}, ${bodyHeadlineOptions})`,
+      rank: sql`ts_rank_cd(${searchVector}, ${tsQuery}, 32)`
+    });
+  }
+  const orderings = [];
+  if (tsQuery) {
+    orderings.push(sql`rank DESC`);
+  }
+  orderings.push(sql`coalesce(${discoveryScores.score}, 0) DESC`);
+  orderings.push(desc(discoveryItems.ingestedAt));
+  orderings.push(desc(discoveryItems.id));
+  const offset = (filters.page - 1) * filters.pageSize;
+  const rows = await db.select(selectFields).from(discoveryItems).leftJoin(discoveryScores, eq(discoveryScores.itemId, discoveryItems.id)).where(whereCondition).orderBy(...orderings).limit(filters.pageSize).offset(offset);
+  const [{ count }] = await db.select({ count: sql`count(*)` }).from(discoveryItems).leftJoin(discoveryScores, eq(discoveryScores.itemId, discoveryItems.id)).where(whereCondition);
+  const items = rows.map((row) => {
+    var _a, _b;
+    const typedRow = row;
+    const normalized = (_a = typedRow.normalized) != null ? _a : {};
+    const metadata = (_b = typedRow.metadata) != null ? _b : {};
+    const excerpt = readStringField(normalized, "excerpt");
+    const body = readStringField(normalized, "extractedBody");
+    const summary = summarize(excerpt != null ? excerpt : body);
+    const metadataTopics = readStringArray(metadata, "topics");
+    const normalizedTopics = readStringArray(normalized, "topics");
+    const topics = metadataTopics.length ? metadataTopics : normalizedTopics;
+    const highlights = [];
+    const titleHighlight = buildHighlight("title", typedRow.titleHeadline);
+    if (titleHighlight) {
+      highlights.push(titleHighlight);
+    }
+    const excerptHighlight = buildHighlight("excerpt", typedRow.excerptHeadline);
+    if (excerptHighlight) {
+      highlights.push(excerptHighlight);
+    } else {
+      const fallbackBodyHighlight = buildHighlight("body", typedRow.bodyHeadline);
+      if (fallbackBodyHighlight) {
+        highlights.push(fallbackBodyHighlight);
+      }
+    }
+    const rawScore = typedRow.score;
+    const numericScore = rawScore === null || rawScore === void 0 ? null : Number(rawScore);
+    const normalizedScore = typeof numericScore === "number" && Number.isFinite(numericScore) ? numericScore : null;
+    return {
+      id: typedRow.id,
+      title: typedRow.title,
+      url: typedRow.url,
+      status: mapDbStatus(typedRow.status),
+      score: normalizedScore,
+      sourceId: typedRow.sourceId,
+      fetchedAt: typedRow.fetchedAt.toISOString(),
+      publishedAt: typedRow.publishedAt ? typedRow.publishedAt.toISOString() : null,
+      ingestedAt: typedRow.ingestedAt.toISOString(),
+      summary,
+      topics,
+      highlights
+    };
+  });
+  return {
+    items,
+    total: Number(count != null ? count : 0)
+  };
 }
 async function releaseDiscoverySourceAfterFailedCompletion(input) {
   var _a, _b, _c, _d;
@@ -760,5 +957,5 @@ async function deleteDiscoveryKeyword(input) {
   return (_a = deleted == null ? void 0 : deleted.id) != null ? _a : null;
 }
 
-export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, fetchDiscoveryItemsForScoring as i, listDiscoverySourcesDue as j, claimDiscoverySourceForFetch as k, listDiscoveryKeywords as l, completeDiscoverySourceFetch as m, countPendingDiscoveryItemsForClient as n, resetDiscoveryItemsToPending as o, persistDiscoveryScores as p, markStaleDiscoverySources as q, releaseDiscoverySourceAfterFailedCompletion as r, saveDiscoveryItems as s, updateDiscoveryKeyword as u };
+export { DuplicateDiscoveryKeywordError as D, InvalidDiscoveryKeywordError as I, KeywordLimitExceededError as K, DiscoveryKeywordNotFoundError as a, deleteDiscoverySource as b, createDiscoveryKeyword as c, deleteDiscoveryKeyword as d, listDiscoverySources as e, createDiscoverySource as f, InvalidDiscoverySourceError as g, DuplicateDiscoverySourceError as h, fetchDiscoveryItemsForScoring as i, listDiscoverySourcesDue as j, claimDiscoverySourceForFetch as k, listDiscoveryKeywords as l, saveDiscoveryItems as m, completeDiscoverySourceFetch as n, countPendingDiscoveryItemsForClient as o, resetDiscoveryItemsToPending as p, persistDiscoveryScores as q, releaseDiscoverySourceAfterFailedCompletion as r, searchDiscoveryItems as s, markStaleDiscoverySources as t, updateDiscoveryKeyword as u };
 //# sourceMappingURL=discovery-repository.mjs.map

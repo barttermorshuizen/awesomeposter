@@ -1,6 +1,6 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError } from '../../../../../nitro/nitro.mjs';
 import { b as deleteDiscoverySource } from '../../../../../_/discovery-repository.mjs';
-import { a as FeatureFlagDisabledError } from '../../../../../_/feature-flags.mjs';
+import { b as FeatureFlagDisabledError } from '../../../../../_/feature-flags.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

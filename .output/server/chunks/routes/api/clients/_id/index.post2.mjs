@@ -1,7 +1,7 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError, r as readBody } from '../../../../nitro/nitro.mjs';
 import { f as createDiscoverySource, g as InvalidDiscoverySourceError, h as DuplicateDiscoverySourceError } from '../../../../_/discovery-repository.mjs';
 import { e as emitDiscoveryEvent } from '../../../../_/discovery-events.mjs';
-import { a as FeatureFlagDisabledError } from '../../../../_/feature-flags.mjs';
+import { b as FeatureFlagDisabledError } from '../../../../_/feature-flags.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

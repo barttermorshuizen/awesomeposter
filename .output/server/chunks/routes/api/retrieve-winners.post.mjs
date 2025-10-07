@@ -1,5 +1,5 @@
 import { d as defineEventHandler, r as readBody } from '../../nitro/nitro.mjs';
-import { r as requireDiscoveryFeatureEnabled, a as FeatureFlagDisabledError } from '../../_/feature-flags.mjs';
+import { r as requireDiscoveryFeatureEnabled, b as FeatureFlagDisabledError } from '../../_/feature-flags.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';

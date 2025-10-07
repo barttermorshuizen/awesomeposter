@@ -89,6 +89,24 @@ export function toDiscoveryTelemetryEvent(envelope: DiscoveryEventEnvelope): Dis
         timestamp: envelope.payload.occurredAt,
         payload: envelope.payload,
       }
+    case 'discovery.search.requested':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.search.requested',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.requestId,
+        timestamp: envelope.payload.requestedAt,
+        payload: envelope.payload,
+      }
+    case 'discovery.search.completed':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.search.completed',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.requestId,
+        timestamp: envelope.payload.completedAt,
+        payload: envelope.payload,
+      }
     default:
       return null
   }

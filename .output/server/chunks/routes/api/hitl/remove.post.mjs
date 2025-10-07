@@ -12,9 +12,10 @@ import 'node:path';
 import 'node:crypto';
 import 'node:url';
 import 'drizzle-orm';
-import 'drizzle-orm/pg-core';
+import '../../../_/client.mjs';
 import 'drizzle-orm/node-postgres';
 import 'pg';
+import 'drizzle-orm/pg-core';
 import 'node:async_hooks';
 import 'winston';
 

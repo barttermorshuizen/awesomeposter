@@ -10,6 +10,7 @@ import 'node:crypto';
 import 'node:url';
 import 'zod';
 import '../../../_/api-auth.mjs';
+import '../../../_/session.mjs';
 import '../../../_/feature-flags.mjs';
 import '@upstash/redis';
 import 'drizzle-orm';

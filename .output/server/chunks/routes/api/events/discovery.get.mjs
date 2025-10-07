@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { c as createError, d as defineEventHandler, g as getQuery, e as setHeader } from '../../../nitro/nitro.mjs';
+import { d as defineEventHandler, g as getQuery, c as createError, e as setHeader } from '../../../nitro/nitro.mjs';
 import { z } from 'zod';
 import { r as requireApiAuth } from '../../../_/api-auth.mjs';
+import { r as requireUserSession, a as assertClientAccess } from '../../../_/session.mjs';
 import { r as requireDiscoveryFeatureEnabled, s as subscribeToFeatureFlagUpdates, F as FEATURE_DISCOVERY_AGENT } from '../../../_/feature-flags.mjs';
 import { o as onDiscoveryEvent } from '../../../_/discovery-events.mjs';
 import { b as discoverySourceTypeSchema, e as discoveryIngestionFailureReasonSchema } from '../../../_/discovery.mjs';
@@ -20,270 +21,303 @@ import 'pg';
 import 'drizzle-orm/pg-core';
 
 z.object({
+  id: z.string().uuid(),
+  clientId: z.string().uuid(),
+  url: z.string().url(),
+  canonicalUrl: z.string().url(),
+  sourceType: discoverySourceTypeSchema,
+  identifier: z.string(),
+  notes: z.string().optional().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+const discoverySourceCreatedEventSchema = z.object({
+  type: z.literal("source-created"),
+  version: z.number().int().min(1),
+  payload: z.object({
     id: z.string().uuid(),
     clientId: z.string().uuid(),
     url: z.string().url(),
     canonicalUrl: z.string().url(),
     sourceType: discoverySourceTypeSchema,
     identifier: z.string(),
-    notes: z.string().optional().nullable(),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-});
-const discoverySourceCreatedEventSchema = z.object({
-    type: z.literal('source-created'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        id: z.string().uuid(),
-        clientId: z.string().uuid(),
-        url: z.string().url(),
-        canonicalUrl: z.string().url(),
-        sourceType: discoverySourceTypeSchema,
-        identifier: z.string(),
-        createdAt: z.string(),
-    }),
+    createdAt: z.string()
+  })
 });
 const ingestionStartedEventSchema = z.object({
-    type: z.literal('ingestion.started'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        runId: z.string().min(1),
-        clientId: z.string().uuid(),
-        sourceId: z.string().uuid(),
-        sourceType: discoverySourceTypeSchema,
-        scheduledAt: z.string(),
-        startedAt: z.string(),
-    }),
+  type: z.literal("ingestion.started"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    scheduledAt: z.string(),
+    startedAt: z.string()
+  })
 });
 const ingestionAttemptSchema = z.object({
-    attempt: z.number().int().min(1),
+  attempt: z.number().int().min(1),
+  startedAt: z.string(),
+  completedAt: z.string(),
+  durationMs: z.number().int().min(0),
+  success: z.boolean(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  retryInMinutes: z.number().int().min(0).nullable().optional(),
+  nextRetryAt: z.string().nullable().optional(),
+  retryReason: z.enum(["transient", "permanent", "exhausted", "none"]).optional(),
+  retryAfterOverride: z.boolean().optional()
+});
+const ingestionCompletedEventSchema = z.object({
+  type: z.literal("ingestion.completed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
+    clientId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
     startedAt: z.string(),
     completedAt: z.string(),
     durationMs: z.number().int().min(0),
     success: z.boolean(),
     failureReason: discoveryIngestionFailureReasonSchema.optional(),
     retryInMinutes: z.number().int().min(0).nullable().optional(),
-    nextRetryAt: z.string().nullable().optional(),
-    retryReason: z.enum(['transient', 'permanent', 'exhausted', 'none']).optional(),
-    retryAfterOverride: z.boolean().optional(),
-});
-const ingestionCompletedEventSchema = z.object({
-    type: z.literal('ingestion.completed'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        runId: z.string().min(1),
-        clientId: z.string().uuid(),
-        sourceId: z.string().uuid(),
-        sourceType: discoverySourceTypeSchema,
-        startedAt: z.string(),
-        completedAt: z.string(),
-        durationMs: z.number().int().min(0),
-        success: z.boolean(),
-        failureReason: discoveryIngestionFailureReasonSchema.optional(),
-        retryInMinutes: z.number().int().min(0).nullable().optional(),
-        attempt: z.number().int().min(1).optional(),
-        maxAttempts: z.number().int().min(1).optional(),
-        attempts: z.array(ingestionAttemptSchema).optional(),
-        nextRetryAt: z.string().optional(),
-    }),
+    attempt: z.number().int().min(1).optional(),
+    maxAttempts: z.number().int().min(1).optional(),
+    attempts: z.array(ingestionAttemptSchema).optional(),
+    nextRetryAt: z.string().optional()
+  })
 });
 const ingestionFailedEventSchema = z.object({
-    type: z.literal('ingestion.failed'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        runId: z.string().min(1),
-        clientId: z.string().uuid(),
-        sourceId: z.string().uuid(),
-        sourceType: discoverySourceTypeSchema,
-        failureReason: discoveryIngestionFailureReasonSchema,
-        attempt: z.number().int().min(1),
-        maxAttempts: z.number().int().min(1),
-        retryInMinutes: z.number().int().min(0).nullable().optional(),
-        nextRetryAt: z.string().optional(),
-    }),
-});
-const sourceHealthPayloadSchema = z.object({
+  type: z.literal("ingestion.failed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    runId: z.string().min(1),
     clientId: z.string().uuid(),
     sourceId: z.string().uuid(),
     sourceType: discoverySourceTypeSchema,
-    status: z.enum(['healthy', 'warning', 'error']),
-    lastFetchedAt: z.string().nullable(),
-    failureReason: discoveryIngestionFailureReasonSchema.optional(),
-    observedAt: z.string(),
-    consecutiveFailures: z.number().int().min(0).optional(),
-    attempt: z.number().int().min(1).optional(),
-    staleSince: z.string().nullable().optional(),
+    failureReason: discoveryIngestionFailureReasonSchema,
+    attempt: z.number().int().min(1),
+    maxAttempts: z.number().int().min(1),
+    retryInMinutes: z.number().int().min(0).nullable().optional(),
+    nextRetryAt: z.string().optional()
+  })
+});
+const sourceHealthPayloadSchema = z.object({
+  clientId: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  sourceType: discoverySourceTypeSchema,
+  status: z.enum(["healthy", "warning", "error"]),
+  lastFetchedAt: z.string().nullable(),
+  failureReason: discoveryIngestionFailureReasonSchema.optional(),
+  observedAt: z.string(),
+  consecutiveFailures: z.number().int().min(0).optional(),
+  attempt: z.number().int().min(1).optional(),
+  staleSince: z.string().nullable().optional()
 });
 const sourceHealthEventSchema = z.object({
-    type: z.literal('source.health'),
-    version: z.number().int().min(1),
-    payload: sourceHealthPayloadSchema,
+  type: z.literal("source.health"),
+  version: z.number().int().min(1),
+  payload: sourceHealthPayloadSchema
 });
 const discoveryKeywordUpdatedEventSchema = z.object({
-    type: z.literal('keyword.updated'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        clientId: z.string().uuid(),
-        keywords: z.array(z.string().min(1)),
-        updatedAt: z.string(),
-    }),
+  type: z.literal("keyword.updated"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    keywords: z.array(z.string().min(1)),
+    updatedAt: z.string()
+  })
 });
 const discoveryScoreCompleteEventSchema = z.object({
-    type: z.literal('discovery.score.complete'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        clientId: z.string().uuid(),
-        itemId: z.string().uuid(),
-        sourceId: z.string().uuid(),
-        score: z.number().min(0).max(1),
-        status: z.enum(['scored', 'suppressed']),
-        components: z.object({
-            keyword: z.number().min(0).max(1),
-            recency: z.number().min(0).max(1),
-            source: z.number().min(0).max(1),
-        }).catchall(z.number()),
-        appliedThreshold: z.number().min(0).max(1),
-        weightsVersion: z.number().int().min(1),
-        scoredAt: z.string(),
-    }),
+  type: z.literal("discovery.score.complete"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    itemId: z.string().uuid(),
+    sourceId: z.string().uuid(),
+    score: z.number().min(0).max(1),
+    status: z.enum(["scored", "suppressed"]),
+    components: z.object({
+      keyword: z.number().min(0).max(1),
+      recency: z.number().min(0).max(1),
+      source: z.number().min(0).max(1)
+    }).catchall(z.number()),
+    appliedThreshold: z.number().min(0).max(1),
+    weightsVersion: z.number().int().min(1),
+    scoredAt: z.string()
+  })
 });
 const discoveryQueueUpdatedEventSchema = z.object({
-    type: z.literal('discovery.queue.updated'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        clientId: z.string().uuid(),
-        pendingCount: z.number().int().min(0),
-        scoredDelta: z.number().int().min(0).optional(),
-        suppressedDelta: z.number().int().min(0).optional(),
-        updatedAt: z.string(),
-        reason: z.enum(['scoring', 'backlog', 'manual']).optional(),
-    }),
+  type: z.literal("discovery.queue.updated"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    pendingCount: z.number().int().min(0),
+    scoredDelta: z.number().int().min(0).optional(),
+    suppressedDelta: z.number().int().min(0).optional(),
+    updatedAt: z.string(),
+    reason: z.enum(["scoring", "backlog", "manual"]).optional()
+  })
 });
 const discoveryScoringFailedEventSchema = z.object({
-    type: z.literal('discovery.scoring.failed'),
-    version: z.number().int().min(1),
-    payload: z.object({
-        clientId: z.string().uuid(),
-        itemIds: z.array(z.string().uuid()).optional(),
-        errorCode: z.string(),
-        errorMessage: z.string(),
-        details: z.record(z.unknown()).optional(),
-        occurredAt: z.string(),
-    }),
+  type: z.literal("discovery.scoring.failed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    itemIds: z.array(z.string().uuid()).optional(),
+    errorCode: z.string(),
+    errorMessage: z.string(),
+    details: z.record(z.unknown()).optional(),
+    occurredAt: z.string()
+  })
+});
+const discoverySearchRequestedEventSchema = z.object({
+  type: z.literal("discovery.search.requested"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    requestId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    requestedBy: z.string().uuid().optional(),
+    page: z.number().int().min(1),
+    pageSize: z.number().int().min(1),
+    statuses: z.array(z.string().min(1)).min(1),
+    sourceCount: z.number().int().min(0),
+    topicCount: z.number().int().min(0),
+    hasSearchTerm: z.boolean(),
+    searchTermLength: z.number().int().min(0).max(160),
+    requestedAt: z.string()
+  })
+});
+const discoverySearchCompletedEventSchema = z.object({
+  type: z.literal("discovery.search.completed"),
+  version: z.number().int().min(1),
+  payload: z.object({
+    requestId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    latencyMs: z.number().min(0),
+    total: z.number().int().min(0),
+    returned: z.number().int().min(0),
+    page: z.number().int().min(1),
+    pageSize: z.number().int().min(1),
+    statuses: z.array(z.string().min(1)).min(1),
+    sourceCount: z.number().int().min(0),
+    topicCount: z.number().int().min(0),
+    searchTermLength: z.number().int().min(0).max(160),
+    degraded: z.boolean(),
+    degradeReason: z.enum(["latency", "results", "other"]).nullable().optional(),
+    completedAt: z.string()
+  })
 });
 z.union([
-    discoverySourceCreatedEventSchema,
-    ingestionStartedEventSchema,
-    ingestionCompletedEventSchema,
-    ingestionFailedEventSchema,
-    sourceHealthEventSchema,
-    discoveryKeywordUpdatedEventSchema,
-    discoveryScoreCompleteEventSchema,
-    discoveryQueueUpdatedEventSchema,
-    discoveryScoringFailedEventSchema,
+  discoverySourceCreatedEventSchema,
+  ingestionStartedEventSchema,
+  ingestionCompletedEventSchema,
+  ingestionFailedEventSchema,
+  sourceHealthEventSchema,
+  discoveryKeywordUpdatedEventSchema,
+  discoveryScoreCompleteEventSchema,
+  discoveryQueueUpdatedEventSchema,
+  discoveryScoringFailedEventSchema,
+  discoverySearchRequestedEventSchema,
+  discoverySearchCompletedEventSchema
 ]);
 const DISCOVERY_TELEMETRY_SCHEMA_VERSION = 1;
 const discoverySourceCreatedTelemetrySchema = z.object({
-    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-    eventType: z.literal('source-created'),
-    clientId: z.string().uuid(),
-    entityId: z.string().uuid(),
-    timestamp: z.string(),
-    payload: discoverySourceCreatedEventSchema.shape.payload,
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("source-created"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoverySourceCreatedEventSchema.shape.payload
 });
 const discoveryKeywordUpdatedTelemetrySchema = z.object({
-    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-    eventType: z.literal('keyword.updated'),
-    clientId: z.string().uuid(),
-    entityId: z.string().uuid(),
-    timestamp: z.string(),
-    payload: discoveryKeywordUpdatedEventSchema.shape.payload,
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("keyword.updated"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryKeywordUpdatedEventSchema.shape.payload
 });
 const discoveryScoreCompleteTelemetrySchema = z.object({
-    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-    eventType: z.literal('discovery.score.complete'),
-    clientId: z.string().uuid(),
-    entityId: z.string().uuid(),
-    timestamp: z.string(),
-    payload: discoveryScoreCompleteEventSchema.shape.payload,
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("discovery.score.complete"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryScoreCompleteEventSchema.shape.payload
 });
 const discoveryQueueUpdatedTelemetrySchema = z.object({
-    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-    eventType: z.literal('discovery.queue.updated'),
-    clientId: z.string().uuid(),
-    entityId: z.string().uuid(),
-    timestamp: z.string(),
-    payload: discoveryQueueUpdatedEventSchema.shape.payload,
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("discovery.queue.updated"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryQueueUpdatedEventSchema.shape.payload
 });
 const discoveryScoringFailedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal("discovery.scoring.failed"),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryScoringFailedEventSchema.shape.payload
+});
+z.discriminatedUnion("eventType", [
+  discoverySourceCreatedTelemetrySchema,
+  discoveryKeywordUpdatedTelemetrySchema,
+  discoveryScoreCompleteTelemetrySchema,
+  discoveryQueueUpdatedTelemetrySchema,
+  discoveryScoringFailedTelemetrySchema,
+  z.object({
     schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-    eventType: z.literal('discovery.scoring.failed'),
+    eventType: z.literal("ingestion.started"),
     clientId: z.string().uuid(),
     entityId: z.string().uuid(),
     timestamp: z.string(),
-    payload: discoveryScoringFailedEventSchema.shape.payload,
-});
-z.discriminatedUnion('eventType', [
-    discoverySourceCreatedTelemetrySchema,
-    discoveryKeywordUpdatedTelemetrySchema,
-    discoveryScoreCompleteTelemetrySchema,
-    discoveryQueueUpdatedTelemetrySchema,
-    discoveryScoringFailedTelemetrySchema,
-    z.object({
-        schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-        eventType: z.literal('ingestion.started'),
-        clientId: z.string().uuid(),
-        entityId: z.string().uuid(),
-        timestamp: z.string(),
-        payload: ingestionStartedEventSchema.shape.payload,
-    }),
-    z.object({
-        schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-        eventType: z.literal('ingestion.completed'),
-        clientId: z.string().uuid(),
-        entityId: z.string().uuid(),
-        timestamp: z.string(),
-        payload: ingestionCompletedEventSchema.shape.payload,
-    }),
-    z.object({
-        schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-        eventType: z.literal('ingestion.failed'),
-        clientId: z.string().uuid(),
-        entityId: z.string().uuid(),
-        timestamp: z.string(),
-        payload: ingestionFailedEventSchema.shape.payload,
-    }),
-    z.object({
-        schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
-        eventType: z.literal('source.health'),
-        clientId: z.string().uuid(),
-        entityId: z.string().uuid(),
-        timestamp: z.string(),
-        payload: sourceHealthEventSchema.shape.payload,
-    }),
+    payload: ingestionStartedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("ingestion.completed"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionCompletedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("ingestion.failed"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: ingestionFailedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("source.health"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: sourceHealthEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("discovery.search.requested"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: discoverySearchRequestedEventSchema.shape.payload
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal("discovery.search.completed"),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: discoverySearchCompletedEventSchema.shape.payload
+  })
 ]);
-
-function isSessionUser(value) {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value;
-  return typeof candidate.id === "string" && candidate.id.length > 0;
-}
-function requireUserSession(event) {
-  var _a, _b, _c;
-  const ctx = event.context || {};
-  const userCandidate = (_c = (_a = ctx.auth) == null ? void 0 : _a.user) != null ? _c : (_b = ctx.session) == null ? void 0 : _b.user;
-  if (!isSessionUser(userCandidate)) {
-    throw createError({ statusCode: 401, statusMessage: "Authentication required" });
-  }
-  return userCandidate;
-}
-function assertClientAccess(user, clientId) {
-  if (!clientId) return;
-  const allowed = Array.isArray(user.clientIds) ? user.clientIds : typeof user.clientId === "string" && user.clientId.length > 0 ? [user.clientId] : null;
-  if (allowed && !allowed.includes(clientId)) {
-    throw createError({ statusCode: 403, statusMessage: "Forbidden" });
-  }
-}
 
 function toDiscoveryTelemetryEvent(envelope) {
   var _a;
@@ -367,6 +401,24 @@ function toDiscoveryTelemetryEvent(envelope) {
         clientId: envelope.payload.clientId,
         entityId: envelope.payload.clientId,
         timestamp: envelope.payload.occurredAt,
+        payload: envelope.payload
+      };
+    case "discovery.search.requested":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "discovery.search.requested",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.requestId,
+        timestamp: envelope.payload.requestedAt,
+        payload: envelope.payload
+      };
+    case "discovery.search.completed":
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: "discovery.search.completed",
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.requestId,
+        timestamp: envelope.payload.completedAt,
         payload: envelope.payload
       };
     default:

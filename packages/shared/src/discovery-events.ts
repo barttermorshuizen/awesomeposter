@@ -185,6 +185,49 @@ export const discoveryScoringFailedEventSchema = z.object({
 
 export type DiscoveryScoringFailedEvent = z.infer<typeof discoveryScoringFailedEventSchema>
 
+export const discoverySearchRequestedEventSchema = z.object({
+  type: z.literal('discovery.search.requested'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    requestId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    requestedBy: z.string().uuid().optional(),
+    page: z.number().int().min(1),
+    pageSize: z.number().int().min(1),
+    statuses: z.array(z.string().min(1)).min(1),
+    sourceCount: z.number().int().min(0),
+    topicCount: z.number().int().min(0),
+    hasSearchTerm: z.boolean(),
+    searchTermLength: z.number().int().min(0).max(160),
+    requestedAt: z.string(),
+  }),
+})
+
+export type DiscoverySearchRequestedEvent = z.infer<typeof discoverySearchRequestedEventSchema>
+
+export const discoverySearchCompletedEventSchema = z.object({
+  type: z.literal('discovery.search.completed'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    requestId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    latencyMs: z.number().min(0),
+    total: z.number().int().min(0),
+    returned: z.number().int().min(0),
+    page: z.number().int().min(1),
+    pageSize: z.number().int().min(1),
+    statuses: z.array(z.string().min(1)).min(1),
+    sourceCount: z.number().int().min(0),
+    topicCount: z.number().int().min(0),
+    searchTermLength: z.number().int().min(0).max(160),
+    degraded: z.boolean(),
+    degradeReason: z.enum(['latency', 'results', 'other']).nullable().optional(),
+    completedAt: z.string(),
+  }),
+})
+
+export type DiscoverySearchCompletedEvent = z.infer<typeof discoverySearchCompletedEventSchema>
+
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
   ingestionStartedEventSchema,
@@ -195,6 +238,8 @@ export const discoveryEventEnvelopeSchema = z.union([
   discoveryScoreCompleteEventSchema,
   discoveryQueueUpdatedEventSchema,
   discoveryScoringFailedEventSchema,
+  discoverySearchRequestedEventSchema,
+  discoverySearchCompletedEventSchema,
 ])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>
@@ -283,6 +328,22 @@ export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
     entityId: z.string().uuid(),
     timestamp: z.string(),
     payload: sourceHealthEventSchema.shape.payload,
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('discovery.search.requested'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: discoverySearchRequestedEventSchema.shape.payload,
+  }),
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('discovery.search.completed'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: discoverySearchCompletedEventSchema.shape.payload,
   }),
 ])
 

@@ -1,8 +1,8 @@
 import { d as defineEventHandler, a as getRouterParam, c as createError, r as readBody } from '../../../../nitro/nitro.mjs';
-import { F as FEATURE_DISCOVERY_AGENT, e as emitDiscoveryFlagChanged, p as publishFeatureFlagUpdate, D as DISCOVERY_FLAG_CHANGED_EVENT } from '../../../../_/feature-flags.mjs';
-import nodeCrypto from 'node:crypto';
+import crypto from 'node:crypto';
 import { eq, and } from 'drizzle-orm';
 import { g as getDb, c as clients, d as clientFeatures, e as clientFeatureToggleAudits } from '../../../../_/client.mjs';
+import { F as FEATURE_DISCOVERY_AGENT, a as FEATURE_DISCOVERY_FILTERS_V1, e as emitDiscoveryFlagChanged, p as publishFeatureFlagUpdate, D as DISCOVERY_FLAG_CHANGED_EVENT } from '../../../../_/feature-flags.mjs';
 import 'node:http';
 import 'node:https';
 import 'node:events';
@@ -10,10 +10,10 @@ import 'node:buffer';
 import 'node:fs';
 import 'node:path';
 import 'node:url';
-import '@upstash/redis';
 import 'drizzle-orm/node-postgres';
 import 'pg';
 import 'drizzle-orm/pg-core';
+import '@upstash/redis';
 
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
@@ -34,8 +34,16 @@ class ClientNotFoundError extends FeatureFlagAdminError {
     this.clientId = clientId;
   }
 }
-async function setDiscoveryFlag({
+const SUPPORTED_CLIENT_FEATURES = [
+  FEATURE_DISCOVERY_AGENT,
+  FEATURE_DISCOVERY_FILTERS_V1
+];
+function isSupportedClientFeature(feature) {
+  return SUPPORTED_CLIENT_FEATURES.includes(feature);
+}
+async function setClientFeatureFlag({
   clientId,
+  feature,
   enable,
   actor,
   reason
@@ -43,6 +51,9 @@ async function setDiscoveryFlag({
   const trimmedActor = actor == null ? void 0 : actor.trim();
   if (!trimmedActor) {
     throw new FeatureFlagAdminError("Actor is required", 400);
+  }
+  if (!isSupportedClientFeature(feature)) {
+    throw new FeatureFlagAdminError(`Feature ${feature} is not supported for client toggles`, 400);
   }
   const trimmedReason = (reason == null ? void 0 : reason.trim()) || null;
   const db = getDb();
@@ -52,7 +63,7 @@ async function setDiscoveryFlag({
     if (!client) {
       throw new ClientNotFoundError(clientId);
     }
-    const [existingFeature] = await tx.select({ enabled: clientFeatures.enabled }).from(clientFeatures).where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, FEATURE_DISCOVERY_AGENT))).limit(1);
+    const [existingFeature] = await tx.select({ enabled: clientFeatures.enabled }).from(clientFeatures).where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, feature))).limit(1);
     const currentEnabled = (_a = existingFeature == null ? void 0 : existingFeature.enabled) != null ? _a : false;
     if (currentEnabled === enable) {
       return {
@@ -65,20 +76,20 @@ async function setDiscoveryFlag({
     }
     const timestamp = /* @__PURE__ */ new Date();
     if (existingFeature) {
-      await tx.update(clientFeatures).set({ enabled: enable, updatedAt: timestamp }).where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, FEATURE_DISCOVERY_AGENT)));
+      await tx.update(clientFeatures).set({ enabled: enable, updatedAt: timestamp }).where(and(eq(clientFeatures.clientId, clientId), eq(clientFeatures.feature, feature)));
     } else {
       await tx.insert(clientFeatures).values({
         clientId,
-        feature: FEATURE_DISCOVERY_AGENT,
+        feature,
         enabled: enable,
         createdAt: timestamp,
         updatedAt: timestamp
       });
     }
     await tx.insert(clientFeatureToggleAudits).values({
-      id: nodeCrypto.randomUUID(),
+      id: crypto.randomUUID(),
       clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
+      feature,
       previousEnabled: currentEnabled,
       newEnabled: enable,
       actor: trimmedActor,
@@ -95,19 +106,21 @@ async function setDiscoveryFlag({
   });
   if (result.changed) {
     const occurredAtIso = result.occurredAt.toISOString();
-    await emitDiscoveryFlagChanged({
-      event: DISCOVERY_FLAG_CHANGED_EVENT,
-      clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
-      enabled: result.newEnabled,
-      previousEnabled: result.previousEnabled,
-      actor: trimmedActor,
-      reason: trimmedReason,
-      occurredAt: occurredAtIso
-    });
+    if (feature === FEATURE_DISCOVERY_AGENT) {
+      await emitDiscoveryFlagChanged({
+        event: DISCOVERY_FLAG_CHANGED_EVENT,
+        clientId,
+        feature: FEATURE_DISCOVERY_AGENT,
+        enabled: result.newEnabled,
+        previousEnabled: result.previousEnabled,
+        actor: trimmedActor,
+        reason: trimmedReason,
+        occurredAt: occurredAtIso
+      });
+    }
     await publishFeatureFlagUpdate({
       clientId,
-      feature: FEATURE_DISCOVERY_AGENT,
+      feature,
       enabled: result.newEnabled,
       updatedAt: occurredAtIso
     });
@@ -122,7 +135,7 @@ const featureFlags_patch = defineEventHandler(async (event) => {
   }
   const body = await readBody(event).catch(() => ({}));
   const feature = typeof body.feature === "string" ? body.feature : "";
-  if (feature !== FEATURE_DISCOVERY_AGENT) {
+  if (!feature || !isSupportedClientFeature(feature)) {
     throw createError({ statusCode: 400, statusMessage: "Unsupported feature flag" });
   }
   if (typeof body.enabled !== "boolean") {
@@ -134,8 +147,9 @@ const featureFlags_patch = defineEventHandler(async (event) => {
   }
   const reason = typeof body.reason === "string" ? body.reason : void 0;
   try {
-    const result = await setDiscoveryFlag({
+    const result = await setClientFeatureFlag({
       clientId,
+      feature,
       enable: body.enabled,
       actor: actorRaw,
       reason: reason != null ? reason : null
@@ -145,7 +159,7 @@ const featureFlags_patch = defineEventHandler(async (event) => {
       changed: result.changed,
       client: result.client,
       flag: {
-        feature: FEATURE_DISCOVERY_AGENT,
+        feature,
         enabled: result.newEnabled,
         previousEnabled: result.previousEnabled,
         occurredAt: result.occurredAt.toISOString()

@@ -1,12 +1,12 @@
 {
-  "date": "2025-10-06T14:15:41.349Z",
+  "date": "2025-10-07T19:18:04.825Z",
   "preset": "node-server",
   "framework": {
     "name": "nitro",
     "version": ""
   },
   "versions": {
-    "nitro": "2.12.6"
+    "nitro": "2.12.4"
   },
   "commands": {
     "preview": "node server/index.mjs"

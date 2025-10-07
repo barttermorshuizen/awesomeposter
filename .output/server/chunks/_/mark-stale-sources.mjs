@@ -1,5 +1,5 @@
 import { h as defineTask } from '../nitro/nitro.mjs';
-import { q as markStaleDiscoverySources } from './discovery-repository.mjs';
+import { t as markStaleDiscoverySources } from './discovery-repository.mjs';
 import { p as publishSourceHealthStatus } from './discovery-health.mjs';
 import 'node:http';
 import 'node:https';

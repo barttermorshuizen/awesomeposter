@@ -208,9 +208,10 @@ Use this playbook when the shared scoring helper needs to be paused or rolled ba
 3. **Run regression validations** (automated in staging, sampled in production):
    - Execute `npm run test -- tests/api/discovery` – ingestion + scoring integration suite must pass.
    - Run `node scripts/discovery-seed.mjs --smoke` with the pilot client to ensure ingestion pipelines stay healthy.
+   - Run `node scripts/discovery-search-benchmark.mjs --client <clientId> --rps 50 --duration 30` and record the summary in `docs/qa/perf/discovery-filters.md`. Any `discovery.search.completed` telemetry with `degraded=true` during the benchmark indicates the dashboard should fall back to virtualization-only mode until load normalises.
    - Spot check the reviewer dashboard suppressed queue against the latest Day-1 accuracy export; deltas >5% trigger escalation.
 4. **Decide on rollback vs. resume**
    - Resume scoring: re-enable the flag (`--enabled`) after integration tests pass and accuracy variance <5%.
-   - Rollback scoring: keep the flag disabled, reset affected items to `pending_scoring` (see engineering runbook), and communicate status in `#discovery-pilot`.
+   - Rollback scoring/search: keep the flag disabled, reset affected items to `pending_scoring` (see engineering runbook), and communicate status in `#discovery-pilot`. If the rollback is triggered by search latency, leave `discovery.filters.v1` disabled and file a follow-up task referencing the degradations captured in telemetry.
 
 Document outcomes and follow-up actions in Appendix A for traceability.

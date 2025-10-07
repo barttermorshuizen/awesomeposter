@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { h as defineTask } from '../nitro/nitro.mjs';
-import { i as fetchDiscoveryItemsForScoring, j as listDiscoverySourcesDue, k as claimDiscoverySourceForFetch, s as saveDiscoveryItems, m as completeDiscoverySourceFetch, r as releaseDiscoverySourceAfterFailedCompletion, n as countPendingDiscoveryItemsForClient, o as resetDiscoveryItemsToPending, p as persistDiscoveryScores } from './discovery-repository.mjs';
+import { i as fetchDiscoveryItemsForScoring, j as listDiscoverySourcesDue, k as claimDiscoverySourceForFetch, m as saveDiscoveryItems, n as completeDiscoverySourceFetch, r as releaseDiscoverySourceAfterFailedCompletion, o as countPendingDiscoveryItemsForClient, p as resetDiscoveryItemsToPending, q as persistDiscoveryScores } from './discovery-repository.mjs';
 import { e as emitDiscoveryEvent } from './discovery-events.mjs';
 import { p as publishSourceHealthStatus } from './discovery-health.mjs';
 import { i as isFeatureEnabled, F as FEATURE_DISCOVERY_AGENT } from './feature-flags.mjs';
@@ -21,980 +21,984 @@ import 'pg';
 import 'drizzle-orm/pg-core';
 import '@upstash/redis';
 
-// Character replacements to keep output ASCII-friendly per repo standards.
 const SMART_CHAR_MAP = {
-    '\u2018': "'",
-    '\u2019': "'",
-    '\u201C': '"',
-    '\u201D': '"',
-    '\u2014': '--',
-    '\u2013': '-',
-    '\u2026': '...',
-    '\u00A0': ' ',
-    '\u2009': ' ',
-    '\u200A': ' ',
-    '\u200B': '',
+  "\u2018": "'",
+  "\u2019": "'",
+  "\u201C": '"',
+  "\u201D": '"',
+  "\u2014": "--",
+  "\u2013": "-",
+  "\u2026": "...",
+  "\xA0": " ",
+  "\u2009": " ",
+  "\u200A": " ",
+  "\u200B": ""
 };
 const ENTITY_MAP = {
-    amp: '&',
-    lt: '<',
-    gt: '>',
-    quot: '"',
-    apos: "'",
-    nbsp: ' ',
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " "
 };
 const SENTENCE_SPLIT_REGEX = /(?<=[.!?])\s+/g;
 const HTML_COMMENT_REGEX = /<!--([\s\S]*?)-->/g;
-const TAGS_TO_STRIP = ['script', 'style', 'noscript', 'template', 'iframe'];
-const BOILERPLATE_TAGS = ['nav', 'header', 'footer', 'aside', 'form'];
+const TAGS_TO_STRIP = ["script", "style", "noscript", "template", "iframe"];
+const BOILERPLATE_TAGS = ["nav", "header", "footer", "aside", "form"];
 function replaceSmartCharacters(input) {
-    return input.replace(/[\u2018\u2019\u201C\u201D\u2014\u2013\u2026\u00A0\u2009\u200A\u200B]/g, (match) => SMART_CHAR_MAP[match] ?? '');
+  return input.replace(/[\u2018\u2019\u201C\u201D\u2014\u2013\u2026\u00A0\u2009\u200A\u200B]/g, (match) => {
+    var _a;
+    return (_a = SMART_CHAR_MAP[match]) != null ? _a : "";
+  });
 }
 function decodeEntities(input) {
-    return input
-        .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
-        const codePoint = Number.parseInt(hex, 16);
-        return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : '';
-    })
-        .replace(/&#(\d+);/g, (_, num) => {
-        const codePoint = Number.parseInt(num, 10);
-        return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : '';
-    })
-        .replace(/&([a-z]+);/gi, (_, entity) => ENTITY_MAP[entity.toLowerCase()] ?? `&${entity};`);
+  return input.replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : "";
+  }).replace(/&#(\d+);/g, (_, num) => {
+    const codePoint = Number.parseInt(num, 10);
+    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : "";
+  }).replace(/&([a-z]+);/gi, (_, entity) => {
+    var _a;
+    return (_a = ENTITY_MAP[entity.toLowerCase()]) != null ? _a : `&${entity};`;
+  });
 }
 function stripTags(html, tagNames) {
-    return tagNames.reduce((acc, tag) => acc.replace(new RegExp(`<${tag}[^>]*>[\s\S]*?<\/${tag}>`, 'gi'), ' '), html);
+  return tagNames.reduce((acc, tag) => acc.replace(new RegExp(`<${tag}[^>]*>[sS]*?</${tag}>`, "gi"), " "), html);
 }
 function stripBoilerplate(html) {
-    let output = html.replace(HTML_COMMENT_REGEX, ' ');
-    output = stripTags(output, TAGS_TO_STRIP);
-    output = stripTags(output, BOILERPLATE_TAGS);
-    return output;
+  let output = html.replace(HTML_COMMENT_REGEX, " ");
+  output = stripTags(output, TAGS_TO_STRIP);
+  output = stripTags(output, BOILERPLATE_TAGS);
+  return output;
 }
 function extractText(html) {
-    const withoutBoilerplate = stripBoilerplate(html);
-    const withoutTags = withoutBoilerplate.replace(/<br\s*\/?>/gi, '\n').replace(/<p[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ');
-    const decoded = decodeEntities(withoutTags);
-    const ascii = replaceSmartCharacters(decoded);
-    return ascii
-        .replace(/[\t\r\f\v]+/g, ' ')
-        .replace(/\n{2,}/g, '\n')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
+  const withoutBoilerplate = stripBoilerplate(html);
+  const withoutTags = withoutBoilerplate.replace(/<br\s*\/?>/gi, "\n").replace(/<p[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ");
+  const decoded = decodeEntities(withoutTags);
+  const ascii = replaceSmartCharacters(decoded);
+  return ascii.replace(/[\t\r\f\v]+/g, " ").replace(/\n{2,}/g, "\n").replace(/\s{2,}/g, " ").trim();
 }
 function truncatePreservingSentences(text, maxLength) {
-    if (text.length <= maxLength) {
-        return text;
+  if (text.length <= maxLength) {
+    return text;
+  }
+  const sentences = text.split(SENTENCE_SPLIT_REGEX);
+  const pieces = [];
+  let total = 0;
+  for (const sentence of sentences) {
+    const candidate = sentence.trim();
+    if (!candidate)
+      continue;
+    const addedLength = candidate.length + (pieces.length > 0 ? 1 : 0);
+    if (total + addedLength > maxLength) {
+      break;
     }
-    const sentences = text.split(SENTENCE_SPLIT_REGEX);
-    const pieces = [];
-    let total = 0;
-    for (const sentence of sentences) {
-        const candidate = sentence.trim();
-        if (!candidate)
-            continue;
-        const addedLength = candidate.length + (pieces.length > 0 ? 1 : 0);
-        if (total + addedLength > maxLength) {
-            break;
-        }
-        pieces.push(candidate);
-        total += addedLength;
-    }
-    if (!pieces.length) {
-        return text.slice(0, maxLength).trimEnd();
-    }
-    return pieces.join(' ');
+    pieces.push(candidate);
+    total += addedLength;
+  }
+  if (!pieces.length) {
+    return text.slice(0, maxLength).trimEnd();
+  }
+  return pieces.join(" ");
 }
-function sanitizeHtmlContent(html, maxLength = 5_000) {
-    const text = extractText(html);
-    const cleaned = stripResidualBoilerplate(text);
-    const truncated = truncatePreservingSentences(cleaned, maxLength);
-    return truncated;
+function sanitizeHtmlContent(html, maxLength = 5e3) {
+  const text = extractText(html);
+  const cleaned = stripResidualBoilerplate(text);
+  const truncated = truncatePreservingSentences(cleaned, maxLength);
+  return truncated;
 }
 function stripResidualBoilerplate(text) {
-    let trimmed = text.trimStart();
-    const keywords = ['navigation', 'menu', 'advertisement'];
-    for (const keyword of keywords) {
-        const lower = trimmed.toLowerCase();
-        const index = lower.indexOf(keyword);
-        if (index === -1)
-            continue;
-        const fragment = trimmed.slice(index);
-        const pattern = new RegExp(`^${keyword}(?:\\s+[A-Za-z][^\\s]*)*`, 'i');
-        const match = fragment.match(pattern);
-        if (match) {
-            trimmed = `${trimmed.slice(0, index)}${fragment.slice(match[0].length)}`.trimStart();
-        }
+  let trimmed = text.trimStart();
+  const keywords = ["navigation", "menu", "advertisement"];
+  for (const keyword of keywords) {
+    const lower = trimmed.toLowerCase();
+    const index = lower.indexOf(keyword);
+    if (index === -1)
+      continue;
+    const fragment = trimmed.slice(index);
+    const pattern = new RegExp(`^${keyword}(?:\\s+[A-Za-z][^\\s]*)*`, "i");
+    const match = fragment.match(pattern);
+    if (match) {
+      trimmed = `${trimmed.slice(0, index)}${fragment.slice(match[0].length)}`.trimStart();
     }
-    return trimmed;
+  }
+  return trimmed;
 }
 function createExcerpt(text, maxLength = 320) {
-    if (!text)
-        return null;
-    const truncated = truncatePreservingSentences(text, maxLength);
-    return truncated.length === text.length ? truncated : `${truncated}...`;
+  if (!text)
+    return null;
+  const truncated = truncatePreservingSentences(text, maxLength);
+  return truncated.length === text.length ? truncated : `${truncated}...`;
 }
 function normalizeTitle(rawTitle) {
-    if (!rawTitle)
-        return null;
-    return replaceSmartCharacters(decodeEntities(rawTitle)).trim() || null;
+  if (!rawTitle)
+    return null;
+  return replaceSmartCharacters(decodeEntities(rawTitle)).trim() || null;
 }
-function derivePublishedAt(candidates, fallback, candidateSource = 'original', fallbackSource = 'fallback') {
-    for (const candidate of candidates) {
-        if (!candidate)
-            continue;
-        const trimmed = candidate.trim();
-        if (!trimmed)
-            continue;
-        const parsed = new Date(trimmed);
-        if (Number.isNaN(parsed.getTime()))
-            continue;
-        return { publishedAt: parsed.toISOString(), source: candidateSource };
-    }
-    return { publishedAt: fallback.toISOString(), source: fallbackSource };
+function derivePublishedAt(candidates, fallback, candidateSource = "original", fallbackSource = "fallback") {
+  for (const candidate of candidates) {
+    if (!candidate)
+      continue;
+    const trimmed = candidate.trim();
+    if (!trimmed)
+      continue;
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime()))
+      continue;
+    return { publishedAt: parsed.toISOString(), source: candidateSource };
+  }
+  return { publishedAt: fallback.toISOString(), source: fallbackSource };
 }
 function extractMetaContent(html, keys) {
-    const pattern = /<meta\s+([^>]+)>/gi;
-    let match;
-    const normalizedKeys = keys.map((key) => key.toLowerCase());
-    while ((match = pattern.exec(html)) !== null) {
-        const attrs = match[1];
-        const nameMatch = /(?:name|property)\s*=\s*"([^"]+)"/i.exec(attrs) || /(?:name|property)\s*=\s*'([^']+)'/i.exec(attrs);
-        if (!nameMatch)
-            continue;
-        const key = nameMatch[1]?.toLowerCase();
-        if (!key || !normalizedKeys.includes(key))
-            continue;
-        const contentMatch = /content\s*=\s*"([^"]*)"/i.exec(attrs) || /content\s*=\s*'([^']*)'/i.exec(attrs);
-        if (contentMatch) {
-            return decodeEntities(contentMatch[1] ?? '');
-        }
+  var _a, _b;
+  const pattern = /<meta\s+([^>]+)>/gi;
+  let match;
+  const normalizedKeys = keys.map((key) => key.toLowerCase());
+  while ((match = pattern.exec(html)) !== null) {
+    const attrs = match[1];
+    const nameMatch = /(?:name|property)\s*=\s*"([^"]+)"/i.exec(attrs) || /(?:name|property)\s*=\s*'([^']+)'/i.exec(attrs);
+    if (!nameMatch)
+      continue;
+    const key = (_a = nameMatch[1]) == null ? void 0 : _a.toLowerCase();
+    if (!key || !normalizedKeys.includes(key))
+      continue;
+    const contentMatch = /content\s*=\s*"([^"]*)"/i.exec(attrs) || /content\s*=\s*'([^']*)'/i.exec(attrs);
+    if (contentMatch) {
+      return decodeEntities((_b = contentMatch[1]) != null ? _b : "");
     }
-    return null;
+  }
+  return null;
 }
 function stripHtml(html) {
-    return extractText(html);
+  return extractText(html);
 }
 
 function resolveFailureReason$3(responseStatus) {
-    if (responseStatus >= 500)
-        return 'http_5xx';
-    if (responseStatus >= 400)
-        return 'http_4xx';
-    return 'unknown_error';
+  if (responseStatus >= 500)
+    return "http_5xx";
+  if (responseStatus >= 400)
+    return "http_4xx";
+  return "unknown_error";
 }
 const fetchHttpSource = async (input, context) => {
-    const fetcher = context?.fetch ?? globalThis.fetch;
-    if (!fetcher) {
-        return {
-            ok: false,
-            failureReason: 'unknown_error',
-            error: new Error('No fetch implementation available for HTTP adapter'),
-        };
-    }
-    try {
-        const response = await fetcher(input.url, { signal: context?.signal });
-        const status = response.status;
-        const headers = Object.fromEntries(response.headers.entries());
-        const body = await response.text();
-        if (!response.ok) {
-            const failureReason = resolveFailureReason$3(status);
-            return {
-                ok: false,
-                failureReason,
-                raw: {
-                    status,
-                    statusText: response.statusText,
-                    headers,
-                    body,
-                },
-                retryInMinutes: failureReason === 'http_5xx' ? 5 : null,
-                metadata: {
-                    adapter: 'http',
-                    status,
-                },
-            };
-        }
-        const sanitizedBody = sanitizeHtmlContent(body);
-        if (!sanitizedBody) {
-            return {
-                ok: false,
-                failureReason: 'parser_error',
-                raw: {
-                    status,
-                    headers,
-                    body,
-                },
-                metadata: {
-                    adapter: 'http',
-                    status,
-                    message: 'Empty body after sanitization',
-                },
-            };
-        }
-        const now = context?.now?.() ?? new Date();
-        const fallbackUrl = response.url || input.canonicalUrl || input.url;
-        const metaTitle = extractMetaContent(body, ['og:title', 'twitter:title']);
-        const titleFromTag = (() => {
-            const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body);
-            return match ? match[1] : null;
-        })();
-        const normalizedTitle = normalizeTitle(metaTitle ?? titleFromTag) ?? normalizeTitle(fallbackUrl) ?? 'Untitled Article';
-        const metaPublished = extractMetaContent(body, [
-            'article:published_time',
-            'og:published_time',
-            'pubdate',
-            'date',
-            'dc.date',
-            'dc.date.issued',
-        ]);
-        const timeTagMatch = /<time[^>]*datetime="([^"]+)"[^>]*>/i.exec(body) ?? /<time[^>]*datetime='([^']+)'[^>]*>/i.exec(body);
-        const published = derivePublishedAt([metaPublished, timeTagMatch?.[1] ?? null], now);
-        const htmlLangMatch = /<html[^>]*lang="([^"]+)"[^>]*>/i.exec(body) ?? /<html[^>]*lang='([^']+)'[^>]*>/i.exec(body);
-        const contentLanguage = extractMetaContent(body, ['og:locale', 'language', 'content-language']) ?? htmlLangMatch?.[1] ?? null;
-        const candidate = {
-            externalId: fallbackUrl,
-            title: normalizedTitle,
-            url: fallbackUrl,
-            contentType: 'article',
-            publishedAt: published.publishedAt,
-            publishedAtSource: published.source,
-            fetchedAt: now.toISOString(),
-            extractedBody: sanitizedBody,
-            excerpt: createExcerpt(sanitizedBody),
-        };
-        const parsed = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
-        if (!parsed.success) {
-            return {
-                ok: false,
-                failureReason: 'parser_error',
-                raw: {
-                    status,
-                    headers,
-                    body,
-                },
-                metadata: {
-                    adapter: 'http',
-                    status,
-                    validationIssues: parsed.error.issues.map((issue) => issue.message),
-                },
-            };
-        }
-        const sourceMetadata = {
-            contentType: 'article',
-            canonicalUrl: fallbackUrl,
-            language: contentLanguage?.toLowerCase() ?? null,
-        };
-        return {
-            ok: true,
-            items: [
-                {
-                    rawPayload: {
-                        status,
-                        headers,
-                        body,
-                        url: fallbackUrl,
-                    },
-                    normalized: parsed.data,
-                    sourceMetadata,
-                },
-            ],
-            raw: {
-                status,
-                headers,
-            },
-            metadata: {
-                adapter: 'http',
-                contentLength: body.length,
-                itemCount: 1,
-                skippedCount: 0,
-            },
-        };
-    }
-    catch (error) {
-        const err = error;
-        const failureReason = err.name === 'AbortError' ? 'timeout' : 'network_error';
-        return {
-            ok: false,
-            failureReason,
-            error: err,
-            retryInMinutes: failureReason === 'network_error' ? 5 : null,
-            metadata: {
-                adapter: 'http',
-                message: err.message,
-            },
-        };
-    }
-};
-
-function resolveFailureReason$2(status) {
-    if (status >= 500)
-        return 'http_5xx';
-    if (status >= 400)
-        return 'http_4xx';
-    return 'unknown_error';
-}
-function toEntries(feed) {
-    const itemMatches = [...feed.matchAll(/<item[\s\S]*?<\/item>/gi)];
-    if (itemMatches.length > 0) {
-        return { format: 'rss', entries: itemMatches.map((match) => parseRssItem(match[0])) };
-    }
-    const atomMatches = [...feed.matchAll(/<entry[\s\S]*?<\/entry>/gi)];
-    if (atomMatches.length > 0) {
-        return { format: 'atom', entries: atomMatches.map((match) => parseAtomEntry(match[0])) };
-    }
-    return { format: 'rss', entries: [] };
-}
-function matchTag(source, tag) {
-    const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-    const match = regex.exec(source);
-    return match ? match[1]?.trim() ?? null : null;
-}
-function matchTagAllowingCData(source, tag) {
-    const value = matchTag(source, tag);
-    if (!value)
-        return null;
-    const cdata = /<!\[CDATA\[([\s\S]*?)\]\]>/i.exec(value);
-    return cdata ? cdata[1]?.trim() ?? '' : value;
-}
-function parseCategories(source) {
-    const matches = [...source.matchAll(/<category[^>]*>([\s\S]*?)<\/category>/gi)];
-    if (!matches.length)
-        return [];
-    return matches
-        .map((match) => match[1]?.trim())
-        .filter((value) => Boolean(value));
-}
-function parseLink(source) {
-    const rssLink = matchTag(source, 'link');
-    if (rssLink)
-        return rssLink.trim();
-    const atomMatch = /<link\s+[^>]*href="([^"]+)"/i.exec(source) || /<link\s+[^>]*href='([^']+)'/i.exec(source);
-    return atomMatch ? atomMatch[1]?.trim() ?? null : null;
-}
-function parseRssItem(source) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+  const fetcher = (_a = context == null ? void 0 : context.fetch) != null ? _a : globalThis.fetch;
+  if (!fetcher) {
     return {
-        guid: matchTag(source, 'guid') ?? parseLink(source),
-        link: parseLink(source),
-        title: matchTagAllowingCData(source, 'title'),
-        description: matchTagAllowingCData(source, 'description'),
-        content: matchTagAllowingCData(source, 'content:encoded'),
-        publishedAt: matchTag(source, 'pubDate'),
-        categories: parseCategories(source),
-        raw: { source },
+      ok: false,
+      failureReason: "unknown_error",
+      error: new Error("No fetch implementation available for HTTP adapter")
     };
-}
-function parseAtomEntry(source) {
-    return {
-        guid: matchTag(source, 'id') ?? parseLink(source),
-        link: parseLink(source),
-        title: matchTagAllowingCData(source, 'title'),
-        description: matchTagAllowingCData(source, 'summary'),
-        content: matchTagAllowingCData(source, 'content'),
-        publishedAt: matchTag(source, 'published') ?? matchTag(source, 'updated'),
-        categories: parseCategories(source),
-        raw: { source },
-    };
-}
-const fetchRssSource = async (input, context) => {
-    const fetcher = context?.fetch ?? globalThis.fetch;
-    if (!fetcher) {
-        return {
-            ok: false,
-            failureReason: 'unknown_error',
-            error: new Error('No fetch implementation available for RSS adapter'),
-        };
-    }
-    try {
-        const response = await fetcher(input.url, { signal: context?.signal });
-        const status = response.status;
-        const headers = Object.fromEntries(response.headers.entries());
-        const body = await response.text();
-        if (!response.ok) {
-            const failureReason = resolveFailureReason$2(status);
-            return {
-                ok: false,
-                failureReason,
-                raw: {
-                    status,
-                    statusText: response.statusText,
-                    headers,
-                    body,
-                },
-                retryInMinutes: failureReason === 'http_5xx' ? 5 : null,
-                metadata: {
-                    adapter: 'rss',
-                    status,
-                },
-            };
-        }
-        const { entries } = toEntries(body);
-        const now = context?.now?.() ?? new Date();
-        const feedUrl = input.canonicalUrl || input.url;
-        const skipped = [];
-        const normalizedItems = entries.flatMap((entry) => {
-            const rawBody = entry.content ?? entry.description ?? '';
-            const extracted = sanitizeHtmlContent(rawBody || entry.title || '');
-            if (!extracted) {
-                skipped.push({ reason: 'empty_content', entryId: entry.guid ?? entry.link ?? null });
-                return [];
-            }
-            const link = entry.link ?? feedUrl;
-            const externalId = entry.guid ?? link;
-            const published = derivePublishedAt([entry.publishedAt], now, 'feed', 'fallback');
-            const candidate = {
-                externalId: externalId ?? link,
-                title: (entry.title ? stripHtml(entry.title).trim() : stripHtml(link)).slice(0, 500)
-                    || 'Untitled Entry',
-                url: link,
-                contentType: 'rss',
-                publishedAt: published.publishedAt,
-                publishedAtSource: published.source,
-                fetchedAt: now.toISOString(),
-                extractedBody: extracted,
-                excerpt: createExcerpt(extracted),
-            };
-            const parsed = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
-            if (!parsed.success) {
-                skipped.push({
-                    reason: 'validation_error',
-                    entryId: externalId ?? link,
-                    detail: parsed.error.issues.map((issue) => issue.message).join(', '),
-                });
-                return [];
-            }
-            const metadata = {
-                contentType: 'rss',
-                feedUrl,
-                entryId: externalId ?? link,
-                categories: entry.categories.length ? entry.categories : undefined,
-            };
-            return [
-                {
-                    rawPayload: entry.raw,
-                    normalized: parsed.data,
-                    sourceMetadata: metadata,
-                },
-            ];
-        });
-        return {
-            ok: true,
-            items: normalizedItems,
-            raw: {
-                status,
-                headers,
-            },
-            metadata: {
-                adapter: 'rss',
-                itemCount: normalizedItems.length,
-                entryCount: entries.length,
-                skippedCount: skipped.length,
-                skipped,
-            },
-        };
-    }
-    catch (error) {
-        const err = error;
-        const failureReason = err.name === 'AbortError' ? 'timeout' : 'network_error';
-        return {
-            ok: false,
-            failureReason,
-            error: err,
-            retryInMinutes: failureReason === 'network_error' ? 5 : null,
-            metadata: {
-                adapter: 'rss',
-                message: err.message,
-            },
-        };
-    }
-};
-
-const DEFAULT_YOUTUBE_DATA_API_BASE = 'https://www.googleapis.com/youtube/v3/';
-function toBaseUrl(raw) {
-    if (!raw)
-        return DEFAULT_YOUTUBE_DATA_API_BASE;
-    return raw.endsWith('/') ? raw : `${raw}/`;
-}
-function buildUrl(baseUrl, path, params, apiKey) {
-    const searchParams = new URLSearchParams(params);
-    if (apiKey) {
-        searchParams.set('key', apiKey);
-    }
-    const url = new URL(path, baseUrl);
-    url.search = searchParams.toString();
-    return { url: url.toString(), params };
-}
-function clampMaxResults(value) {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-        return 50;
-    }
-    return Math.min(Math.max(Math.floor(value), 1), 50);
-}
-function isChannelId(identifier) {
-    return /^UC[0-9A-Za-z_-]{3,}$/.test(identifier);
-}
-function toUploadsPlaylistId(channelId) {
-    return `UU${channelId.slice(2)}`;
-}
-function buildYoutubeDataApiRequest(rawUrl, options = {}) {
-    const { apiKey, baseUrl, maxResults } = options;
-    const normalized = normalizeDiscoverySourceUrl(rawUrl);
-    const effectiveBase = toBaseUrl(baseUrl);
-    const effectiveMaxResults = clampMaxResults(maxResults);
-    if (normalized.sourceType === 'youtube-playlist') {
-        const params = {
-            part: 'snippet,contentDetails',
-            playlistId: normalized.identifier,
-            maxResults: String(effectiveMaxResults),
-        };
-        const built = buildUrl(effectiveBase, 'playlistItems', params, apiKey);
-        return {
-            type: 'playlistItems',
-            playlistId: normalized.identifier,
-            url: built.url,
-            params,
-        };
-    }
-    if (normalized.sourceType !== 'youtube-channel') {
-        throw new Error('URL does not represent a YouTube channel or playlist');
-    }
-    const identifier = normalized.identifier;
-    if (isChannelId(identifier)) {
-        const playlistId = toUploadsPlaylistId(identifier);
-        const params = {
-            part: 'snippet,contentDetails',
-            playlistId,
-            maxResults: String(effectiveMaxResults),
-        };
-        const built = buildUrl(effectiveBase, 'playlistItems', params, apiKey);
-        return {
-            type: 'channelUploads',
-            channelId: identifier,
-            playlistId,
-            url: built.url,
-            params,
-        };
-    }
-    if (identifier.startsWith('@')) {
-        const params = {
-            part: 'id',
-            forHandle: identifier,
-        };
-        const built = buildUrl(effectiveBase, 'channels', params, apiKey);
-        return {
-            type: 'resolveHandle',
-            handle: identifier,
-            url: built.url,
-            params,
-        };
-    }
-    if (identifier.startsWith('user:')) {
-        const username = identifier.slice('user:'.length);
-        const params = {
-            part: 'id',
-            forUsername: username,
-        };
-        const built = buildUrl(effectiveBase, 'channels', params, apiKey);
-        return {
-            type: 'resolveUsername',
-            username,
-            url: built.url,
-            params,
-        };
-    }
-    if (identifier.startsWith('c:')) {
-        const query = identifier.slice('c:'.length);
-        const params = {
-            part: 'snippet',
-            type: 'channel',
-            q: query,
-            maxResults: '5',
-        };
-        const built = buildUrl(effectiveBase, 'search', params, apiKey);
-        return {
-            type: 'searchChannel',
-            query,
-            url: built.url,
-            params,
-        };
-    }
-    // Fallback for any other identifier form
-    const params = {
-        part: 'snippet',
-        type: 'channel',
-        q: identifier,
-        maxResults: '5',
-    };
-    const built = buildUrl(effectiveBase, 'search', params, apiKey);
-    return {
-        type: 'searchChannel',
-        query: identifier,
-        url: built.url,
-        params,
-    };
-}
-
-function resolveFailureReason$1(status) {
-    if (status === 403 || status === 429)
-        return 'youtube_quota';
-    if (status === 404)
-        return 'youtube_not_found';
-    if (status >= 500)
-        return 'http_5xx';
-    if (status >= 400)
-        return 'http_4xx';
-    return 'unknown_error';
-}
-function extractVideoId(item) {
-    if (!item)
-        return null;
-    if (typeof item.id === 'string')
-        return item.id;
-    if (item.id && typeof item.id === 'object' && typeof item.id.videoId === 'string') {
-        return item.id.videoId;
-    }
-    return null;
-}
-function isoDurationToSeconds(duration) {
-    if (!duration)
-        return null;
-    const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(duration);
-    if (!match)
-        return null;
-    const [, hours, minutes, seconds] = match;
-    const total = (Number(hours ?? '0') * 3600) + (Number(minutes ?? '0') * 60) + Number(seconds ?? '0');
-    return Number.isFinite(total) ? total : null;
-}
-function toTranscriptText(transcript) {
-    if (!transcript)
-        return { text: '', available: false };
-    if (typeof transcript === 'string') {
-        const trimmed = transcript.trim();
-        return { text: trimmed, available: Boolean(trimmed) };
-    }
-    const text = transcript.text?.trim() ?? '';
-    const available = transcript.available ?? Boolean(text);
-    return { text, available };
-}
-function resolvePlaylistId(config) {
-    if (!config || typeof config !== 'object')
-        return null;
-    const youtubeConfig = config.youtube;
-    if (youtubeConfig && typeof youtubeConfig === 'object') {
-        const playlist = youtubeConfig.playlist ?? youtubeConfig.playlistId;
-        if (typeof playlist === 'string' && playlist.trim()) {
-            return playlist.trim();
-        }
-    }
-    return null;
-}
-function resolveChannelIdentifier(config) {
-    if (!config || typeof config !== 'object')
-        return null;
-    const youtubeConfig = config.youtube;
-    if (!youtubeConfig || typeof youtubeConfig !== 'object')
-        return null;
-    const channel = youtubeConfig.channel ?? youtubeConfig.channelId;
-    if (typeof channel === 'string' && channel.trim()) {
-        return channel.trim();
-    }
-    return null;
-}
-function toChannelPublicUrl(identifier) {
-    if (identifier.startsWith('@')) {
-        return `https://www.youtube.com/${identifier}`;
-    }
-    if (identifier.startsWith('c:')) {
-        return `https://www.youtube.com/c/${identifier.slice(2)}`;
-    }
-    if (identifier.startsWith('user:')) {
-        return `https://www.youtube.com/user/${identifier.slice(5)}`;
-    }
-    return `https://www.youtube.com/channel/${identifier}`;
-}
-function extractChannelIdFromLookup(request, json) {
-    if (!json || typeof json !== 'object' || !('items' in json)) {
-        return null;
-    }
-    const items = Array.isArray(json.items) ? json.items : [];
-    if (!items.length) {
-        return null;
-    }
-    if (request.type === 'resolveHandle' || request.type === 'resolveUsername') {
-        const first = items[0];
-        if (typeof first?.id === 'string') {
-            return first.id;
-        }
-        return null;
-    }
-    if (request.type === 'searchChannel') {
-        for (const raw of items) {
-            const candidate = raw;
-            const direct = candidate?.id;
-            if (direct && typeof direct.channelId === 'string' && direct.channelId.trim()) {
-                return direct.channelId.trim();
-            }
-            if (candidate?.snippet?.channelId && candidate.snippet.channelId.trim()) {
-                return candidate.snippet.channelId.trim();
-            }
-        }
-    }
-    return null;
-}
-async function fetchYoutubeApi(fetcher, request, signal) {
-    const response = await fetcher(request.url, { signal });
+  }
+  try {
+    const response = await fetcher(input.url, { signal: context == null ? void 0 : context.signal });
     const status = response.status;
     const headers = Object.fromEntries(response.headers.entries());
     const body = await response.text();
     if (!response.ok) {
-        const failureReason = resolveFailureReason$1(status);
-        return {
-            ok: false,
-            status,
-            headers,
-            body,
-            failureReason,
-        };
+      const failureReason = resolveFailureReason$3(status);
+      return {
+        ok: false,
+        failureReason,
+        raw: {
+          status,
+          statusText: response.statusText,
+          headers,
+          body
+        },
+        retryInMinutes: failureReason === "http_5xx" ? 5 : null,
+        metadata: {
+          adapter: "http",
+          status
+        }
+      };
     }
-    let json;
-    try {
-        json = JSON.parse(body);
+    const sanitizedBody = sanitizeHtmlContent(body);
+    if (!sanitizedBody) {
+      return {
+        ok: false,
+        failureReason: "parser_error",
+        raw: {
+          status,
+          headers,
+          body
+        },
+        metadata: {
+          adapter: "http",
+          status,
+          message: "Empty body after sanitization"
+        }
+      };
     }
-    catch {
-        return {
-            ok: false,
-            status,
-            headers,
-            body,
-            failureReason: 'parser_error',
-        };
-    }
-    return {
-        ok: true,
-        status,
-        headers,
-        body,
-        json,
+    const now = (_c = (_b = context == null ? void 0 : context.now) == null ? void 0 : _b.call(context)) != null ? _c : /* @__PURE__ */ new Date();
+    const fallbackUrl = response.url || input.canonicalUrl || input.url;
+    const metaTitle = extractMetaContent(body, ["og:title", "twitter:title"]);
+    const titleFromTag = (() => {
+      const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body);
+      return match ? match[1] : null;
+    })();
+    const normalizedTitle = (_e = (_d = normalizeTitle(metaTitle != null ? metaTitle : titleFromTag)) != null ? _d : normalizeTitle(fallbackUrl)) != null ? _e : "Untitled Article";
+    const metaPublished = extractMetaContent(body, [
+      "article:published_time",
+      "og:published_time",
+      "pubdate",
+      "date",
+      "dc.date",
+      "dc.date.issued"
+    ]);
+    const timeTagMatch = (_f = /<time[^>]*datetime="([^"]+)"[^>]*>/i.exec(body)) != null ? _f : /<time[^>]*datetime='([^']+)'[^>]*>/i.exec(body);
+    const published = derivePublishedAt([metaPublished, (_g = timeTagMatch == null ? void 0 : timeTagMatch[1]) != null ? _g : null], now);
+    const htmlLangMatch = (_h = /<html[^>]*lang="([^"]+)"[^>]*>/i.exec(body)) != null ? _h : /<html[^>]*lang='([^']+)'[^>]*>/i.exec(body);
+    const contentLanguage = (_j = (_i = extractMetaContent(body, ["og:locale", "language", "content-language"])) != null ? _i : htmlLangMatch == null ? void 0 : htmlLangMatch[1]) != null ? _j : null;
+    const candidate = {
+      externalId: fallbackUrl,
+      title: normalizedTitle,
+      url: fallbackUrl,
+      contentType: "article",
+      publishedAt: published.publishedAt,
+      publishedAtSource: published.source,
+      fetchedAt: now.toISOString(),
+      extractedBody: sanitizedBody,
+      excerpt: createExcerpt(sanitizedBody)
     };
+    const parsed = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        failureReason: "parser_error",
+        raw: {
+          status,
+          headers,
+          body
+        },
+        metadata: {
+          adapter: "http",
+          status,
+          validationIssues: parsed.error.issues.map((issue) => issue.message)
+        }
+      };
+    }
+    const sourceMetadata = {
+      contentType: "article",
+      canonicalUrl: fallbackUrl,
+      language: (_k = contentLanguage == null ? void 0 : contentLanguage.toLowerCase()) != null ? _k : null
+    };
+    return {
+      ok: true,
+      items: [
+        {
+          rawPayload: {
+            status,
+            headers,
+            body,
+            url: fallbackUrl
+          },
+          normalized: parsed.data,
+          sourceMetadata
+        }
+      ],
+      raw: {
+        status,
+        headers
+      },
+      metadata: {
+        adapter: "http",
+        contentLength: body.length,
+        itemCount: 1,
+        skippedCount: 0
+      }
+    };
+  } catch (error) {
+    const err = error;
+    const failureReason = err.name === "AbortError" ? "timeout" : "network_error";
+    return {
+      ok: false,
+      failureReason,
+      error: err,
+      retryInMinutes: failureReason === "network_error" ? 5 : null,
+      metadata: {
+        adapter: "http",
+        message: err.message
+      }
+    };
+  }
+};
+
+function resolveFailureReason$2(status) {
+  if (status >= 500)
+    return "http_5xx";
+  if (status >= 400)
+    return "http_4xx";
+  return "unknown_error";
+}
+function toEntries(feed) {
+  const itemMatches = [...feed.matchAll(/<item[\s\S]*?<\/item>/gi)];
+  if (itemMatches.length > 0) {
+    return { format: "rss", entries: itemMatches.map((match) => parseRssItem(match[0])) };
+  }
+  const atomMatches = [...feed.matchAll(/<entry[\s\S]*?<\/entry>/gi)];
+  if (atomMatches.length > 0) {
+    return { format: "atom", entries: atomMatches.map((match) => parseAtomEntry(match[0])) };
+  }
+  return { format: "rss", entries: [] };
+}
+function matchTag(source, tag) {
+  var _a, _b;
+  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const match = regex.exec(source);
+  return match ? (_b = (_a = match[1]) == null ? void 0 : _a.trim()) != null ? _b : null : null;
+}
+function matchTagAllowingCData(source, tag) {
+  var _a, _b;
+  const value = matchTag(source, tag);
+  if (!value)
+    return null;
+  const cdata = /<!\[CDATA\[([\s\S]*?)\]\]>/i.exec(value);
+  return cdata ? (_b = (_a = cdata[1]) == null ? void 0 : _a.trim()) != null ? _b : "" : value;
+}
+function parseCategories(source) {
+  const matches = [...source.matchAll(/<category[^>]*>([\s\S]*?)<\/category>/gi)];
+  if (!matches.length)
+    return [];
+  return matches.map((match) => {
+    var _a;
+    return (_a = match[1]) == null ? void 0 : _a.trim();
+  }).filter((value) => Boolean(value));
+}
+function parseLink(source) {
+  var _a, _b;
+  const rssLink = matchTag(source, "link");
+  if (rssLink)
+    return rssLink.trim();
+  const atomMatch = /<link\s+[^>]*href="([^"]+)"/i.exec(source) || /<link\s+[^>]*href='([^']+)'/i.exec(source);
+  return atomMatch ? (_b = (_a = atomMatch[1]) == null ? void 0 : _a.trim()) != null ? _b : null : null;
+}
+function parseRssItem(source) {
+  var _a;
+  return {
+    guid: (_a = matchTag(source, "guid")) != null ? _a : parseLink(source),
+    link: parseLink(source),
+    title: matchTagAllowingCData(source, "title"),
+    description: matchTagAllowingCData(source, "description"),
+    content: matchTagAllowingCData(source, "content:encoded"),
+    publishedAt: matchTag(source, "pubDate"),
+    categories: parseCategories(source),
+    raw: { source }
+  };
+}
+function parseAtomEntry(source) {
+  var _a, _b;
+  return {
+    guid: (_a = matchTag(source, "id")) != null ? _a : parseLink(source),
+    link: parseLink(source),
+    title: matchTagAllowingCData(source, "title"),
+    description: matchTagAllowingCData(source, "summary"),
+    content: matchTagAllowingCData(source, "content"),
+    publishedAt: (_b = matchTag(source, "published")) != null ? _b : matchTag(source, "updated"),
+    categories: parseCategories(source),
+    raw: { source }
+  };
+}
+const fetchRssSource = async (input, context) => {
+  var _a, _b, _c;
+  const fetcher = (_a = context == null ? void 0 : context.fetch) != null ? _a : globalThis.fetch;
+  if (!fetcher) {
+    return {
+      ok: false,
+      failureReason: "unknown_error",
+      error: new Error("No fetch implementation available for RSS adapter")
+    };
+  }
+  try {
+    const response = await fetcher(input.url, { signal: context == null ? void 0 : context.signal });
+    const status = response.status;
+    const headers = Object.fromEntries(response.headers.entries());
+    const body = await response.text();
+    if (!response.ok) {
+      const failureReason = resolveFailureReason$2(status);
+      return {
+        ok: false,
+        failureReason,
+        raw: {
+          status,
+          statusText: response.statusText,
+          headers,
+          body
+        },
+        retryInMinutes: failureReason === "http_5xx" ? 5 : null,
+        metadata: {
+          adapter: "rss",
+          status
+        }
+      };
+    }
+    const { entries } = toEntries(body);
+    const now = (_c = (_b = context == null ? void 0 : context.now) == null ? void 0 : _b.call(context)) != null ? _c : /* @__PURE__ */ new Date();
+    const feedUrl = input.canonicalUrl || input.url;
+    const skipped = [];
+    const normalizedItems = entries.flatMap((entry) => {
+      var _a2, _b2, _c2, _d, _e, _f;
+      const rawBody = (_b2 = (_a2 = entry.content) != null ? _a2 : entry.description) != null ? _b2 : "";
+      const extracted = sanitizeHtmlContent(rawBody || entry.title || "");
+      if (!extracted) {
+        skipped.push({ reason: "empty_content", entryId: (_d = (_c2 = entry.guid) != null ? _c2 : entry.link) != null ? _d : null });
+        return [];
+      }
+      const link = (_e = entry.link) != null ? _e : feedUrl;
+      const externalId = (_f = entry.guid) != null ? _f : link;
+      const published = derivePublishedAt([entry.publishedAt], now, "feed", "fallback");
+      const candidate = {
+        externalId: externalId != null ? externalId : link,
+        title: (entry.title ? stripHtml(entry.title).trim() : stripHtml(link)).slice(0, 500) || "Untitled Entry",
+        url: link,
+        contentType: "rss",
+        publishedAt: published.publishedAt,
+        publishedAtSource: published.source,
+        fetchedAt: now.toISOString(),
+        extractedBody: extracted,
+        excerpt: createExcerpt(extracted)
+      };
+      const parsed = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
+      if (!parsed.success) {
+        skipped.push({
+          reason: "validation_error",
+          entryId: externalId != null ? externalId : link,
+          detail: parsed.error.issues.map((issue) => issue.message).join(", ")
+        });
+        return [];
+      }
+      const metadata = {
+        contentType: "rss",
+        feedUrl,
+        entryId: externalId != null ? externalId : link,
+        categories: entry.categories.length ? entry.categories : void 0
+      };
+      return [
+        {
+          rawPayload: entry.raw,
+          normalized: parsed.data,
+          sourceMetadata: metadata
+        }
+      ];
+    });
+    return {
+      ok: true,
+      items: normalizedItems,
+      raw: {
+        status,
+        headers
+      },
+      metadata: {
+        adapter: "rss",
+        itemCount: normalizedItems.length,
+        entryCount: entries.length,
+        skippedCount: skipped.length,
+        skipped
+      }
+    };
+  } catch (error) {
+    const err = error;
+    const failureReason = err.name === "AbortError" ? "timeout" : "network_error";
+    return {
+      ok: false,
+      failureReason,
+      error: err,
+      retryInMinutes: failureReason === "network_error" ? 5 : null,
+      metadata: {
+        adapter: "rss",
+        message: err.message
+      }
+    };
+  }
+};
+
+const DEFAULT_YOUTUBE_DATA_API_BASE = "https://www.googleapis.com/youtube/v3/";
+function toBaseUrl(raw) {
+  if (!raw)
+    return DEFAULT_YOUTUBE_DATA_API_BASE;
+  return raw.endsWith("/") ? raw : `${raw}/`;
+}
+function buildUrl(baseUrl, path, params, apiKey) {
+  const searchParams = new URLSearchParams(params);
+  if (apiKey) {
+    searchParams.set("key", apiKey);
+  }
+  const url = new URL(path, baseUrl);
+  url.search = searchParams.toString();
+  return { url: url.toString(), params };
+}
+function clampMaxResults(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return 50;
+  }
+  return Math.min(Math.max(Math.floor(value), 1), 50);
+}
+function isChannelId(identifier) {
+  return /^UC[0-9A-Za-z_-]{3,}$/.test(identifier);
+}
+function toUploadsPlaylistId(channelId) {
+  return `UU${channelId.slice(2)}`;
+}
+function buildYoutubeDataApiRequest(rawUrl, options = {}) {
+  const { apiKey, baseUrl, maxResults } = options;
+  const normalized = normalizeDiscoverySourceUrl(rawUrl);
+  const effectiveBase = toBaseUrl(baseUrl);
+  const effectiveMaxResults = clampMaxResults(maxResults);
+  if (normalized.sourceType === "youtube-playlist") {
+    const params2 = {
+      part: "snippet,contentDetails",
+      playlistId: normalized.identifier,
+      maxResults: String(effectiveMaxResults)
+    };
+    const built2 = buildUrl(effectiveBase, "playlistItems", params2, apiKey);
+    return {
+      type: "playlistItems",
+      playlistId: normalized.identifier,
+      url: built2.url,
+      params: params2
+    };
+  }
+  if (normalized.sourceType !== "youtube-channel") {
+    throw new Error("URL does not represent a YouTube channel or playlist");
+  }
+  const identifier = normalized.identifier;
+  if (isChannelId(identifier)) {
+    const playlistId = toUploadsPlaylistId(identifier);
+    const params2 = {
+      part: "snippet,contentDetails",
+      playlistId,
+      maxResults: String(effectiveMaxResults)
+    };
+    const built2 = buildUrl(effectiveBase, "playlistItems", params2, apiKey);
+    return {
+      type: "channelUploads",
+      channelId: identifier,
+      playlistId,
+      url: built2.url,
+      params: params2
+    };
+  }
+  if (identifier.startsWith("@")) {
+    const params2 = {
+      part: "id",
+      forHandle: identifier
+    };
+    const built2 = buildUrl(effectiveBase, "channels", params2, apiKey);
+    return {
+      type: "resolveHandle",
+      handle: identifier,
+      url: built2.url,
+      params: params2
+    };
+  }
+  if (identifier.startsWith("user:")) {
+    const username = identifier.slice("user:".length);
+    const params2 = {
+      part: "id",
+      forUsername: username
+    };
+    const built2 = buildUrl(effectiveBase, "channels", params2, apiKey);
+    return {
+      type: "resolveUsername",
+      username,
+      url: built2.url,
+      params: params2
+    };
+  }
+  if (identifier.startsWith("c:")) {
+    const query = identifier.slice("c:".length);
+    const params2 = {
+      part: "snippet",
+      type: "channel",
+      q: query,
+      maxResults: "5"
+    };
+    const built2 = buildUrl(effectiveBase, "search", params2, apiKey);
+    return {
+      type: "searchChannel",
+      query,
+      url: built2.url,
+      params: params2
+    };
+  }
+  const params = {
+    part: "snippet",
+    type: "channel",
+    q: identifier,
+    maxResults: "5"
+  };
+  const built = buildUrl(effectiveBase, "search", params, apiKey);
+  return {
+    type: "searchChannel",
+    query: identifier,
+    url: built.url,
+    params
+  };
+}
+
+function resolveFailureReason$1(status) {
+  if (status === 403 || status === 429)
+    return "youtube_quota";
+  if (status === 404)
+    return "youtube_not_found";
+  if (status >= 500)
+    return "http_5xx";
+  if (status >= 400)
+    return "http_4xx";
+  return "unknown_error";
+}
+function extractVideoId(item) {
+  if (!item)
+    return null;
+  if (typeof item.id === "string")
+    return item.id;
+  if (item.id && typeof item.id === "object" && typeof item.id.videoId === "string") {
+    return item.id.videoId;
+  }
+  return null;
+}
+function isoDurationToSeconds(duration) {
+  if (!duration)
+    return null;
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(duration);
+  if (!match)
+    return null;
+  const [, hours, minutes, seconds] = match;
+  const total = Number(hours != null ? hours : "0") * 3600 + Number(minutes != null ? minutes : "0") * 60 + Number(seconds != null ? seconds : "0");
+  return Number.isFinite(total) ? total : null;
+}
+function toTranscriptText(transcript) {
+  var _a, _b, _c;
+  if (!transcript)
+    return { text: "", available: false };
+  if (typeof transcript === "string") {
+    const trimmed = transcript.trim();
+    return { text: trimmed, available: Boolean(trimmed) };
+  }
+  const text = (_b = (_a = transcript.text) == null ? void 0 : _a.trim()) != null ? _b : "";
+  const available = (_c = transcript.available) != null ? _c : Boolean(text);
+  return { text, available };
+}
+function resolvePlaylistId(config) {
+  var _a;
+  if (!config || typeof config !== "object")
+    return null;
+  const youtubeConfig = config.youtube;
+  if (youtubeConfig && typeof youtubeConfig === "object") {
+    const playlist = (_a = youtubeConfig.playlist) != null ? _a : youtubeConfig.playlistId;
+    if (typeof playlist === "string" && playlist.trim()) {
+      return playlist.trim();
+    }
+  }
+  return null;
+}
+function resolveChannelIdentifier(config) {
+  var _a;
+  if (!config || typeof config !== "object")
+    return null;
+  const youtubeConfig = config.youtube;
+  if (!youtubeConfig || typeof youtubeConfig !== "object")
+    return null;
+  const channel = (_a = youtubeConfig.channel) != null ? _a : youtubeConfig.channelId;
+  if (typeof channel === "string" && channel.trim()) {
+    return channel.trim();
+  }
+  return null;
+}
+function toChannelPublicUrl(identifier) {
+  if (identifier.startsWith("@")) {
+    return `https://www.youtube.com/${identifier}`;
+  }
+  if (identifier.startsWith("c:")) {
+    return `https://www.youtube.com/c/${identifier.slice(2)}`;
+  }
+  if (identifier.startsWith("user:")) {
+    return `https://www.youtube.com/user/${identifier.slice(5)}`;
+  }
+  return `https://www.youtube.com/channel/${identifier}`;
+}
+function extractChannelIdFromLookup(request, json) {
+  var _a;
+  if (!json || typeof json !== "object" || !("items" in json)) {
+    return null;
+  }
+  const items = Array.isArray(json.items) ? json.items : [];
+  if (!items.length) {
+    return null;
+  }
+  if (request.type === "resolveHandle" || request.type === "resolveUsername") {
+    const first = items[0];
+    if (typeof (first == null ? void 0 : first.id) === "string") {
+      return first.id;
+    }
+    return null;
+  }
+  if (request.type === "searchChannel") {
+    for (const raw of items) {
+      const candidate = raw;
+      const direct = candidate == null ? void 0 : candidate.id;
+      if (direct && typeof direct.channelId === "string" && direct.channelId.trim()) {
+        return direct.channelId.trim();
+      }
+      if (((_a = candidate == null ? void 0 : candidate.snippet) == null ? void 0 : _a.channelId) && candidate.snippet.channelId.trim()) {
+        return candidate.snippet.channelId.trim();
+      }
+    }
+  }
+  return null;
+}
+async function fetchYoutubeApi(fetcher, request, signal) {
+  const response = await fetcher(request.url, { signal });
+  const status = response.status;
+  const headers = Object.fromEntries(response.headers.entries());
+  const body = await response.text();
+  if (!response.ok) {
+    const failureReason = resolveFailureReason$1(status);
+    return {
+      ok: false,
+      status,
+      headers,
+      body,
+      failureReason
+    };
+  }
+  let json;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    return {
+      ok: false,
+      status,
+      headers,
+      body,
+      failureReason: "parser_error"
+    };
+  }
+  return {
+    ok: true,
+    status,
+    headers,
+    body,
+    json
+  };
 }
 const fetchYoutubeSource = async (input, context) => {
-    const fetcher = context?.fetch ?? globalThis.fetch;
-    if (!fetcher) {
-        return {
-            ok: false,
-            failureReason: 'unknown_error',
-            error: new Error('No fetch implementation available for YouTube adapter'),
-        };
-    }
+  var _a, _b, _c, _d, _e, _f, _g;
+  const fetcher = (_a = context == null ? void 0 : context.fetch) != null ? _a : globalThis.fetch;
+  if (!fetcher) {
+    return {
+      ok: false,
+      failureReason: "unknown_error",
+      error: new Error("No fetch implementation available for YouTube adapter")
+    };
+  }
+  try {
+    const playlistOverride = resolvePlaylistId(input.config);
+    const channelIdentifier = resolveChannelIdentifier(input.config);
+    const publicUrl = playlistOverride ? `https://www.youtube.com/playlist?list=${playlistOverride}` : channelIdentifier ? toChannelPublicUrl(channelIdentifier) : input.canonicalUrl || input.url;
+    const requestOptions = {
+      apiKey: (_c = (_b = context == null ? void 0 : context.youtubeApiKey) != null ? _b : process.env.YOUTUBE_API_KEY) != null ? _c : void 0,
+      baseUrl: (_e = (_d = context == null ? void 0 : context.youtubeApiBaseUrl) != null ? _d : process.env.YOUTUBE_DATA_API_BASE_URL) != null ? _e : void 0,
+      maxResults: context == null ? void 0 : context.youtubeMaxResults
+    };
+    const requestsMetadata = [];
+    let request;
     try {
-        const playlistOverride = resolvePlaylistId(input.config);
-        const channelIdentifier = resolveChannelIdentifier(input.config);
-        const publicUrl = playlistOverride
-            ? `https://www.youtube.com/playlist?list=${playlistOverride}`
-            : channelIdentifier
-                ? toChannelPublicUrl(channelIdentifier)
-                : input.canonicalUrl || input.url;
-        const requestOptions = {
-            apiKey: context?.youtubeApiKey ?? process.env.YOUTUBE_API_KEY ?? undefined,
-            baseUrl: context?.youtubeApiBaseUrl ?? process.env.YOUTUBE_DATA_API_BASE_URL ?? undefined,
-            maxResults: context?.youtubeMaxResults,
+      request = buildYoutubeDataApiRequest(publicUrl, requestOptions);
+    } catch (error) {
+      return {
+        ok: false,
+        failureReason: "unknown_error",
+        error,
+        metadata: {
+          adapter: "youtube",
+          message: "Failed to build YouTube Data API request"
+        }
+      };
+    }
+    let finalResponse = null;
+    let resolvedChannelId = null;
+    let playlistId = playlistOverride != null ? playlistOverride : null;
+    for (let hop = 0; hop < 2; hop++) {
+      const apiResult = await fetchYoutubeApi(fetcher, request, context == null ? void 0 : context.signal);
+      requestsMetadata.push({ type: request.type, url: request.url, status: apiResult.status });
+      if (!apiResult.ok) {
+        return {
+          ok: false,
+          failureReason: apiResult.failureReason,
+          raw: {
+            status: apiResult.status,
+            headers: apiResult.headers,
+            body: apiResult.body
+          },
+          retryInMinutes: apiResult.failureReason === "http_5xx" ? 5 : null,
+          metadata: {
+            adapter: "youtube",
+            status: apiResult.status,
+            requests: requestsMetadata
+          }
         };
-        const requestsMetadata = [];
-        let request;
-        try {
-            request = buildYoutubeDataApiRequest(publicUrl, requestOptions);
+      }
+      if (request.type === "channelUploads") {
+        finalResponse = apiResult;
+        resolvedChannelId = request.channelId;
+        playlistId = request.playlistId;
+        break;
+      }
+      if (request.type === "playlistItems") {
+        finalResponse = apiResult;
+        break;
+      }
+      const derivedChannelId = extractChannelIdFromLookup(request, apiResult.json);
+      if (!derivedChannelId) {
+        return {
+          ok: false,
+          failureReason: "youtube_not_found",
+          raw: {
+            status: apiResult.status,
+            headers: apiResult.headers,
+            body: apiResult.body
+          },
+          metadata: {
+            adapter: "youtube",
+            status: apiResult.status,
+            requests: requestsMetadata,
+            message: "Unable to resolve channel identifier from YouTube response"
+          }
+        };
+      }
+      resolvedChannelId = derivedChannelId;
+      const uploadsUrl = `https://www.youtube.com/channel/${derivedChannelId}`;
+      request = buildYoutubeDataApiRequest(uploadsUrl, requestOptions);
+    }
+    if (!finalResponse) {
+      return {
+        ok: false,
+        failureReason: "unknown_error",
+        metadata: {
+          adapter: "youtube",
+          message: "Failed to retrieve playlist items after request hops",
+          requests: requestsMetadata
         }
-        catch (error) {
-            return {
-                ok: false,
-                failureReason: 'unknown_error',
-                error: error,
-                metadata: {
-                    adapter: 'youtube',
-                    message: 'Failed to build YouTube Data API request',
-                },
-            };
-        }
-        let finalResponse = null;
-        let resolvedChannelId = null;
-        let playlistId = playlistOverride ?? null;
-        for (let hop = 0; hop < 2; hop++) {
-            const apiResult = await fetchYoutubeApi(fetcher, request, context?.signal);
-            requestsMetadata.push({ type: request.type, url: request.url, status: apiResult.status });
-            if (!apiResult.ok) {
-                return {
-                    ok: false,
-                    failureReason: apiResult.failureReason,
-                    raw: {
-                        status: apiResult.status,
-                        headers: apiResult.headers,
-                        body: apiResult.body,
-                    },
-                    retryInMinutes: apiResult.failureReason === 'http_5xx' ? 5 : null,
-                    metadata: {
-                        adapter: 'youtube',
-                        status: apiResult.status,
-                        requests: requestsMetadata,
-                    },
-                };
-            }
-            if (request.type === 'channelUploads') {
-                finalResponse = apiResult;
-                resolvedChannelId = request.channelId;
-                playlistId = request.playlistId;
-                break;
-            }
-            if (request.type === 'playlistItems') {
-                finalResponse = apiResult;
-                break;
-            }
-            const derivedChannelId = extractChannelIdFromLookup(request, apiResult.json);
-            if (!derivedChannelId) {
-                return {
-                    ok: false,
-                    failureReason: 'youtube_not_found',
-                    raw: {
-                        status: apiResult.status,
-                        headers: apiResult.headers,
-                        body: apiResult.body,
-                    },
-                    metadata: {
-                        adapter: 'youtube',
-                        status: apiResult.status,
-                        requests: requestsMetadata,
-                        message: 'Unable to resolve channel identifier from YouTube response',
-                    },
-                };
-            }
-            resolvedChannelId = derivedChannelId;
-            const uploadsUrl = `https://www.youtube.com/channel/${derivedChannelId}`;
-            request = buildYoutubeDataApiRequest(uploadsUrl, requestOptions);
-        }
-        if (!finalResponse) {
-            return {
-                ok: false,
-                failureReason: 'unknown_error',
-                metadata: {
-                    adapter: 'youtube',
-                    message: 'Failed to retrieve playlist items after request hops',
-                    requests: requestsMetadata,
-                },
-            };
-        }
-        const parsed = (() => {
-            const candidates = finalResponse.json?.items;
-            if (!Array.isArray(candidates)) {
-                return { items: [] };
-            }
-            return { items: candidates };
-        })();
-        const items = Array.isArray(parsed?.items) ? parsed.items : [];
-        const now = context?.now?.() ?? new Date();
-        const skipped = [];
-        const normalizedItems = items.flatMap((item) => {
-            const videoId = extractVideoId(item);
-            if (!videoId) {
-                skipped.push({ reason: 'missing_video_id', videoId: null });
-                return [];
-            }
-            const snippet = item.snippet ?? {};
-            const description = snippet.description ?? '';
-            const { text: transcriptText, available: transcriptAvailable } = toTranscriptText(item.transcript);
-            const bodySource = transcriptText || description;
-            const extracted = sanitizeHtmlContent(bodySource || snippet.title || '');
-            if (!extracted) {
-                skipped.push({ reason: 'empty_body', videoId });
-                return [];
-            }
-            const published = derivePublishedAt([snippet.publishedAt], now, 'api', 'fallback');
-            const durationSeconds = isoDurationToSeconds(item.contentDetails?.duration);
-            const candidate = {
-                externalId: videoId,
-                title: (snippet.title ?? `YouTube Video ${videoId}`).slice(0, 500) || `YouTube Video ${videoId}`,
-                url: `https://www.youtube.com/watch?v=${videoId}`,
-                contentType: 'youtube',
-                publishedAt: published.publishedAt,
-                publishedAtSource: published.source,
-                fetchedAt: now.toISOString(),
-                extractedBody: extracted,
-                excerpt: createExcerpt(extracted),
-            };
-            const validated = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
-            if (!validated.success) {
-                skipped.push({
-                    reason: 'validation_error',
-                    videoId,
-                    detail: validated.error.issues.map((issue) => issue.message).join(', '),
-                });
-                return [];
-            }
-            const metadata = {
-                contentType: 'youtube',
-                videoId,
-                channelId: snippet.channelId ?? resolvedChannelId ?? null,
-                playlistId: playlistId ?? undefined,
-                transcriptAvailable,
-                durationSeconds,
-            };
-            return [
-                {
-                    rawPayload: item,
-                    normalized: validated.data,
-                    sourceMetadata: metadata,
-                },
-            ];
+      };
+    }
+    const parsed = (() => {
+      var _a2;
+      const candidates = (_a2 = finalResponse.json) == null ? void 0 : _a2.items;
+      if (!Array.isArray(candidates)) {
+        return { items: [] };
+      }
+      return { items: candidates };
+    })();
+    const items = Array.isArray(parsed == null ? void 0 : parsed.items) ? parsed.items : [];
+    const now = (_g = (_f = context == null ? void 0 : context.now) == null ? void 0 : _f.call(context)) != null ? _g : /* @__PURE__ */ new Date();
+    const skipped = [];
+    const normalizedItems = items.flatMap((item) => {
+      var _a2, _b2, _c2, _d2, _e2, _f2;
+      const videoId = extractVideoId(item);
+      if (!videoId) {
+        skipped.push({ reason: "missing_video_id", videoId: null });
+        return [];
+      }
+      const snippet = (_a2 = item.snippet) != null ? _a2 : {};
+      const description = (_b2 = snippet.description) != null ? _b2 : "";
+      const { text: transcriptText, available: transcriptAvailable } = toTranscriptText(item.transcript);
+      const bodySource = transcriptText || description;
+      const extracted = sanitizeHtmlContent(bodySource || snippet.title || "");
+      if (!extracted) {
+        skipped.push({ reason: "empty_body", videoId });
+        return [];
+      }
+      const published = derivePublishedAt([snippet.publishedAt], now, "api", "fallback");
+      const durationSeconds = isoDurationToSeconds((_c2 = item.contentDetails) == null ? void 0 : _c2.duration);
+      const candidate = {
+        externalId: videoId,
+        title: ((_d2 = snippet.title) != null ? _d2 : `YouTube Video ${videoId}`).slice(0, 500) || `YouTube Video ${videoId}`,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        contentType: "youtube",
+        publishedAt: published.publishedAt,
+        publishedAtSource: published.source,
+        fetchedAt: now.toISOString(),
+        extractedBody: extracted,
+        excerpt: createExcerpt(extracted)
+      };
+      const validated = normalizedDiscoveryAdapterItemSchema.safeParse(candidate);
+      if (!validated.success) {
+        skipped.push({
+          reason: "validation_error",
+          videoId,
+          detail: validated.error.issues.map((issue) => issue.message).join(", ")
         });
-        return {
-            ok: true,
-            items: normalizedItems,
-            raw: {
-                status: finalResponse.status,
-                headers: finalResponse.headers,
-            },
-            metadata: {
-                adapter: 'youtube',
-                itemCount: normalizedItems.length,
-                totalItems: items.length,
-                skippedCount: skipped.length,
-                skipped,
-                requests: requestsMetadata,
-                channelId: resolvedChannelId,
-                playlistId,
-            },
-        };
-    }
-    catch (error) {
-        const err = error;
-        const failureReason = err.name === 'AbortError' ? 'timeout' : 'network_error';
-        return {
-            ok: false,
-            failureReason,
-            error: err,
-            retryInMinutes: failureReason === 'network_error' ? 5 : null,
-            metadata: {
-                adapter: 'youtube',
-                message: err.message,
-            },
-        };
-    }
+        return [];
+      }
+      const metadata = {
+        contentType: "youtube",
+        videoId,
+        channelId: (_f2 = (_e2 = snippet.channelId) != null ? _e2 : resolvedChannelId) != null ? _f2 : null,
+        playlistId: playlistId != null ? playlistId : void 0,
+        transcriptAvailable,
+        durationSeconds
+      };
+      return [
+        {
+          rawPayload: item,
+          normalized: validated.data,
+          sourceMetadata: metadata
+        }
+      ];
+    });
+    return {
+      ok: true,
+      items: normalizedItems,
+      raw: {
+        status: finalResponse.status,
+        headers: finalResponse.headers
+      },
+      metadata: {
+        adapter: "youtube",
+        itemCount: normalizedItems.length,
+        totalItems: items.length,
+        skippedCount: skipped.length,
+        skipped,
+        requests: requestsMetadata,
+        channelId: resolvedChannelId,
+        playlistId
+      }
+    };
+  } catch (error) {
+    const err = error;
+    const failureReason = err.name === "AbortError" ? "timeout" : "network_error";
+    return {
+      ok: false,
+      failureReason,
+      error: err,
+      retryInMinutes: failureReason === "network_error" ? 5 : null,
+      metadata: {
+        adapter: "youtube",
+        message: err.message
+      }
+    };
+  }
 };
 
 const ADAPTERS = {
-    'web-page': fetchHttpSource,
-    rss: fetchRssSource,
-    'youtube-channel': fetchYoutubeSource,
-    'youtube-playlist': fetchYoutubeSource,
+  "web-page": fetchHttpSource,
+  rss: fetchRssSource,
+  "youtube-channel": fetchYoutubeSource,
+  "youtube-playlist": fetchYoutubeSource
 };
 function getIngestionAdapter(type) {
-    const adapter = ADAPTERS[type];
-    if (!adapter) {
-        throw new Error(`No ingestion adapter registered for type ${type}`);
-    }
-    return adapter;
+  const adapter = ADAPTERS[type];
+  if (!adapter) {
+    throw new Error(`No ingestion adapter registered for type ${type}`);
+  }
+  return adapter;
 }
 async function executeIngestionAdapter(input, context) {
-    const adapter = getIngestionAdapter(input.sourceType);
-    return adapter(input, context);
+  const adapter = getIngestionAdapter(input.sourceType);
+  return adapter(input, context);
 }
 
 const SCORE_FEATURE_FLAG = FEATURE_DISCOVERY_AGENT;
@@ -1630,7 +1634,7 @@ async function processSource(source, options, stats) {
   const attempts = [];
   const maxAttempts = resolveMaxAttempts();
   let permanentFailureNotice = null;
-  let runMetrics = {};
+  const runMetrics = {};
   const ingestionIssues = [];
   let healthUpdate = null;
   try {
