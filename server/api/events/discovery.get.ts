@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { getQuery, setHeader, createError, defineEventHandler } from 'h3'
 import { z } from 'zod'
-import { subscribeToFeatureFlagUpdates, FEATURE_DISCOVERY_AGENT } from '../../utils/client-config/feature-flags'
+import {
+  subscribeToFeatureFlagUpdates,
+  FEATURE_DISCOVERY_AGENT,
+  requireDiscoveryFeatureEnabled,
+  FeatureFlagDisabledError,
+} from '../../utils/client-config/feature-flags'
 import { onDiscoveryEvent } from '../../utils/discovery-events'
 import { toDiscoveryTelemetryEvent } from '../../utils/discovery-telemetry'
 import type { DiscoveryTelemetryEvent } from '@awesomeposter/shared'
+import { requireApiAuth } from '../../utils/api-auth'
+import { requireUserSession, assertClientAccess } from '../../utils/session'
 
 const CONNECTION_LIMIT_PER_USER = 5
 const HEARTBEAT_INTERVAL_MS = 30_000
@@ -67,7 +74,7 @@ function writeEvent(res: import('node:http').ServerResponse, event: DiscoveryTel
 }
 
 export default defineEventHandler(async (event) => {
-  const sessionUser = { id: 'dev-user', clientIds: null as string[] | null }
+  requireApiAuth(event)
 
   const rawQuery = getQuery(event)
   const parseResult = querySchema.safeParse(rawQuery)
@@ -76,6 +83,17 @@ export default defineEventHandler(async (event) => {
   }
 
   const clientId = parseResult.data.clientId
+
+  const sessionUser = requireUserSession(event)
+  assertClientAccess(sessionUser, clientId)
+  try {
+    await requireDiscoveryFeatureEnabled(clientId)
+  } catch (error) {
+    if (error instanceof FeatureFlagDisabledError) {
+      throw createError({ statusCode: error.statusCode ?? 403, statusMessage: error.message })
+    }
+    throw error
+  }
 
   const userId = sessionUser.id
   const connectionId = randomUUID()

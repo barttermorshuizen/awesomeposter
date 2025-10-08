@@ -727,22 +727,22 @@ export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Pro
     score: discoveryScores.score,
   }
 
+  const orderings: SQL[] = []
+
   if (tsQuery) {
     const titleHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=1,MaxWords=16,MinWords=4`
     const excerptHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=24,MinWords=5,ShortWord=3`
     const bodyHeadlineOptions = `StartSel=${HIGHLIGHT_START},StopSel=${HIGHLIGHT_END},MaxFragments=2,MaxWords=18,MinWords=6,ShortWord=3`
+    const rankExpression = sql<number>`ts_rank_cd(${searchVector}, ${tsQuery}, 32)`
     Object.assign(selectFields, {
       titleHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.title}, ''), ${tsQuery}, ${titleHeadlineOptions})`,
       excerptHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'excerpt', ''), ${tsQuery}, ${excerptHeadlineOptions})`,
       bodyHeadline: sql<string>`ts_headline('english', coalesce(${discoveryItems.normalizedJson}->>'extractedBody', ''), ${tsQuery}, ${bodyHeadlineOptions})`,
-      rank: sql<number>`ts_rank_cd(${searchVector}, ${tsQuery}, 32)`,
+      rank: rankExpression,
     })
+    orderings.push(sql`${rankExpression} DESC`)
   }
 
-  const orderings: SQL[] = []
-  if (tsQuery) {
-    orderings.push(sql`rank DESC`)
-  }
   orderings.push(sql`coalesce(${discoveryScores.score}, 0) DESC`)
   orderings.push(desc(discoveryItems.ingestedAt))
   orderings.push(desc(discoveryItems.id))

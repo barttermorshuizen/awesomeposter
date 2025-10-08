@@ -10,6 +10,7 @@ export type DiscoveryEventHandlers = {
   onKeywordUpdated?: (payload: DiscoveryKeywordUpdatedEvent['payload']) => void
   onEvent?: (event: DiscoveryTelemetryEvent) => void
   onFeatureDisabled?: (payload: DiscoveryFeatureDisabledPayload) => void
+  onDisconnect?: () => void
 }
 
 export type DiscoveryFeatureDisabledPayload = {
@@ -93,6 +94,7 @@ function connectStream(clientId: string, state: StreamState) {
   }
 
   const errorHandler = () => {
+    state.handlers.forEach((handler) => handler.onDisconnect?.())
     cleanupStream(clientId, state)
     state.reconnectHandle = setTimeout(() => {
       connectStream(clientId, state)
