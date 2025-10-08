@@ -39,11 +39,11 @@ export default async function loadDiscoveryDashboard(): Promise<Component> {
   try {
     const flags = await fetchClientFeatureFlags(clientId)
     if (!flags.discoveryFiltersV1) {
-      console.warn('Discovery filters flag disabled; continuing in dev-friendly bypass mode.')
+      console.info('Discovery filters v1 flag disabled for client; rendering dashboard with default behaviour.')
       return loadDashboardView()
     }
   } catch (error) {
-    console.warn('Discovery dashboard flag lookup failed; continuing in dev-friendly bypass mode.', error)
+    console.info('Discovery dashboard flag lookup failed; rendering dashboard with default behaviour.', error)
     return loadDashboardView()
   }
 
