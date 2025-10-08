@@ -59,7 +59,6 @@ const featureFlagMessage = ref<string | null>(null)
 const featureFlagLoading = ref(false)
 const featureFlagEnabled = ref(false)
 
-const virtualizationForcedOff = ref(false)
 const customDateFrom = ref('')
 const customDateTo = ref('')
 const searchHasFocus = ref(false)
@@ -102,7 +101,6 @@ const searchMessages = computed(() => {
   return []
 })
 
-const virtualizationActive = computed(() => virtualizationEnabled.value && !virtualizationForcedOff.value)
 
 const resultSummary = computed(() => {
   if (!isReadyForQueries.value) {
@@ -377,7 +375,6 @@ async function bootstrapForClient(reason: 'initial' | 'client-change' | 'flag-ch
     hasBootstrappedOnce = false
     return
   }
-  virtualizationForcedOff.value = false
   try {
     await listStore.loadFilterMetadata()
   } catch (err) {
@@ -395,7 +392,6 @@ async function bootstrapForClient(reason: 'initial' | 'client-change' | 'flag-ch
 
 function onResetFilters() {
   listStore.resetFilters()
-  virtualizationForcedOff.value = false
   if (isReadyForQueries.value) {
     suppressNextPageFetch = true
     pagination.page = 1
@@ -405,10 +401,6 @@ function onResetFilters() {
 
 function refreshResults() {
   void listStore.refresh()
-}
-
-function toggleVirtualization() {
-  virtualizationForcedOff.value = !virtualizationForcedOff.value
 }
 
 function onSearchInputChanged() {
@@ -485,15 +477,6 @@ watch(
 )
 
 watch(
-  virtualizationEnabled,
-  (enabled) => {
-    if (!enabled) {
-      virtualizationForcedOff.value = false
-    }
-  },
-)
-
-watch(
   () => [filters.dateFrom, filters.dateTo],
   ([from, to]) => {
     if (syncingCustomDates) {
@@ -542,12 +525,10 @@ watch(clientId, (id) => {
 
   if (previousClientId === null) {
     // first client selection
-    virtualizationForcedOff.value = false
     hasBootstrappedOnce = false
     void ensureFeatureFlag(id, 'client-change')
   } else if (id !== previousClientId) {
     listStore.resetFilters()
-    virtualizationForcedOff.value = false
     hasBootstrappedOnce = false
     void ensureFeatureFlag(id, 'client-change')
   } else {
@@ -675,11 +656,7 @@ const datePresetSelection = computed({
           </template>
         </v-select>
       </v-col>
-      <v-col cols="12" md="6" lg="4" class="d-flex align-end">
-        <div class="text-caption text-medium-emphasis">
-          Client selection persists locally so the dashboard restores your context on reload.
-        </div>
-      </v-col>
+      <v-col cols="12" md="6" lg="4" class="d-flex align-end" />
     </v-row>
 
     <v-alert
@@ -836,21 +813,14 @@ const datePresetSelection = computed({
               <v-select
                 v-model="pagination.pageSize"
                 :items="pageSizeOptions"
+                item-title="label"
+                item-value="value"
                 label="Page size"
                 density="comfortable"
                 variant="outlined"
                 hide-details
-                style="width: 120px"
+                style="width: 160px"
               />
-              <v-btn
-                variant="text"
-                size="small"
-                class="text-none"
-                data-testid="virtualization-toggle"
-                @click="toggleVirtualization"
-              >
-                {{ virtualizationActive ? 'Use standard list' : 'Enable virtual list' }}
-              </v-btn>
             </div>
           </v-card-title>
 
@@ -866,9 +836,6 @@ const datePresetSelection = computed({
               @blur="searchHasFocus = false"
             />
 
-            <div v-if="virtualizationEnabled" class="text-caption text-medium-emphasis mb-3">
-              Virtual scroll {{ virtualizationActive ? 'is active for large datasets.' : 'disabled; rendering standard list.' }}
-            </div>
 
             <div class="text-body-2 mb-4">{{ resultSummary }}</div>
 
@@ -903,77 +870,7 @@ const datePresetSelection = computed({
               v-else
               class="flex-grow-1"
             >
-              <VVirtualScroll
-                v-if="virtualizationActive"
-                class="flex-grow-1"
-                :items="items"
-                height="520"
-                :item-height="164"
-              >
-                <template #default="{ item }">
-                  <div class="discovery-item" :key="item.id">
-                    <div class="d-flex justify-space-between align-start flex-wrap gap-3 mb-2">
-                      <div>
-                        <a :href="item.url" target="_blank" rel="noopener" class="discovery-item__title">
-                          {{ item.title }}
-                        </a>
-                        <div class="text-caption text-medium-emphasis">
-                          Ingested {{ formatTimestamp(item.ingestedAt) }}
-                        </div>
-                      </div>
-                      <div class="d-flex align-center gap-2">
-                        <v-chip
-                          v-if="item.score !== null"
-                          size="small"
-                          color="primary"
-                          variant="tonal"
-                        >
-                          {{ computeScoreLabel(item.score) }}
-                        </v-chip>
-                        <v-chip size="small" variant="outlined">
-                          {{ formatStatus(item.status) }}
-                        </v-chip>
-                      </div>
-                    </div>
-
-                    <div class="text-body-2 text-medium-emphasis mb-3">
-                      {{ item.summary || 'No summary available for this item.' }}
-                    </div>
-
-                    <div v-if="item.topics.length" class="d-flex flex-wrap gap-2 mb-3">
-                      <v-chip
-                        v-for="topic in item.topics"
-                        :key="`${item.id}-topic-${topic}`"
-                        size="x-small"
-                        color="secondary"
-                        variant="tonal"
-                      >
-                        {{ topic }}
-                      </v-chip>
-                    </div>
-
-                    <div
-                      v-for="(highlight, index) in item.highlights"
-                      :key="`${item.id}-highlight-${index}`"
-                      class="discovery-item__highlight"
-                    >
-                      <span class="discovery-item__highlight-label">{{ highlightFieldLabel(highlight.field) }}</span>
-                      <span class="discovery-item__highlight-snippet">
-                        <template
-                          v-for="(segment, segmentIndex) in buildHighlightSegments(highlight.snippets[0] ?? '')"
-                          :key="`${item.id}-segment-${index}-${segmentIndex}`"
-                        >
-                          <mark v-if="segment.highlighted">{{ segment.text }}</mark>
-                          <span v-else>{{ segment.text }}</span>
-                        </template>
-                      </span>
-                    </div>
-                  </div>
-                  <v-divider class="my-2" />
-                </template>
-              </VVirtualScroll>
-
-              <div v-else class="standard-results-list">
+              <div class="standard-results-list">
                 <div
                   v-for="item in items"
                   :key="item.id"
@@ -1036,7 +933,6 @@ const datePresetSelection = computed({
                     </span>
                   </div>
 
-                  <v-divider class="my-4" />
                 </div>
               </div>
             </div>

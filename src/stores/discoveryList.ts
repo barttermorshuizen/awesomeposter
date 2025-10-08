@@ -36,6 +36,11 @@ export type DiscoveryTopicOption = {
   label: string
 }
 
+export type DiscoveryPageSizeOption = {
+  value: number
+  label: string
+}
+
 type RouteQueryRecord = Record<string, string | null>
 
 type TelemetryHooks = {
@@ -263,7 +268,9 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
   const hasResults = computed(() => items.value.length > 0)
   const isEmptyState = computed(() => !loading.value && !items.value.length && !error.value)
   const hasSearchTerm = computed(() => filters.search.trim().length >= DISCOVERY_MIN_SEARCH_LENGTH)
-  const pageSizeOptions = DISCOVERY_SEARCH_PAGE_SIZES.slice()
+  const pageSizeOptions = computed<DiscoveryPageSizeOption[]>(() =>
+    DISCOVERY_SEARCH_PAGE_SIZES.map((size) => ({ value: size, label: `${size} per page` })),
+  )
 
   function setClientId(nextClientId: string | null) {
     if (clientId.value === nextClientId) {

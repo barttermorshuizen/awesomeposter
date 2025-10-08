@@ -5,6 +5,14 @@ import type {
 } from '@awesomeposter/shared'
 import { discoveryTelemetryEventSchema } from '@awesomeposter/shared'
 
+const AUTH_TOKEN = (() => {
+  const token = import.meta.env.VITE_AGENTS_AUTH_BEARER
+  if (typeof token === 'string' && token.trim().length > 0) {
+    return token.trim()
+  }
+  return null
+})()
+
 export type DiscoveryEventHandlers = {
   onSourceCreated?: (payload: DiscoverySourceCreatedEvent['payload']) => void
   onKeywordUpdated?: (payload: DiscoveryKeywordUpdatedEvent['payload']) => void
@@ -66,6 +74,9 @@ function connectStream(clientId: string, state: StreamState) {
   if (!ensureEnvironment()) return
   const url = new URL('/api/events/discovery', window.location.origin)
   url.searchParams.set('clientId', clientId)
+  if (AUTH_TOKEN) {
+    url.searchParams.set('token', AUTH_TOKEN)
+  }
 
   const source = new EventSource(url.toString(), { withCredentials: true })
   state.source = source

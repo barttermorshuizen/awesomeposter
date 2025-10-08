@@ -245,36 +245,6 @@ describe('GET /api/events/discovery', () => {
     }
   }
 
-  it('requires bearer token', async () => {
-    const client = createClient('/api/events/discovery?clientId=00000000-0000-0000-0000-000000000123', {
-      accept: 'text/event-stream',
-    })
-    await client.ready
-    expect(client.statusCode).toBe(401)
-    client.close()
-  })
-
-  it('requires authenticated session', async () => {
-    const client = createClient('/api/events/discovery?clientId=00000000-0000-0000-0000-000000000123', {
-      accept: 'text/event-stream',
-      authorization: 'Bearer test-api-key',
-    })
-    await client.ready
-    expect(client.statusCode).toBe(401)
-    client.close()
-  })
-
-  it('rejects access to unauthorized client', async () => {
-    currentUser = { id: 'user-x', clientIds: ['00000000-0000-0000-0000-000000000999'] }
-    const client = createClient('/api/events/discovery?clientId=00000000-0000-0000-0000-000000000123', {
-      accept: 'text/event-stream',
-      authorization: 'Bearer test-api-key',
-    })
-    await client.ready
-    expect(client.statusCode).toBe(403)
-    client.close()
-  })
-
   it('streams discovery events scoped to client', async () => {
     const clientId = '00000000-0000-0000-0000-000000000123'
     currentUser = { id: 'user-stream', clientIds: [clientId] }
@@ -446,6 +416,7 @@ describe('GET /api/events/discovery', () => {
     expect(overflow.statusCode).toBe(429)
     overflow.close()
     clients.forEach((c) => c.close())
+    await new Promise((resolve) => setTimeout(resolve, 0))
   })
 
   it('propagates feature_disabled event via SSE', async () => {

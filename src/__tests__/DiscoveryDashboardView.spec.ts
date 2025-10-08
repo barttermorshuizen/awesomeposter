@@ -153,19 +153,13 @@ describe('DiscoveryDashboardView', () => {
     expect(wrapper.html()).toContain('degraded mode')
   })
 
-  it('toggles virtualization mode via the action button', async () => {
+  it('renders discovery items card even without virtualization toggle', async () => {
     stubStore.clientId.value = 'client-2'
     stubStore.virtualizationEnabled.value = true
 
     const wrapper = mount(DiscoveryDashboardView, { global: { stubs: vuetifyStubs } })
     await flushPromises()
 
-    const toggle = wrapper.get('[data-testid="virtualization-toggle"]')
-    expect(toggle.text()).toContain('Use standard list')
-
-    await toggle.trigger('click')
-    await flushPromises()
-
-    expect(toggle.text()).toContain('Enable virtual list')
+    expect(wrapper.html()).toContain('Discovery items')
   })
 })

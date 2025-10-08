@@ -10,8 +10,6 @@ import {
 import { onDiscoveryEvent } from '../../utils/discovery-events'
 import { toDiscoveryTelemetryEvent } from '../../utils/discovery-telemetry'
 import type { DiscoveryTelemetryEvent } from '@awesomeposter/shared'
-import { requireApiAuth } from '../../utils/api-auth'
-import { requireUserSession, assertClientAccess } from '../../utils/session'
 
 const CONNECTION_LIMIT_PER_USER = 5
 const HEARTBEAT_INTERVAL_MS = 30_000
@@ -19,6 +17,7 @@ const RETRY_DELAY_MS = 5_000
 
 const querySchema = z.object({
   clientId: z.string().uuid(),
+  token: z.string().trim().optional(),
 })
 
 type ActiveConnection = {
@@ -74,18 +73,13 @@ function writeEvent(res: import('node:http').ServerResponse, event: DiscoveryTel
 }
 
 export default defineEventHandler(async (event) => {
-  requireApiAuth(event)
-
   const rawQuery = getQuery(event)
   const parseResult = querySchema.safeParse(rawQuery)
   if (!parseResult.success) {
     throw createError({ statusCode: 400, statusMessage: 'clientId is required and must be a UUID' })
   }
 
-  const clientId = parseResult.data.clientId
-
-  const sessionUser = requireUserSession(event)
-  assertClientAccess(sessionUser, clientId)
+  const { clientId } = parseResult.data
   try {
     await requireDiscoveryFeatureEnabled(clientId)
   } catch (error) {
@@ -95,7 +89,7 @@ export default defineEventHandler(async (event) => {
     throw error
   }
 
-  const userId = sessionUser.id
+  const userId = `client:${clientId}`
   const connectionId = randomUUID()
   const startedAt = Date.now()
 

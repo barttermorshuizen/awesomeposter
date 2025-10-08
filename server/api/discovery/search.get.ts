@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
     payload: {
       requestId,
       clientId: filters.clientId,
-      requestedBy: sessionUser.id,
+      requestedBy: filters.clientId,
       page: filters.page,
       pageSize: filters.pageSize,
       statuses: filters.statuses,
