@@ -74,6 +74,7 @@ describe('discovery scoring utility', () => {
     expect(response.result.components.source).toBe(1)
     expect(response.result.status).toBe('scored')
     expect(response.config.threshold).toBeCloseTo(0.6)
+    expect(response.result.matchedKeywords).toEqual(['alpha'])
   })
 
   it('boosts keyword component when only part of the list matches', async () => {
@@ -93,6 +94,7 @@ describe('discovery scoring utility', () => {
     expect(response.ok).toBe(true)
     if (!response.ok) return
     expect(response.result.components.keyword).toBeCloseTo(0.75, 4)
+    expect(response.result.matchedKeywords).toEqual(['alpha', 'gamma'])
   })
 
   it('short-circuits when the discovery agent flag is disabled', async () => {

@@ -205,6 +205,7 @@ describe('runDiscoveryIngestionJob', () => {
           appliedThreshold: 0.6,
           status: 'scored',
           weightsVersion: 1,
+          matchedKeywords: ['marketing'],
         },
       ],
       config: defaultScoringConfig,
@@ -215,7 +216,12 @@ describe('runDiscoveryIngestionJob', () => {
     expect(result.succeeded).toBe(1)
     expect(scoreDiscoveryItems).toHaveBeenCalledWith([insertedId], { now: expect.any(Function) })
     expect(persistDiscoveryScores).toHaveBeenCalledWith([
-      expect.objectContaining({ itemId: insertedId, score: 0.92, status: 'scored' }),
+      expect.objectContaining({
+        itemId: insertedId,
+        score: 0.92,
+        status: 'scored',
+        metadata: expect.objectContaining({ topics: ['marketing'] }),
+      }),
     ])
     expect(emitDiscoveryEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'discovery.score.complete' }))
     expect(emitDiscoveryEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'discovery.queue.updated' }))

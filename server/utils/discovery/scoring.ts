@@ -65,6 +65,7 @@ export type DiscoveryScoreResult = {
   appliedThreshold: number
   status: 'scored' | 'suppressed'
   weightsVersion: number
+  matchedKeywords: string[]
 }
 
 export type DiscoveryScoreConfigSnapshot = {
@@ -181,30 +182,43 @@ function buildConfigSnapshot(config: ScoringConfig): DiscoveryScoreConfigSnapsho
 
 const KEYWORD_MATCH_DAMPING = 2
 
-function computeKeywordScore(normalized: NormalizedDiscoveryAdapterItem, keywords: string[]): number {
-  if (!keywords.length) return 0
+function computeKeywordScore(
+  normalized: NormalizedDiscoveryAdapterItem,
+  keywords: string[],
+): { score: number; matchedKeywords: string[] } {
+  if (!keywords.length) return { score: 0, matchedKeywords: [] }
   const text = `${normalized.title} ${normalized.extractedBody}`.toLowerCase()
-  if (!text) return 0
+  if (!text) return { score: 0, matchedKeywords: [] }
 
   let matches = 0
   const seen = new Set<string>()
+  const matchedKeywords: string[] = []
   for (const keyword of keywords) {
-    const trimmed = keyword.trim().toLowerCase()
-    if (!trimmed || seen.has(trimmed)) {
+    const original = keyword.trim()
+    if (!original) {
       continue
     }
-    seen.add(trimmed)
-    if (text.includes(trimmed)) {
+    const normalizedKeyword = original.toLowerCase()
+    if (seen.has(normalizedKeyword)) {
+      continue
+    }
+    seen.add(normalizedKeyword)
+    if (text.includes(normalizedKeyword)) {
       matches += 1
+      matchedKeywords.push(original)
     }
   }
-  if (!seen.size) return 0
-  if (matches === 0) return 0
+  if (!seen.size) {
+    return { score: 0, matchedKeywords: [] }
+  }
+  if (matches === 0) {
+    return { score: 0, matchedKeywords: [] }
+  }
 
   const coverage = matches / seen.size
   const matchInfluence = matches / (matches + KEYWORD_MATCH_DAMPING)
   const boosted = coverage + (1 - coverage) * matchInfluence
-  return clamp01(boosted)
+  return { score: clamp01(boosted), matchedKeywords }
 }
 
 function computeRecencyScore(item: DiscoveryItemForScoring, normalized: NormalizedDiscoveryAdapterItem, halfLifeHours: number, now: Date): number {
@@ -240,7 +254,8 @@ function toScoreResult(
   config: ScoringConfig,
   now: Date,
 ): DiscoveryScoreResult {
-  const keywordComponent = computeKeywordScore(normalized, keywords)
+  const keywordScore = computeKeywordScore(normalized, keywords)
+  const keywordComponent = keywordScore.score
   const recencyComponent = computeRecencyScore(item, normalized, config.recencyHalfLifeHours, now)
   const sourceComponent = computeSourceScore(normalized, item.sourceMetadata ?? {}, config.sourceMultipliers)
 
@@ -265,6 +280,7 @@ function toScoreResult(
     appliedThreshold: config.threshold,
     status,
     weightsVersion: config.weightsVersion,
+    matchedKeywords: keywordScore.matchedKeywords,
   }
 }
 

@@ -438,7 +438,10 @@ async function runInlineScoring({
         status: result.status,
         weightsVersion: result.weightsVersion,
         components: result.components,
-        metadata: { configSnapshot: response.config },
+        metadata: {
+          configSnapshot: response.config,
+          topics: result.matchedKeywords,
+        },
         scoredAt,
       })),
     )
