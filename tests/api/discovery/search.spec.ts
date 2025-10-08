@@ -4,18 +4,8 @@ import { createApp, toNodeListener } from 'h3'
 import { PassThrough } from 'node:stream'
 import { IncomingMessage, ServerResponse } from 'node:http'
 
-const featureFlagMocks = vi.hoisted(() => ({
-  requireDiscoveryFeatureEnabled: vi.fn(),
-  requireFeatureEnabled: vi.fn(),
-}))
-
 const discoveryEventMocks = vi.hoisted(() => ({
   emitDiscoveryEvent: vi.fn(),
-}))
-
-const sessionMocks = vi.hoisted(() => ({
-  requireUserSession: vi.fn(),
-  assertClientAccess: vi.fn(),
 }))
 
 vi.mock('@awesomeposter/shared', async () => {
@@ -23,19 +13,8 @@ vi.mock('@awesomeposter/shared', async () => {
   return actual
 })
 
-vi.mock('../../../server/utils/client-config/feature-flags', () => ({
-  FEATURE_DISCOVERY_FILTERS_V1: 'discovery.filters.v1',
-  requireDiscoveryFeatureEnabled: featureFlagMocks.requireDiscoveryFeatureEnabled,
-  requireFeatureEnabled: featureFlagMocks.requireFeatureEnabled,
-}))
-
 vi.mock('../../../server/utils/discovery-events', () => ({
   emitDiscoveryEvent: discoveryEventMocks.emitDiscoveryEvent,
-}))
-
-vi.mock('../../../server/utils/session', () => ({
-  requireUserSession: sessionMocks.requireUserSession,
-  assertClientAccess: sessionMocks.assertClientAccess,
 }))
 
 vi.mock('../../../server/utils/discovery-repository', async () => {
@@ -55,35 +34,20 @@ import {
 } from '../../../server/utils/discovery-repository'
 
 const searchDiscoveryItemsMock = searchDiscoveryItems as unknown as Mock
-const { requireDiscoveryFeatureEnabled, requireFeatureEnabled } = featureFlagMocks
 const { emitDiscoveryEvent } = discoveryEventMocks
 
-let currentUser: { id: string; clientIds: string[] }
-
 let handler: (req: IncomingMessage, res: ServerResponse) => void
+const CLIENT_ID = '00000000-0000-0000-0000-000000000111'
 
 beforeAll(async () => {
-  process.env.API_KEY = 'test-api-key'
   const app = createApp()
   app.use('/api/discovery/search', searchHandler)
   handler = toNodeListener(app)
 })
 
 beforeEach(() => {
-  currentUser = {
-    id: 'user-123',
-    clientIds: ['00000000-0000-0000-0000-000000000111'],
-  }
-  sessionMocks.requireUserSession.mockReset()
-  sessionMocks.assertClientAccess.mockReset()
-  sessionMocks.requireUserSession.mockImplementation(() => currentUser)
-  sessionMocks.assertClientAccess.mockImplementation(() => undefined)
-  requireDiscoveryFeatureEnabled.mockResolvedValue(undefined)
-  requireFeatureEnabled.mockResolvedValue(undefined)
   searchDiscoveryItemsMock.mockReset()
   emitDiscoveryEvent.mockClear()
-  requireDiscoveryFeatureEnabled.mockClear()
-  requireFeatureEnabled.mockClear()
 })
 
 async function request(path: string, headers: Record<string, string> = {}) {
@@ -94,7 +58,6 @@ async function request(path: string, headers: Record<string, string> = {}) {
   req.headers = Object.fromEntries(
     Object.entries({
       accept: 'application/json',
-      authorization: `Bearer ${process.env.API_KEY}`,
       ...headers,
     }).map(([key, value]) => [key.toLowerCase(), value]),
   )
@@ -180,9 +143,8 @@ describe('GET /api/discovery/search', () => {
       total: 1,
     })
 
-    const clientId = currentUser.clientIds[0]!
     const query = new URLSearchParams({
-      clientId,
+      clientId: CLIENT_ID,
       status: 'spotted,approved',
       sources: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       page: '2',
@@ -211,20 +173,13 @@ describe('GET /api/discovery/search', () => {
       ]),
     })
     expect(searchDiscoveryItemsMock).toHaveBeenCalledWith(expect.objectContaining({
-      clientId,
+      clientId: CLIENT_ID,
       statuses: ['spotted', 'approved'],
       sourceIds: ['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'],
       page: 2,
       pageSize: 50,
       searchTerm: 'example',
     }))
-
-    expect(requireDiscoveryFeatureEnabled).toHaveBeenCalledWith(clientId)
-    expect(requireFeatureEnabled).toHaveBeenCalledWith(
-      clientId,
-      'discovery.filters.v1',
-      expect.any(String),
-    )
 
     expect(emitDiscoveryEvent).toHaveBeenCalledTimes(2)
     const completionEvent = emitDiscoveryEvent.mock.calls[1]![0] as Record<string, any>

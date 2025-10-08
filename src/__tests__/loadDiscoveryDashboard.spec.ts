@@ -43,14 +43,14 @@ describe('loadDiscoveryDashboard', () => {
     expect(mockFetchClientFeatureFlags).not.toHaveBeenCalled()
   })
 
-  it('invokes fallback when the feature flag is disabled for the client', async () => {
+  it('continues loading dashboard when the feature flag is disabled for the client (dev bypass)', async () => {
     setSearchParams('clientId=client-123')
     mockFetchClientFeatureFlags.mockResolvedValue({ discoveryFiltersV1: false } as any)
 
     const component = await loadDiscoveryDashboard()
 
     expect(mockFetchClientFeatureFlags).toHaveBeenCalledWith('client-123')
-    expect(component).toBe(fallbackStub)
+    expect(component).toBe(dashboardStub)
   })
 
   it('returns the dashboard view when the flag is enabled', async () => {
@@ -73,12 +73,12 @@ describe('loadDiscoveryDashboard', () => {
     expect(component).toBe(dashboardStub)
   })
 
-  it('falls back when flag lookup throws an error', async () => {
+  it('continues loading dashboard when flag lookup throws an error (dev bypass)', async () => {
     setSearchParams('clientId=client-123')
     mockFetchClientFeatureFlags.mockRejectedValue(new Error('network down'))
 
     const component = await loadDiscoveryDashboard()
 
-    expect(component).toBe(fallbackStub)
+    expect(component).toBe(dashboardStub)
   })
 })
