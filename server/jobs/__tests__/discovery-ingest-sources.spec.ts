@@ -39,8 +39,13 @@ vi.mock('nitropack/runtime', () => ({
   defineTask: (input: unknown) => input,
 }))
 
-import type { DiscoveryAdapterResult } from '@awesomeposter/shared'
+import {
+  executeIngestionAdapter,
+  getIngestionAdapter,
+  type DiscoveryAdapterResult,
+} from '@awesomeposter/shared'
 import { runDiscoveryIngestionJob } from '../discovery/ingest-sources'
+import type { PersistDiscoveryItemsResult } from '@awesomeposter/db'
 import {
   listDiscoverySourcesDue,
   claimDiscoverySourceForFetch,
@@ -51,8 +56,9 @@ import {
   resetDiscoveryItemsToPending,
   countPendingDiscoveryItemsForClient,
   type DiscoverySourceHealthUpdate,
+  type SaveDiscoveryItemsInput,
+  type CompleteDiscoverySourceFetchInput,
 } from '../../utils/discovery-repository'
-import { executeIngestionAdapter } from '@awesomeposter/shared'
 import { emitDiscoveryEvent } from '../../utils/discovery-events'
 import { publishSourceHealthStatus } from '../../utils/discovery-health'
 import { isFeatureEnabled } from '../../utils/client-config/feature-flags'
@@ -211,6 +217,107 @@ describe('runDiscoveryIngestionJob', () => {
       listItemCount: 5,
       paginationDepth: 3,
     })
+  })
+
+  it('processes HTTP list extraction end-to-end and records telemetry counts', async () => {
+    const html = `
+      <html>
+        <body>
+          <section class="feed">
+            <article class="entry">
+              <h2><a class="link" href="/launch">Launch Update</a></h2>
+              <time class="time" data-published="2025-03-01T08:00:00Z"></time>
+            </article>
+            <article class="entry">
+              <h2><a class="link" href="/metrics">Metrics Deep Dive</a></h2>
+              <time class="time" data-published="2025-03-02T09:00:00Z"></time>
+            </article>
+            <article class="entry">
+              <h2><a class="link" href="/retro">Retrospective Notes</a></h2>
+              <time class="time" data-published="1710000000"></time>
+            </article>
+          </section>
+        </body>
+      </html>
+    `
+
+    const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(html))
+    const source = buildSource({
+      configJson: {
+        webList: {
+          list_container_selector: '.feed',
+          item_selector: '.entry',
+          fields: {
+            title: { selector: '.link' },
+            url: { selector: '.link', attribute: 'href' },
+            timestamp: { selector: '.time', attribute: 'data-published' },
+          },
+        },
+      },
+    })
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(saveDiscoveryItems).mockImplementation(async ({ items }: SaveDiscoveryItemsInput) => {
+      const inserted: PersistDiscoveryItemsResult['inserted'] = items.map((_, idx) => ({
+        id: `item-${idx}`,
+        rawHash: `hash-${idx}`,
+      }))
+      return {
+        inserted,
+        duplicates: [],
+      }
+    })
+
+    const httpAdapter = getIngestionAdapter('web-page')
+
+    vi.mocked(executeIngestionAdapter).mockImplementation((input, adapterContext) =>
+      httpAdapter(input, {
+        ...adapterContext,
+        fetch: fetchMock,
+        now: () => now,
+      }),
+    )
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now), fetch: fetchMock })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(saveDiscoveryItems).toHaveBeenCalledWith(expect.objectContaining({
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          normalized: expect.objectContaining({
+            url: 'https://example.com/launch',
+          }),
+        }),
+      ]),
+    }))
+    const saveCalls = vi.mocked(saveDiscoveryItems).mock.calls
+    const saveArgs = saveCalls[0]?.[0] as SaveDiscoveryItemsInput | undefined
+    expect(saveArgs).toBeDefined()
+    if (saveArgs) {
+      expect(saveArgs.items).toHaveLength(3)
+    }
+
+    const fetchCalls = vi.mocked(completeDiscoverySourceFetch).mock.calls
+    const fetchArgs = fetchCalls[0]?.[0] as CompleteDiscoverySourceFetchInput | undefined
+    expect(fetchArgs).toBeDefined()
+    if (fetchArgs) {
+      expect(fetchArgs.metrics).toMatchObject({
+        webListConfigured: true,
+        webListApplied: true,
+        listItemCount: 3,
+      })
+    }
+
+    const completionCall = vi.mocked(emitDiscoveryEvent).mock.calls.find(([event]) => event.type === 'ingestion.completed')
+    expect(completionCall).toBeDefined()
+    if (completionCall) {
+      const [completionEvent] = completionCall
+      expect(completionEvent.payload?.metrics).toMatchObject({
+        webListApplied: true,
+        listItemCount: 3,
+      })
+    }
   })
 
   it('captures configuration validation issues when parsing fails', async () => {

@@ -10,6 +10,7 @@
     "dev": "tsc -w -p tsconfig.json"
   },
   "dependencies": {
+    "cheerio": "^1.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

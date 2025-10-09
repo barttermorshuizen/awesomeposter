@@ -95,8 +95,13 @@ Operators must follow this protocol when onboarding HTTP sources for a client:
    - Canonicalization removes tracking parameters; confirm the summary chip matches expectations before saving.
 3. Resolve any inline duplicate warning before submitting. Duplicates are detected case-insensitively using canonical identifiers (e.g., YouTube channel ID or RSS URL).
 4. Add optional operator notes (why the source matters, expected cadence) for hand-off to support.
-5. Submit. The UI performs an optimistic add; if persistence fails the entry rolls back and a toast/alert surfaces the server error.
-6. After success, confirm support receives the `source-created` SSE event with payload `{ id, clientId, sourceType, url }` (visible in telemetry stream or developer console during pilot).
+5. For list-style pages (index hubs, curated feeds), expand **List Extraction** before submitting:
+   - Provide a `list_container_selector` that wraps all article cards and an `item_selector` that targets each card.
+   - Map optional fields (`title`, `excerpt`, `url`, `timestamp`) only when the defaults do not match; blanks fall back to adapter heuristics.
+   - Document the selectors in the operator notes and call out that pagination beyond the first page is currently ignored at runtime.
+   - After the first ingestion run, confirm telemetry shows `webListApplied=true` with the expected `listItemCount`; adjust selectors if counts stay at `0`.
+6. Submit. The UI performs an optimistic add; if persistence fails the entry rolls back and a toast/alert surfaces the server error.
+7. After success, confirm support receives the `source-created` SSE event with payload `{ id, clientId, sourceType, url }` (visible in telemetry stream or developer console during pilot).
 
 If a source repeatedly fails validation, escalate to backend owners with the canonical URL and any error messages.
 

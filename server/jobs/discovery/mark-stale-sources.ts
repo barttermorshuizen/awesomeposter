@@ -7,7 +7,7 @@ import { publishSourceHealthStatus } from '../../utils/discovery-health'
 
 const DEFAULT_WARNING_THRESHOLD_HOURS = 24
 
-function resolveWarningThresholdHours() {
+function resolveWarningThresholdHours(): number {
   const raw = process.env.DISCOVERY_STALE_WARNING_HOURS
   if (!raw) {
     return DEFAULT_WARNING_THRESHOLD_HOURS
@@ -33,18 +33,26 @@ export async function runMarkStaleDiscoverySourcesJob(now = new Date()) {
     throw error
   }
 
-  for (const stale of updates) {
-    const { health } = stale
+  for (const { clientId, sourceId, sourceType, health } of updates) {
+    const {
+      status,
+      observedAt,
+      lastFetchedAt,
+      consecutiveFailures,
+      failureReason,
+      staleSince,
+    } = health
+
     publishSourceHealthStatus({
-      clientId: stale.clientId,
-      sourceId: stale.sourceId,
-      sourceType: stale.sourceType,
-      status: health.status,
-      lastFetchedAt: health.lastFetchedAt ?? undefined,
-      observedAt: health.observedAt,
-      failureReason: health.failureReason ?? undefined,
-      consecutiveFailures: health.consecutiveFailures,
-      staleSince: health.staleSince ?? undefined,
+      clientId,
+      sourceId,
+      sourceType,
+      status,
+      observedAt,
+      lastFetchedAt: lastFetchedAt ?? null,
+      failureReason: failureReason ?? undefined,
+      consecutiveFailures,
+      staleSince: staleSince ?? null,
     })
   }
 
