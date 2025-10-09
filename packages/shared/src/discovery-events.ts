@@ -31,6 +31,54 @@ export const discoverySourceCreatedEventSchema = z.object({
 
 export type DiscoverySourceCreatedEvent = z.infer<typeof discoverySourceCreatedEventSchema>
 
+const discoveryWebListSelectorSchema = z.object({
+  selector: z.string().min(1),
+  attribute: z.string().min(1).optional(),
+  valueTemplate: z.string().min(1).optional(),
+}).passthrough()
+
+const discoveryWebListFieldsSchema = z.object({
+  title: discoveryWebListSelectorSchema.optional(),
+  url: discoveryWebListSelectorSchema.optional(),
+  excerpt: discoveryWebListSelectorSchema.optional(),
+  timestamp: discoveryWebListSelectorSchema.optional(),
+}).partial().passthrough()
+
+const discoveryWebListPaginationSchema = z.object({
+  nextPage: discoveryWebListSelectorSchema,
+  maxDepth: z.number().int().min(1).max(20),
+}).passthrough()
+
+const discoveryWebListConfigSchema = z.object({
+  listContainerSelector: z.string().min(1),
+  itemSelector: z.string().min(1),
+  fields: discoveryWebListFieldsSchema.default({}),
+  pagination: discoveryWebListPaginationSchema.optional(),
+}).passthrough()
+
+export const discoverySourceUpdatedEventSchema = z.object({
+  type: z.literal('source.updated'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    sourceId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    sourceType: discoverySourceTypeSchema,
+    updatedAt: z.string(),
+    webListEnabled: z.boolean(),
+    webListConfig: discoveryWebListConfigSchema.nullable(),
+    warnings: z.array(z.string()).optional(),
+    suggestion: z.object({
+      id: z.string(),
+      config: discoveryWebListConfigSchema,
+      warnings: z.array(z.string()).optional(),
+      confidence: z.number().min(0).max(1).nullable().optional(),
+      receivedAt: z.string(),
+    }).nullable().optional(),
+  }),
+})
+
+export type DiscoverySourceUpdatedEvent = z.infer<typeof discoverySourceUpdatedEventSchema>
+
 export const ingestionStartedEventSchema = z.object({
   type: z.literal('ingestion.started'),
   version: z.number().int().min(1),
@@ -230,6 +278,7 @@ export type DiscoverySearchCompletedEvent = z.infer<typeof discoverySearchComple
 
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
+  discoverySourceUpdatedEventSchema,
   ingestionStartedEventSchema,
   ingestionCompletedEventSchema,
   ingestionFailedEventSchema,
@@ -253,6 +302,15 @@ const discoverySourceCreatedTelemetrySchema = z.object({
   entityId: z.string().uuid(),
   timestamp: z.string(),
   payload: discoverySourceCreatedEventSchema.shape.payload,
+})
+
+const discoverySourceUpdatedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('source.updated'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoverySourceUpdatedEventSchema.shape.payload,
 })
 
 const discoveryKeywordUpdatedTelemetrySchema = z.object({
@@ -293,6 +351,7 @@ const discoveryScoringFailedTelemetrySchema = z.object({
 
 export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoverySourceCreatedTelemetrySchema,
+  discoverySourceUpdatedTelemetrySchema,
   discoveryKeywordUpdatedTelemetrySchema,
   discoveryScoreCompleteTelemetrySchema,
   discoveryQueueUpdatedTelemetrySchema,

@@ -51,8 +51,8 @@ describe('discovery source config', () => {
       },
     })
     expect(config.webList?.listContainerSelector).toBe('.list')
-    expect(config.webList?.fields.title?.selector).toBe('.title')
-    expect(config.webList?.fields.url?.attribute).toBe('href')
+    expect(config.webList?.fields?.title?.selector).toBe('.title')
+    expect(config.webList?.fields?.url?.attribute).toBe('href')
     expect(config.webList?.pagination?.maxDepth).toBe(DEFAULT_WEB_LIST_MAX_DEPTH)
     expect(hasWebListConfig(config)).toBe(true)
   })

@@ -33,8 +33,16 @@ import {
   type DiscoverySearchHighlight,
   type DiscoverySearchStatus,
   createDefaultConfigForSource,
+  safeParseDiscoverySourceConfig,
+  serializeDiscoverySourceConfig,
+  discoverySourceWebListConfigInputSchema,
+  type DiscoverySourceConfig,
+  type DiscoverySourceWebListConfig,
+  type DiscoveryWebListPreviewResult,
+  executeIngestionAdapter,
 } from '@awesomeposter/shared'
 import type { SourceHealthStatus } from './discovery-health'
+import { emitDiscoveryEvent } from './discovery-events'
 import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
 
 export type DiscoverySourceRecord = InferModel<typeof discoverySources>
@@ -176,6 +184,20 @@ export class DiscoveryKeywordNotFoundError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'DiscoveryKeywordNotFoundError'
+  }
+}
+
+export class DiscoverySourceNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoverySourceNotFoundError'
+  }
+}
+
+export class DiscoverySourcePreviewError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoverySourcePreviewError'
   }
 }
 
@@ -335,6 +357,19 @@ export async function listDiscoverySources(clientId: string) {
     .from(discoverySources)
     .where(eq(discoverySources.clientId, clientId))
     .orderBy(desc(discoverySources.createdAt))
+}
+
+async function findDiscoverySource(clientId: string, sourceId: string) {
+  const db = getDb()
+  const [record] = await db
+    .select()
+    .from(discoverySources)
+    .where(and(
+      eq(discoverySources.clientId, clientId),
+      eq(discoverySources.id, sourceId),
+    ))
+    .limit(1)
+  return record ?? null
 }
 
 export async function listDiscoverySourcesDue(limit: number, now = new Date()) {
@@ -961,6 +996,183 @@ export async function markStaleDiscoverySources(
   })
 
   return updates
+}
+
+export async function updateDiscoverySourceWebListConfig(input: {
+  clientId: string
+  sourceId: string
+  webList: Record<string, unknown> | null
+  suggestionId?: string | null
+}) {
+  const { clientId, sourceId, webList, suggestionId } = input
+  await requireDiscoveryFeatureEnabled(clientId)
+
+  const record = await findDiscoverySource(clientId, sourceId)
+  if (!record) {
+    throw new DiscoverySourceNotFoundError('Source not found')
+  }
+
+  let normalizedWebList: DiscoverySourceWebListConfig | null = null
+  if (webList !== null) {
+    const parsed = discoverySourceWebListConfigInputSchema.safeParse(webList)
+    if (!parsed.success) {
+      throw new InvalidDiscoverySourceError(parsed.error.issues[0]?.message || 'Invalid web list configuration')
+    }
+    const normalized = safeParseDiscoverySourceConfig({ webList: parsed.data })
+    if (!normalized.ok || !normalized.config.webList) {
+      throw new InvalidDiscoverySourceError('Invalid web list configuration payload')
+    }
+    normalizedWebList = normalized.config.webList
+  }
+
+  const existingConfigParse = safeParseDiscoverySourceConfig(record.configJson ?? null)
+  const nextConfig: DiscoverySourceConfig = existingConfigParse.ok
+    ? { ...existingConfigParse.config }
+    : {}
+
+  if (normalizedWebList) {
+    nextConfig.webList = normalizedWebList
+  } else {
+    delete nextConfig.webList
+  }
+
+  const serialized = serializeDiscoverySourceConfig(nextConfig)
+  const db = getDb()
+  const now = new Date()
+
+  await db
+    .update(discoverySources)
+    .set({
+      configJson: serialized,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(discoverySources.id, sourceId),
+      eq(discoverySources.clientId, clientId),
+    ))
+
+  const updatedRecord: DiscoverySourceRecord = {
+    ...record,
+    configJson: serialized,
+    updatedAt: now,
+  }
+
+  const normalizedAfter = safeParseDiscoverySourceConfig(updatedRecord.configJson ?? null)
+  const updatedWebList = normalizedAfter.ok ? normalizedAfter.config.webList ?? null : null
+
+  const warnings: string[] = []
+  if (updatedWebList?.pagination) {
+    warnings.push('Pagination selectors are advisory only until runtime pagination is implemented.')
+  }
+  if (updatedWebList && !updatedWebList.fields?.url) {
+    warnings.push('URL selector not provided; default extraction logic will determine the item link.')
+  }
+
+  const suggestionAcknowledged = Boolean(suggestionId)
+
+  emitDiscoveryEvent({
+    type: 'source.updated',
+    version: 1,
+    payload: {
+      sourceId,
+      clientId,
+      sourceType: record.sourceType,
+      updatedAt: now.toISOString(),
+      webListEnabled: Boolean(updatedWebList),
+      webListConfig: updatedWebList,
+      ...(warnings.length ? { warnings } : {}),
+      ...(suggestionAcknowledged ? { suggestion: null } : {}),
+    },
+  })
+
+  return {
+    record: updatedRecord,
+    warnings,
+    suggestionAcknowledged,
+  }
+}
+
+export async function previewDiscoverySourceWebList(input: {
+  clientId: string
+  sourceId: string
+  webList: Record<string, unknown>
+}): Promise<DiscoveryWebListPreviewResult> {
+  const { clientId, sourceId, webList } = input
+  await requireDiscoveryFeatureEnabled(clientId)
+
+  const record = await findDiscoverySource(clientId, sourceId)
+  if (!record) {
+    throw new DiscoverySourceNotFoundError('Source not found')
+  }
+  if (record.sourceType !== 'web-page') {
+    throw new InvalidDiscoverySourceError('Web list configuration is only supported for web-page sources')
+  }
+
+  const parsed = discoverySourceWebListConfigInputSchema.safeParse(webList)
+  if (!parsed.success) {
+    throw new InvalidDiscoverySourceError(parsed.error.issues[0]?.message || 'Invalid web list configuration')
+  }
+
+  const normalized = safeParseDiscoverySourceConfig({ webList: parsed.data })
+  if (!normalized.ok || !normalized.config.webList) {
+    throw new InvalidDiscoverySourceError('Invalid web list configuration payload')
+  }
+
+  const existingConfigParse = safeParseDiscoverySourceConfig(record.configJson ?? null)
+  const adapterConfig: DiscoverySourceConfig = existingConfigParse.ok
+    ? { ...existingConfigParse.config, webList: normalized.config.webList }
+    : { webList: normalized.config.webList }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8_000)
+
+  try {
+    const result = await executeIngestionAdapter({
+      sourceId: record.id,
+      clientId: record.clientId,
+      sourceType: record.sourceType as DiscoverySourceType,
+      url: record.url,
+      canonicalUrl: record.canonicalUrl,
+      config: adapterConfig,
+    }, {
+      signal: controller.signal,
+    })
+
+    if (!result.ok) {
+      throw new DiscoverySourcePreviewError(result.failureReason ?? 'Preview failed')
+    }
+
+    const primary = result.items.length ? result.items[0]!.normalized : null
+    const previewItem = primary
+      ? {
+          title: primary.title ?? null,
+          url: primary.url ?? null,
+          excerpt: primary.excerpt ?? null,
+          timestamp: primary.publishedAt ?? null,
+        }
+      : null
+
+    const warnings: string[] = []
+    if (!previewItem) {
+      warnings.push('Selectors did not return any items.')
+    }
+
+    return {
+      item: previewItem,
+      warnings,
+      fetchedAt: new Date().toISOString(),
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new DiscoverySourcePreviewError('Preview timed out after 8 seconds')
+    }
+    if (error instanceof DiscoverySourcePreviewError) {
+      throw error
+    }
+    throw new DiscoverySourcePreviewError(error instanceof Error ? error.message : 'Preview failed')
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export async function createDiscoverySource(input: CreateDiscoverySourceInput) {

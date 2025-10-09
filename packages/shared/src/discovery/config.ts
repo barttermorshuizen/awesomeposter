@@ -1,4 +1,4 @@
-import { z, type ZodError, type ZodIssue } from 'zod'
+import { z, ZodError, type ZodIssue } from 'zod'
 import type { DiscoverySourceType } from '../discovery.js'
 
 export const DEFAULT_WEB_LIST_MAX_DEPTH = 5
@@ -120,7 +120,7 @@ export type DiscoverySourceWebListFieldMap = {
 export type DiscoverySourceWebListConfig = {
   listContainerSelector: string
   itemSelector: string
-  fields: DiscoverySourceWebListFieldMap
+  fields?: DiscoverySourceWebListFieldMap
   pagination?: {
     nextPage: DiscoverySourceWebListSelector
     maxDepth: number
@@ -180,8 +180,13 @@ function normalizeWebListConfig(raw: RawWebListConfig): DiscoverySourceWebListCo
   const normalized: DiscoverySourceWebListConfig = {
     listContainerSelector: list_container_selector,
     itemSelector: item_selector,
-    fields: normalizeWebListFields(fields),
     ...rest,
+  }
+  const normalizedFields = normalizeWebListFields(fields)
+  if (Object.keys(normalizedFields).length > 0) {
+    normalized.fields = normalizedFields
+  } else {
+    normalized.fields = {}
   }
   if (pagination) {
     normalized.pagination = {
@@ -322,7 +327,21 @@ export function safeParseDiscoverySourceConfig(raw: unknown): DiscoverySourceCon
   if (raw === undefined || raw === null) {
     return { ok: true, config: {} as DiscoverySourceConfig }
   }
-  const result = rawDiscoverySourceConfigSchema.safeParse(raw)
+  let candidate: unknown = raw
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate)
+    } catch (error) {
+      const issue: ZodIssue = {
+        code: 'custom',
+        message: 'Invalid JSON string provided for discovery source configuration',
+        path: [],
+        params: { error: (error as Error).message },
+      }
+      return { ok: false, issues: [issue], error: new ZodError([issue]) }
+    }
+  }
+  const result = rawDiscoverySourceConfigSchema.safeParse(candidate)
   if (!result.success) {
     return { ok: false, issues: result.error.issues, error: result.error }
   }
@@ -403,4 +422,17 @@ export function createDefaultConfigForSource(
 
 export function hasWebListConfig(config: DiscoverySourceConfig | null | undefined): boolean {
   return Boolean(config?.webList)
+}
+
+export type DiscoveryWebListPreviewItem = {
+  title?: string | null
+  url?: string | null
+  excerpt?: string | null
+  timestamp?: string | null
+} & Record<string, unknown>
+
+export type DiscoveryWebListPreviewResult = {
+  item: DiscoveryWebListPreviewItem | null
+  warnings: string[]
+  fetchedAt: string
 }

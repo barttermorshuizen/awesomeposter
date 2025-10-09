@@ -9,8 +9,11 @@ import {
   type SourceHealthEvent,
   type DiscoveryIngestionFailureReason,
 } from '@awesomeposter/shared'
+import { storeToRefs } from 'pinia'
 import { subscribeToDiscoveryEvents, type DiscoveryFeatureDisabledPayload } from '@/lib/discovery-sse'
 import { useNotificationsStore } from '@/stores/notifications'
+import { useDiscoverySourcesStore, type DiscoverySourceApiRecord, type SourceUpdatePayload } from '@/stores/discoverySources'
+import SourceListConfigDialog from '../discovery/SourceListConfigDialog.vue'
 
 const props = defineProps<{
   clientId: string
@@ -31,6 +34,28 @@ const fieldErrors = reactive<{ url?: string; notes?: string }>({})
 const detectionSummary = ref<{ sourceType: DiscoverySourceType; canonicalUrl: string } | null>(null)
 const duplicateWarning = ref<string | null>(null)
 const notifications = useNotificationsStore()
+
+const discoverySourcesStore = useDiscoverySourcesStore()
+const { webListById, listEnabledSourceIds } = storeToRefs(discoverySourcesStore)
+
+const pendingSuggestionIds = computed(() => {
+  const ids = new Set<string>()
+  const states = webListById.value
+  for (const [id, state] of Object.entries(states)) {
+    if (state?.suggestion && !state.suggestion.acknowledged) {
+      ids.add(id)
+    }
+  }
+  return ids
+})
+
+function hasListConfig(sourceId: string) {
+  return listEnabledSourceIds.value.has(sourceId)
+}
+
+function hasPendingSuggestion(sourceId: string) {
+  return pendingSuggestionIds.value.has(sourceId)
+}
 
 const featureDisabled = ref(false)
 const featureDisabledMessage = ref('Discovery agent is disabled for this client.')
@@ -207,6 +232,11 @@ watch(
     if (id === oldId) return
     detachSse()
     resetState()
+    if (id) {
+      discoverySourcesStore.ensureClientId(id)
+    } else {
+      discoverySourcesStore.resetState()
+    }
     featureDisabled.value = Boolean(props.disabled)
     featureDisabledMessage.value = 'Discovery agent is disabled for this client.'
     if (!id || disabled.value) {
@@ -274,6 +304,20 @@ function mapSourceRecord(record: Record<string, any>): SourceItem {
     },
     ...(record.pending ? { pending: true as const } : {}),
     ...(record.pendingKey ? { pendingKey: String(record.pendingKey) } : {}),
+  }
+}
+
+function mapApiRecordForStore(record: Record<string, any>): DiscoverySourceApiRecord {
+  return {
+    id: String(record.id),
+    clientId: String(record.clientId),
+    url: String(record.url),
+    canonicalUrl: String(record.canonicalUrl ?? record.url),
+    sourceType: record.sourceType as DiscoverySourceType,
+    identifier: String(record.identifier),
+    notes: typeof record.notes === 'string' && record.notes.length ? record.notes : null,
+    configJson: record.configJson ?? null,
+    updatedAt: coerceIsoString(record.updatedAt) ?? null,
   }
 }
 
@@ -393,6 +437,7 @@ function markFeatureDisabled(message?: string) {
   sources.value = []
   submitLoading.value = false
   loading.value = false
+  discoverySourcesStore.resetState()
   detachSse()
 }
 
@@ -445,6 +490,7 @@ async function loadSources() {
 
     const data = payload ?? {}
     const items = Array.isArray((data as any)?.items) ? (data as any).items : []
+    discoverySourcesStore.registerSources(items.map((item: any) => mapApiRecordForStore(item)))
     sources.value = items.map((item: any) => mapSourceRecord(item))
     featureDisabled.value = false
   } catch (err) {
@@ -546,6 +592,7 @@ async function submit() {
     const data = payload ?? {}
     const record = (data as any)?.source
     if (record) {
+      discoverySourcesStore.registerSource(mapApiRecordForStore(record))
       const mapped = mapSourceRecord(record)
       const idx = sources.value.findIndex((s) => s.pending && s.pendingKey === dupKey)
       if (idx !== -1) {
@@ -577,6 +624,13 @@ function resetForm() {
   fieldErrors.notes = undefined
   detectionSummary.value = null
   duplicateWarning.value = null
+}
+
+function openConfigDialog(source: SourceItem) {
+  if (source.sourceType !== 'web-page' || !props.clientId) {
+    return
+  }
+  discoverySourcesStore.openDialog(source.id)
 }
 
 async function onDelete(item: SourceItem) {
@@ -611,6 +665,7 @@ async function onDelete(item: SourceItem) {
       throw new Error(message)
     }
     sources.value = sources.value.filter((s) => s.id !== item.id)
+    discoverySourcesStore.removeSource(item.id)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to delete source'
     if (featureDisabled.value) {
@@ -627,6 +682,18 @@ function handleSourceCreated(payload: DiscoverySourceCreatedEvent['payload']) {
   if (!clientId || payload.clientId !== clientId) return
   const dupKey = `${payload.sourceType}::${payload.identifier.toLowerCase()}`
   if (duplicateKeySet.value.has(dupKey)) return
+
+  discoverySourcesStore.registerSource({
+    id: payload.id,
+    clientId: payload.clientId,
+    url: payload.url,
+    canonicalUrl: payload.canonicalUrl,
+    sourceType: payload.sourceType,
+    identifier: payload.identifier,
+    notes: null,
+    configJson: null,
+    updatedAt: payload.createdAt,
+  })
 
   const mapped = mapSourceRecord({
     id: payload.id,
@@ -650,10 +717,36 @@ function handleSourceCreated(payload: DiscoverySourceCreatedEvent['payload']) {
 }
 
 function handleDiscoveryEvent(event: DiscoveryTelemetryEvent) {
-  if (event.eventType !== 'source.health') return
-  const payload = (event as SourceHealthTelemetryEvent).payload
-  if (payload.clientId !== props.clientId) return
-  applySourceHealthUpdate(payload)
+  if (event.eventType === 'source.health') {
+    const payload = (event as SourceHealthTelemetryEvent).payload
+    if (payload.clientId !== props.clientId) return
+    applySourceHealthUpdate(payload)
+    return
+  }
+  if (event.eventType === 'source.updated') {
+    const payload = event.payload as SourceUpdatePayload & { warnings?: string[] }
+    if (!payload || payload.clientId !== props.clientId) return
+
+    const updatePayload: SourceUpdatePayload = {
+      sourceId: payload.sourceId,
+      clientId: payload.clientId,
+      updatedAt: payload.updatedAt,
+      webListEnabled: Boolean(payload.webListEnabled),
+      webListConfig: payload.webListConfig ?? null,
+      warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+      suggestion: payload.suggestion ?? null,
+    }
+
+    discoverySourcesStore.applySourceUpdate(updatePayload)
+    const index = sources.value.findIndex((item) => item.id === payload.sourceId)
+    if (index !== -1) {
+      const existing = sources.value[index]
+      sources.value.splice(index, 1, {
+        ...existing,
+        updatedAt: payload.updatedAt,
+      })
+    }
+  }
 }
 
 function applySourceHealthUpdate(payload: SourceHealthEvent['payload']) {
@@ -856,6 +949,38 @@ const hasSources = computed(() => sources.value.length > 0)
                     </template>
                     <v-progress-circular v-else size="18" width="2" indeterminate />
                     <v-chip size="small" variant="tonal">{{ source.sourceType }}</v-chip>
+                    <v-chip
+                      v-if="hasListConfig(source.id)"
+                      size="small"
+                      color="primary"
+                      variant="tonal"
+                    >
+                      List
+                    </v-chip>
+                    <v-btn
+                      v-if="!source.pending && source.sourceType === 'web-page'"
+                      icon
+                      size="small"
+                      variant="text"
+                      :disabled="disabled"
+                      @click="openConfigDialog(source)"
+                    >
+                      <template v-if="hasPendingSuggestion(source.id)">
+                        <v-badge dot color="warning">
+                          <template #badge />
+                          <v-icon
+                            :icon="hasListConfig(source.id) ? 'mdi-cog' : 'mdi-cog-outline'"
+                            :color="hasListConfig(source.id) ? 'primary' : undefined"
+                          />
+                        </v-badge>
+                      </template>
+                      <template v-else>
+                        <v-icon
+                          :icon="hasListConfig(source.id) ? 'mdi-cog' : 'mdi-cog-outline'"
+                          :color="hasListConfig(source.id) ? 'primary' : undefined"
+                        />
+                      </template>
+                    </v-btn>
                     <v-btn
                       v-if="!source.pending"
                       icon="mdi-delete"
@@ -1002,12 +1127,44 @@ const hasSources = computed(() => sources.value.length > 0)
                 </v-chip>
               </template>
               <v-progress-circular v-else size="18" width="2" indeterminate />
-              <v-chip size="small" variant="tonal">{{ source.sourceType }}</v-chip>
-              <v-btn
-                v-if="!source.pending"
-                icon="mdi-delete"
-                size="small"
-                variant="text"
+          <v-chip size="small" variant="tonal">{{ source.sourceType }}</v-chip>
+          <v-chip
+            v-if="hasListConfig(source.id)"
+            size="small"
+            color="primary"
+            variant="tonal"
+          >
+            List
+          </v-chip>
+          <v-btn
+            v-if="!source.pending && source.sourceType === 'web-page'"
+            icon
+            size="small"
+            variant="text"
+            :disabled="disabled"
+            @click="openConfigDialog(source)"
+          >
+            <template v-if="hasPendingSuggestion(source.id)">
+              <v-badge dot color="warning">
+                <template #badge />
+                <v-icon
+                  :icon="hasListConfig(source.id) ? 'mdi-cog' : 'mdi-cog-outline'"
+                  :color="hasListConfig(source.id) ? 'primary' : undefined"
+                />
+              </v-badge>
+            </template>
+            <template v-else>
+              <v-icon
+                :icon="hasListConfig(source.id) ? 'mdi-cog' : 'mdi-cog-outline'"
+                :color="hasListConfig(source.id) ? 'primary' : undefined"
+              />
+            </template>
+          </v-btn>
+          <v-btn
+            v-if="!source.pending"
+            icon="mdi-delete"
+            size="small"
+            variant="text"
                 @click="onDelete(source)"
               />
             </div>
@@ -1032,6 +1189,11 @@ const hasSources = computed(() => sources.value.length > 0)
       </div>
     </div>
   </div>
+
+    <SourceListConfigDialog
+      v-if="props.clientId"
+      :client-id="props.clientId"
+    />
 </template>
 
 <style scoped>

@@ -1,4 +1,5 @@
-import { load, type CheerioAPI, type Element, type Cheerio } from 'cheerio'
+import { load, type CheerioAPI, type Cheerio } from 'cheerio'
+import type { Element } from 'domhandler'
 import type {
   DiscoveryIngestionAdapter,
   DiscoveryAdapterResult,

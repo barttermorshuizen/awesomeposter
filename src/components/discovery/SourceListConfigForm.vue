@@ -1,0 +1,431 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import type { PropType } from 'vue'
+import type { WebListFormState, ValidationErrors } from '@/composables/discovery/useListConfig'
+import type { WebListSuggestionState } from '@/stores/discoverySources'
+import type { DiscoveryWebListPreviewResult } from '@awesomeposter/shared'
+
+const props = defineProps({
+  form: {
+    type: Object as PropType<WebListFormState>,
+    required: true,
+  },
+  errors: {
+    type: Object as PropType<ValidationErrors>,
+    required: true,
+  },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
+  suggestion: {
+    type: Object as PropType<WebListSuggestionState | null>,
+    default: null,
+  },
+  appliedSuggestionId: {
+    type: String as PropType<string | null>,
+    default: null,
+  },
+  previewStatus: {
+    type: String as PropType<'idle' | 'loading' | 'success' | 'error'>,
+    default: 'idle',
+  },
+  previewResult: {
+    type: Object as PropType<DiscoveryWebListPreviewResult | null>,
+    default: null,
+  },
+  previewError: {
+    type: String as PropType<string | null>,
+    default: null,
+  },
+  warnings: {
+    type: Array as PropType<string[]>,
+    default: () => [],
+  },
+})
+
+const emit = defineEmits<{
+  (e: 'check'): void
+  (e: 'apply-suggestion'): void
+  (e: 'discard-suggestion'): void
+}>()
+
+const listContainerErrors = computed(() => props.errors.listContainerSelector ?? [])
+const itemSelectorErrors = computed(() => props.errors.itemSelector ?? [])
+
+function selectorErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
+  return [
+    ...(props.errors[`fields.${field}`] ?? []),
+    ...(props.errors[`fields.${field}.selector`] ?? []),
+  ]
+}
+
+function attributeErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
+  return props.errors[`fields.${field}.attribute`] ?? []
+}
+
+function valueTemplateErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
+  return props.errors[`fields.${field}.valueTemplate`] ?? []
+}
+
+const paginationSelectorErrors = computed(() => [
+  ...(props.errors['pagination.nextPage'] ?? []),
+  ...(props.errors['pagination.nextPage.selector'] ?? []),
+])
+const paginationDepthErrors = computed(() => props.errors['pagination.maxDepth'] ?? [])
+
+const suggestionApplied = computed(() => props.suggestion && props.appliedSuggestionId === props.suggestion.id)
+
+function onApplySuggestion() {
+  if (!props.suggestion) return
+  emit('apply-suggestion')
+}
+
+function onDiscardSuggestion() {
+  emit('discard-suggestion')
+}
+</script>
+
+<template>
+  <div class="d-flex flex-column gap-4">
+    <v-switch
+      v-model="form.enabled"
+      color="primary"
+      inset
+      :disabled="disabled"
+      hide-details
+      label="Enable list extraction for this source"
+    />
+
+    <v-alert
+      v-if="warnings.length"
+      type="warning"
+      variant="tonal"
+      density="comfortable"
+      border="start"
+      border-color="warning"
+    >
+      <div class="text-subtitle-2 mb-1">Warnings</div>
+      <ul class="ps-4 mb-0">
+        <li v-for="warning in warnings" :key="warning" class="text-body-2">
+          {{ warning }}
+        </li>
+      </ul>
+    </v-alert>
+
+    <v-alert
+      v-if="suggestion"
+      type="info"
+      variant="tonal"
+      density="comfortable"
+      border="start"
+      border-color="primary"
+    >
+      <div class="d-flex flex-column flex-md-row justify-space-between gap-3">
+        <div>
+          <div class="text-subtitle-2 font-weight-medium mb-1">
+            Suggested selectors
+            <span v-if="suggestion.confidence !== undefined && suggestion.confidence !== null" class="text-body-2">
+              · Confidence {{ Math.round(suggestion.confidence * 100) }}%
+            </span>
+          </div>
+          <p class="text-body-2 mb-2">
+            Merge recommendation from configuration discovery. Apply to load selectors into the form or discard to clear.
+          </p>
+          <ul v-if="suggestion.warnings.length" class="ps-4 mb-0">
+            <li v-for="message in suggestion.warnings" :key="message" class="text-body-2">
+              {{ message }}
+            </li>
+          </ul>
+        </div>
+        <div class="d-flex gap-2 align-end">
+          <v-btn
+            color="primary"
+            variant="flat"
+            @click="onApplySuggestion"
+            :disabled="disabled || suggestionApplied"
+          >
+            {{ suggestionApplied ? 'Suggestion applied' : 'Apply suggestion' }}
+          </v-btn>
+          <v-btn
+            variant="outlined"
+            color="secondary"
+            @click="onDiscardSuggestion"
+            :disabled="disabled"
+          >
+            Discard
+          </v-btn>
+        </div>
+      </div>
+    </v-alert>
+
+    <div class="d-flex flex-column gap-3">
+      <div>
+        <v-text-field
+          v-model="form.listContainerSelector"
+          label="List container selector"
+          :disabled="disabled || !form.enabled"
+          :error-messages="listContainerErrors"
+          hide-details="auto"
+          hint="CSS selector wrapping all items in the list."
+          persistent-hint
+        />
+      </div>
+      <div>
+        <v-text-field
+          v-model="form.itemSelector"
+          label="Item selector"
+          :disabled="disabled || !form.enabled"
+          :error-messages="itemSelectorErrors"
+          hide-details="auto"
+          hint="CSS selector targeting each list item within the container."
+          persistent-hint
+        />
+      </div>
+    </div>
+
+    <v-divider />
+
+    <div>
+      <h3 class="text-subtitle-2 mb-3">Field mapping</h3>
+      <p class="text-body-2 text-medium-emphasis mb-4">
+        Leave selectors blank to fall back to default extraction. Provide only overrides that differ from defaults.
+      </p>
+
+      <v-row dense>
+        <v-col cols="12" md="6" lg="6">
+          <v-text-field
+            v-model="form.fields.title.selector"
+            label="Title selector"
+            :disabled="disabled || !form.enabled"
+            :error-messages="selectorErrors('title')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.title.attribute"
+            label="Title attribute"
+            :disabled="disabled || !form.enabled"
+            :error-messages="attributeErrors('title')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.title.valueTemplate"
+            label="Title template"
+            :disabled="disabled || !form.enabled"
+            :error-messages="valueTemplateErrors('title')"
+            hide-details="auto"
+          />
+        </v-col>
+      </v-row>
+
+      <v-row dense>
+        <v-col cols="12" md="6" lg="6">
+          <v-text-field
+            v-model="form.fields.url.selector"
+            label="URL selector"
+            :disabled="disabled || !form.enabled"
+            :error-messages="selectorErrors('url')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.url.attribute"
+            label="URL attribute"
+            :disabled="disabled || !form.enabled"
+            :error-messages="attributeErrors('url')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.url.valueTemplate"
+            label="URL template"
+            :disabled="disabled || !form.enabled"
+            :error-messages="valueTemplateErrors('url')"
+            hide-details="auto"
+          />
+        </v-col>
+      </v-row>
+
+      <v-row dense>
+        <v-col cols="12" md="6" lg="6">
+          <v-text-field
+            v-model="form.fields.excerpt.selector"
+            label="Excerpt selector"
+            :disabled="disabled || !form.enabled"
+            :error-messages="selectorErrors('excerpt')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.excerpt.attribute"
+            label="Excerpt attribute"
+            :disabled="disabled || !form.enabled"
+            :error-messages="attributeErrors('excerpt')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.excerpt.valueTemplate"
+            label="Excerpt template"
+            :disabled="disabled || !form.enabled"
+            :error-messages="valueTemplateErrors('excerpt')"
+            hide-details="auto"
+          />
+        </v-col>
+      </v-row>
+
+      <v-row dense>
+        <v-col cols="12" md="6" lg="6">
+          <v-text-field
+            v-model="form.fields.timestamp.selector"
+            label="Timestamp selector"
+            :disabled="disabled || !form.enabled"
+            :error-messages="selectorErrors('timestamp')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.timestamp.attribute"
+            label="Timestamp attribute"
+            :disabled="disabled || !form.enabled"
+            :error-messages="attributeErrors('timestamp')"
+            hide-details="auto"
+          />
+        </v-col>
+        <v-col cols="12" md="3" lg="3">
+          <v-text-field
+            v-model="form.fields.timestamp.valueTemplate"
+            label="Timestamp template"
+            :disabled="disabled || !form.enabled"
+            :error-messages="valueTemplateErrors('timestamp')"
+            hide-details="auto"
+          />
+        </v-col>
+      </v-row>
+    </div>
+
+    <v-divider />
+
+    <div class="d-flex flex-column gap-3">
+      <div class="d-flex align-center justify-space-between">
+        <div>
+          <h3 class="text-subtitle-2 mb-1">Pagination (optional)</h3>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Runtime pagination is advisory only. Selectors are validated but subsequent pages are not fetched yet.
+          </p>
+        </div>
+        <v-switch
+          v-model="form.pagination.enabled"
+          inset
+          color="secondary"
+          hide-details
+          :disabled="disabled || !form.enabled"
+        />
+      </div>
+      <div class="d-flex flex-column gap-3">
+        <v-text-field
+          v-model="form.pagination.nextPageSelector"
+          label="Next page selector"
+          :disabled="disabled || !form.enabled || !form.pagination.enabled"
+          :error-messages="paginationSelectorErrors"
+          hide-details="auto"
+        />
+        <v-text-field
+          v-model.number="form.pagination.maxDepth"
+          label="Max pagination depth"
+          type="number"
+          min="1"
+          max="20"
+          :disabled="disabled || !form.enabled || !form.pagination.enabled"
+          :error-messages="paginationDepthErrors"
+          hide-details="auto"
+        />
+      </div>
+    </div>
+
+    <v-divider />
+
+    <div class="d-flex flex-column gap-2">
+      <div class="d-flex align-center gap-3">
+        <v-btn
+          color="primary"
+          variant="tonal"
+          :disabled="disabled || !form.enabled"
+          @click="emit('check')"
+        >
+          Check configuration
+        </v-btn>
+        <span class="text-body-2 text-medium-emphasis">
+          Runs selectors against the source URL and returns the first match for verification.
+        </span>
+      </div>
+
+      <v-alert
+        v-if="previewStatus === 'loading'"
+        type="info"
+        variant="tonal"
+        density="comfortable"
+        class="mt-2"
+      >
+        Checking configuration…
+      </v-alert>
+
+      <v-alert
+        v-else-if="previewStatus === 'error' && previewError"
+        type="error"
+        density="comfortable"
+        variant="tonal"
+        class="mt-2"
+        :text="previewError"
+      />
+
+      <v-card
+        v-else-if="previewStatus === 'success' && previewResult"
+        variant="outlined"
+        class="mt-2"
+      >
+        <v-card-title class="text-subtitle-2">Preview result</v-card-title>
+        <v-card-text>
+          <div v-if="previewResult.item" class="d-flex flex-column gap-2">
+            <div>
+              <div class="text-caption text-medium-emphasis">Title</div>
+              <div class="text-body-2">{{ previewResult.item.title ?? '—' }}</div>
+            </div>
+            <div>
+              <div class="text-caption text-medium-emphasis">URL</div>
+              <div class="text-body-2 text-primary">{{ previewResult.item.url ?? '—' }}</div>
+            </div>
+            <div>
+              <div class="text-caption text-medium-emphasis">Excerpt</div>
+              <div class="text-body-2">{{ previewResult.item.excerpt ?? '—' }}</div>
+            </div>
+            <div>
+              <div class="text-caption text-medium-emphasis">Timestamp</div>
+              <div class="text-body-2">{{ previewResult.item.timestamp ?? '—' }}</div>
+            </div>
+          </div>
+          <div v-else class="text-body-2">
+            No items matched the provided selectors.
+          </div>
+          <div v-if="previewResult.warnings.length" class="mt-3">
+            <div class="text-caption text-medium-emphasis mb-1">Warnings</div>
+            <ul class="ps-4 mb-0">
+              <li v-for="message in previewResult.warnings" :key="message" class="text-body-2">
+                {{ message }}
+              </li>
+            </ul>
+          </div>
+        </v-card-text>
+      </v-card>
+    </div>
+  </div>
+</template>

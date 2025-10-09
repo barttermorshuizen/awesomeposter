@@ -95,10 +95,12 @@ Operators must follow this protocol when onboarding HTTP sources for a client:
    - Canonicalization removes tracking parameters; confirm the summary chip matches expectations before saving.
 3. Resolve any inline duplicate warning before submitting. Duplicates are detected case-insensitively using canonical identifiers (e.g., YouTube channel ID or RSS URL).
 4. Add optional operator notes (why the source matters, expected cadence) for hand-off to support.
-5. For list-style pages (index hubs, curated feeds), expand **List Extraction** before submitting:
-   - Provide a `list_container_selector` that wraps all article cards and an `item_selector` that targets each card.
-   - Map optional fields (`title`, `excerpt`, `url`, `timestamp`) only when the defaults do not match; blanks fall back to adapter heuristics.
-   - Document the selectors in the operator notes and call out that pagination beyond the first page is currently ignored at runtime.
+5. For list-style pages (index hubs, curated feeds), select the gear **Configure** icon to open the Web List dialog:
+   - Toggle **Enable list extraction** and provide `list_container_selector` plus `item_selector` values that cover all cards.
+   - Map optional fields (`title`, `excerpt`, `url`, `timestamp`) only when defaults fail; leave blanks to rely on existing heuristics.
+   - Use **Check configuration** before saving to preview the first extracted item and review any warnings (e.g., pagination limits).
+   - Suggestions from the discovery service appear with confidence notes—apply them to populate the form or discard to keep manual selectors; warnings persist until acknowledged.
+   - Pagination selectors remain advisory; runtime ingestion still processes only the first page. Document selectors in operator notes and highlight any pagination expectations.
    - After the first ingestion run, confirm telemetry shows `webListApplied=true` with the expected `listItemCount`; adjust selectors if counts stay at `0`.
 6. Submit. The UI performs an optimistic add; if persistence fails the entry rolls back and a toast/alert surfaces the server error.
 7. After success, confirm support receives the `source-created` SSE event with payload `{ id, clientId, sourceType, url }` (visible in telemetry stream or developer console during pilot).
