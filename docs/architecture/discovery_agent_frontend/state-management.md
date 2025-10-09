@@ -81,6 +81,6 @@ export const useDiscoveryBriefsStore = defineStore('discoveryBriefs', () => {
 ```
 
 - `discoverySources` mirrors the pattern with optimistic updates, nested `webList` state management, and background refresh for source health plus list extraction flags.
-- `discoveryTelemetry` keeps rolling windows of aggregates and raw events for charting/export, now including list ingestion counters and pagination depth metrics emitted by server jobs.
+- `discoveryTelemetry` keeps rolling windows of aggregates and raw events for charting/export, now including list ingestion counters emitted by server jobs.
 - `discoveryConfigSuggestions` caches the most recent suggestions per URL, tracks request status, and normalizes confidence scores so the dialog/composable can present deterministic UI while avoiding duplicate API calls.
 - Stores accept SSE frames so reconnect logic lives in one place rather than per component.

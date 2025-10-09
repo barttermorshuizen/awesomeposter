@@ -14,6 +14,6 @@ All tables are additive to `packages/db/src/schema.ts` and maintain foreign-key 
 No new databases or queues are required. For now we reuse Postgres as the durable store; if ingestion load spikes, we can revisit queueing but it is out of scope for MVP.
 
 ## Configuration Schema & Storage
-- Extend `packages/shared/src/discovery-config.ts` with an optional `webList` object containing selectors (`list_container_selector`, `item_selector`), a `fields` map for `title`/`excerpt`/`url`/`timestamp`, and a `pagination` descriptor (`next_page` selector plus attribute hints).
+- Extend `packages/shared/src/discovery-config.ts` with an optional `webList` object containing selectors (`list_container_selector`, `item_selector`), a `fields` map for `title`/`excerpt`/`url`/`timestamp`, and a `pagination` descriptor (`next_page` selector plus attribute hints) retained for future runtime support.
 - Persist `webList` inside the existing `discovery_sources.config_json` payload so no new tables are introduced. Configuration helpers (`loadDiscoverySourceConfig`) must default absent fields to the current single-item heuristics to preserve backward compatibility.
-- Validation lives in shared Zod schemas to guarantee that both API writes and ingestion jobs see consistent requirements (all selectors required once `webList` is present, optional pagination with max depth defaults).
+- Validation lives in shared Zod schemas to guarantee that both API writes and ingestion jobs see consistent requirements (all selectors required once `webList` is present). Pagination descriptors remain optional but are currently ignored by the runtime.

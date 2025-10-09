@@ -26,10 +26,10 @@ The discovery workspace is split into focused, testable pieces.
 
 ## Sources Management Flow
 - `DiscoverySourcesView` pivots between the source grid and a right-hand configuration drawer. The drawer now nests `SourceListConfigForm` so operators can edit the optional `webList` block alongside existing credentials and scheduling fields (Story 3.4).
-- `SourceListConfigForm` exposes selectors (`list_container_selector`, `item_selector`, `fields.*`, `pagination.next_page`). Defaults come from shared helpers in `useListConfig`, ensuring parity with backend heuristics and allowing per-field inline validation lifted from shared Zod schemas.
+- `SourceListConfigForm` exposes selectors (`list_container_selector`, `item_selector`, `fields.*`) along with the dormant `pagination.next_page` field for future use. Defaults come from shared helpers in `useListConfig`, ensuring parity with backend heuristics and allowing per-field inline validation lifted from shared Zod schemas.
 - `ConfigSuggestionDialog` launches from the form and calls the new `POST /api/discovery/config-suggestions` endpoint. Suggestions arrive as ready-to-paste JSON plus warnings; the dialog lets operators preview, accept into the form, or discard. Confidence chips render via `SuggestionConfidenceBadge` with consistent color thresholds (Story 3.6).
 - Source save flows persist the merged `webList` configuration transparently; the store diffs nested selectors to avoid noisy updates, and optimistic UI messaging highlights when list extraction is active for a source (Story 3.5 alignment).
 
 ## Telemetry Enhancements
-- `TelemetrySummaryCards` adds list-focused KPIs (`listItemCount`, `listSourcesConfigured`, `paginationDepth`) sourced from SSE aggregates so story 3.5 metrics surface without extra navigation.
-- `TelemetryEventFeed` tags ingestion events when `webList` rules are applied, enabling operators to spot misconfigurations quickly. Pagination warnings from the backend appear as emphasized events with copy that links back to the relevant source.
+- `TelemetrySummaryCards` adds list-focused KPIs (`listItemCount`, `listSourcesConfigured`) sourced from SSE aggregates so story 3.5 metrics surface without extra navigation.
+- `TelemetryEventFeed` tags ingestion events when `webList` rules are applied, enabling operators to spot misconfigurations quickly.

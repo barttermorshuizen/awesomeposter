@@ -106,7 +106,7 @@ The discovery workspace is split into focused, testable pieces.
 
 ### Sources Management Flow
 - `DiscoverySourcesView` pivots between the source grid and a right-hand configuration drawer. The drawer now nests `SourceListConfigForm` so operators can edit the optional `webList` block alongside existing credentials and scheduling fields (Story 3.4).
-- `SourceListConfigForm` exposes selectors (`list_container_selector`, `item_selector`, `fields.*`, `pagination.next_page`). Defaults come from shared helpers in `useListConfig`, ensuring parity with backend heuristics and allowing per-field inline validation lifted from shared Zod schemas.
+- `SourceListConfigForm` exposes selectors (`list_container_selector`, `item_selector`, `fields.*`) along with the dormant `pagination.next_page` field for future use. Defaults come from shared helpers in `useListConfig`, ensuring parity with backend heuristics and allowing per-field inline validation lifted from shared Zod schemas.
 
 #### ConfigSuggestionsRequest
 - `ConfigSuggestionDialog` launches from the form and calls the new `POST /api/discovery/config-suggestions` endpoint. Suggestions arrive as ready-to-paste JSON plus warnings; the dialog lets operators preview, accept into the form, or discard. Confidence chips render via `SuggestionConfidenceBadge` with consistent color thresholds (Story 3.6).
@@ -114,8 +114,8 @@ The discovery workspace is split into focused, testable pieces.
 - Source save flows persist the merged `webList` configuration transparently; the store diffs nested selectors to avoid noisy updates, and optimistic UI messaging highlights when list extraction is active for a source (Story 3.5 alignment).
 
 ### Telemetry Enhancements
-- `TelemetrySummaryCards` adds list-focused KPIs (`listItemCount`, `listSourcesConfigured`, `paginationDepth`) sourced from SSE aggregates so story 3.5 metrics surface without extra navigation.
-- `TelemetryEventFeed` tags ingestion events when `webList` rules are applied, enabling operators to spot misconfigurations quickly. Pagination warnings from the backend appear as emphasized events with copy that links back to the relevant source.
+- `TelemetrySummaryCards` adds list-focused KPIs (`listItemCount`, `listSourcesConfigured`) sourced from SSE aggregates so story 3.5 metrics surface without extra navigation.
+- `TelemetryEventFeed` tags ingestion events when `webList` rules are applied, enabling operators to spot misconfigurations quickly.
 
 ## State Management
 Each store follows the `defineStore` composition pattern already in use (`hitl`). Stores expose derived state, loading flags, optimistic queues, and SSE application hooks. Example:
@@ -200,7 +200,7 @@ export const useDiscoveryBriefsStore = defineStore('discoveryBriefs', () => {
 ```
 
 - `discoverySources` mirrors the pattern with optimistic updates, nested `webList` state management, and background refresh for source health plus list extraction flags.
-- `discoveryTelemetry` keeps rolling windows of aggregates and raw events for charting/export, now including list ingestion counters and pagination depth metrics emitted by server jobs.
+- `discoveryTelemetry` keeps rolling windows of aggregates and raw events for charting/export, now including list ingestion counters emitted by server jobs.
 - `discoveryConfigSuggestions` caches the most recent suggestions per URL, tracks request status, and normalizes confidence scores so the dialog/composable can present deterministic UI while avoiding duplicate API calls.
 - Stores accept SSE frames so reconnect logic lives in one place rather than per component. Story 5.0 introduces shared state for the selected client + feature flag evaluation; Story 5.1 layers filter/search orchestration once Story 5.5 telemetry exposes degrade signals.
 
@@ -280,7 +280,7 @@ export function subscribeDiscoveryEvents(
 ```
 
 - Store wires `subscribeDiscoveryEvents` within `onMounted`/`onUnmounted` composition helpers.
-- `DiscoverySseEvent` covers `brief-updated`, `status-changed`, `source-health`, `telemetry-counts`, plus new `list-ingestion-metrics` and `pagination-warning` frames so stores can update list KPIs and surface alerts inline. Schema versioning stays in place so the UI can branch safely.
+- `DiscoverySseEvent` covers `brief-updated`, `status-changed`, `source-health`, `telemetry-counts`, plus new `list-ingestion-metrics` frames so stores can update list KPIs and surface alerts inline. Schema versioning stays in place so the UI can branch safely.
 - SSE reconnect UI reuses the HITL reconnection pattern (toast + inline banner) for consistency.
 
 ## Routing & Navigation

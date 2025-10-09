@@ -97,9 +97,9 @@ All tables are additive to `packages/db/src/schema.ts` and maintain foreign-key 
 No new databases or queues are required. For now we reuse Postgres as the durable store; if ingestion load spikes, we can revisit queueing but it is out of scope for MVP.
 
 ### Configuration Schema & Storage
-- Extend `packages/shared/src/discovery-config.ts` with an optional `webList` object containing selectors (`list_container_selector`, `item_selector`), a `fields` map for `title`/`excerpt`/`url`/`timestamp`, and a `pagination` descriptor (`next_page` selector plus attribute hints).
+- Extend `packages/shared/src/discovery-config.ts` with an optional `webList` object containing selectors (`list_container_selector`, `item_selector`), a `fields` map for `title`/`excerpt`/`url`/`timestamp`, and a `pagination` descriptor (`next_page` selector plus attribute hints) retained for future runtime support.
 - Persist `webList` inside the existing `discovery_sources.config_json` payload so no new tables are introduced. Configuration helpers (`loadDiscoverySourceConfig`) must default absent fields to the current single-item heuristics to preserve backward compatibility.
-- Validation lives in shared Zod schemas to guarantee that both API writes and ingestion jobs see consistent requirements (all selectors required once `webList` is present, optional pagination with max depth defaults).
+- Validation lives in shared Zod schemas to guarantee that both API writes and ingestion jobs see consistent requirements (all selectors required once `webList` is present). Pagination descriptors remain optional but are currently ignored by the runtime.
 
 ## API Contracts & Services
 - **Validation**: extend `packages/shared/src/schemas.ts` with `DiscoverySourceSchema`, `DiscoveryItemResponse`, etc. Nitro handlers import these Zod schemas for both validation and type inference, mirroring existing `/api/clients` patterns. The schema includes the optional `webList` block with selector requirements enforced when provided.
@@ -113,7 +113,7 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 - **Backpressure**: ingestion inspects the volume of unreviewed `scored` items per client (default ceiling 500). When the threshold is exceeded it pauses new fetches, logs a structured warning, and emits a discovery backlog SSE frame so operators can react before reviewers are overwhelmed.
 - **Retries**: store fetch errors in `discovery_ingest_runs.metrics_json`. A follow-up job `retry-failed-items.ts` requeues entries flagged as transient failures.
 - **Inline scoring**: scoring and dedup run in the same worker pool as normalization. We reuse `withConcurrencyLimit` inside the ingestion job (defaults to 4 parallel item processors) to bound CPU/token usage without a secondary loop.
-- **Telemetry**: ingestion metrics track list awareness (`webListApplied`, `listItemCount`, `paginationDepth`) and flow into both `discovery_ingest_runs.metrics_json` and discovery SSE frames so operators can troubleshoot selector efficacy without SQL access.
+- **Telemetry**: ingestion metrics track list awareness (`webListApplied`, `listItemCount`) and flow into both `discovery_ingest_runs.metrics_json` and discovery SSE frames so operators can troubleshoot selector efficacy without SQL access.
 
 
 ### Ingestion Pipeline
@@ -122,14 +122,14 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
   - RSS/Atom feeds use `adapters/rss.ts` (driven by `feedparser-promised`) to unwrap entries, canonicalize permalinks, and collapse duplicates by GUID + published timestamp before they hit scoring/dedup.
   - YouTube playlists and channels leverage `adapters/youtube.ts`, preferring the official Data API when credentials exist and falling back to the RSS facade; both normalize into the same shape while capturing `videoId`, `channelId`, and duration metadata for the downstream scoring helpers.
 - **Normalization contract**: every adapter returns `{ rawPayload, normalized, sourceMetadata }`; the job records the raw payload in `discovery_items.raw_payload_json`, stores the normalized summary in `normalized_json`, runs scoring + dedup on the normalized payload, and logs adapter metrics/errors into `discovery_ingest_runs.metrics_json` for observability. Rejections bubble an `ingest.error` event before the item is skipped.
-- **List extraction mode**: when `webList` is configured the adapter uses the provided container/item selectors, applies configured field mappings with graceful fallbacks to legacy heuristics, and emits one normalized payload per discovered article. Pagination follows the configured `next_page` selector up to a safety ceiling (default 5 pages) while deduplicating URLs to avoid loops.
+- **List extraction mode**: when `webList` is configured the adapter uses the provided container/item selectors, applies configured field mappings with graceful fallbacks to legacy heuristics, and emits one normalized payload per discovered article. The current runtime processes only the first page even if pagination selectors are configured; future work can re-enable multi-page traversal.
 - **Worker pool configuration**: ingestion runs per-client batches with `MAX_CONCURRENT_FETCHES` (default 3) enforced inside the job via `p-limit`. Cron cadence (30 minutes) is adjustable per client flag, and the backlog guard now keyes off unreviewed `scored` items instead of a separate queue to keep throughput predictable.
 
 
 ## Observability & Logging
 - Nitro endpoints log via `useNitroLogger` wrapper already in place; add structured fields (`clientId`, `sourceId`, `itemId`).
 - Ingestion workers share the Winston logger and emit lifecycle markers (`discovery.ingest.start`, `discovery.ingest.scored`, `discovery.ingest.suppressed`) as they process each batch. Because scoring happens inline the correlation ID flows naturally from the job context.
-- Metrics: reuse the StatsD hooks defined for HITL once available. MVP focuses on Postgres aggregate tables and SSE updates; we avoid new telemetry infrastructure. New counters capture list extraction throughput (items per page, pagination depth), suggestion API usage (success vs. low-confidence responses), and synchronous scoring latency.
+- Metrics: reuse the StatsD hooks defined for HITL once available. MVP focuses on Postgres aggregate tables and SSE updates; we avoid new telemetry infrastructure. New counters capture list extraction throughput (items per page), suggestion API usage (success vs. low-confidence responses), and synchronous scoring latency.
 - Alerting: add a `backlog_threshold` guard that emits a `warning` discovery SSE frame when unreviewed scored items exceed limits so operators can react without polling the database.
 
 ## Configuration Discovery API
@@ -140,10 +140,10 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 
 ## Web List Configuration Contract
 - **Schema location**: `packages/shared/src/discovery/config.ts` defines the canonical Zod schemas consumed by both the Nitro API and ingestion jobs. The block lives inside `discovery_sources.config_json` under the `webList` key.
-- **Required selectors**: `list_container_selector` and `item_selector` are required whenever the block is present. Field mappings (`fields.title`, `fields.url`, `fields.excerpt`, `fields.timestamp`) accept either a raw selector string or `{ selector, attribute?, valueTemplate? }`. Pagination uses `pagination.next_page` with an optional attribute hint; `max_depth` defaults to **5**.
+- **Required selectors**: `list_container_selector` and `item_selector` are required whenever the block is present. Field mappings (`fields.title`, `fields.url`, `fields.excerpt`, `fields.timestamp`) accept either a raw selector string or `{ selector, attribute?, valueTemplate? }`. Pagination metadata (`pagination.next_page`, `max_depth`) remains part of the schema for forward compatibility but is ignored by the current ingestion runtime.
 - **Serialization**: helpers expose `parseDiscoverySourceConfig`/`serializeDiscoverySourceConfig` so Nitro handlers can validate payloads, normalize casing, and persist camelCase-friendly data while the database retains snake_case keys.
-- **Telemetry**: ingestion runs now record `webListConfigured`, `webListApplied`, `listItemCount`, and `paginationDepth` inside `discovery_ingest_runs.metrics_json`, ensuring SSE events report whether list rules were applied.
-- **Sample**: `docs/architecture/discovery_agent_backend/samples/web-list-config.json` shows a multi-page configuration with title/url selectors, timestamp extraction, and pagination hints for operators to reference.
+- **Telemetry**: ingestion runs now record `webListConfigured`, `webListApplied`, and `listItemCount` inside `discovery_ingest_runs.metrics_json`, ensuring SSE events report whether list rules were applied.
+- **Sample**: `docs/architecture/discovery_agent_backend/samples/web-list-config.json` shows a configuration that includes pagination hints for future use; the current runtime ignores those fields while still accepting them in stored configs.
 
 ## Security & Compliance
 - MVP runs in a dev-only environment with no external users; bearer auth is NOT enforced yet (intentionally). Feature flag gating defaults to disabled to fail safe, aside from the new config suggestion endpoint which enforces operator auth and rate limiting from day one.
