@@ -10,6 +10,7 @@ import {
   type BuildYoutubeDataApiRequestOptions,
   type YoutubeDataApiRequest,
 } from '../youtube.js'
+import type { DiscoverySourceConfig } from '../config.js'
 
 type Fetcher = typeof globalThis.fetch
 
@@ -97,23 +98,16 @@ function toTranscriptText(transcript: YoutubeApiItem['transcript']): { text: str
   return { text, available }
 }
 
-function resolvePlaylistId(config: Record<string, unknown> | null): string | null {
-  if (!config || typeof config !== 'object') return null
-  const youtubeConfig = (config as { youtube?: Record<string, unknown> }).youtube
-  if (youtubeConfig && typeof youtubeConfig === 'object') {
-    const playlist = youtubeConfig.playlist ?? youtubeConfig.playlistId
-    if (typeof playlist === 'string' && playlist.trim()) {
-      return playlist.trim()
-    }
+function resolvePlaylistId(config: DiscoverySourceConfig | null): string | null {
+  const playlist = config?.youtube?.playlist
+  if (typeof playlist === 'string' && playlist.trim()) {
+    return playlist.trim()
   }
   return null
 }
 
-function resolveChannelIdentifier(config: Record<string, unknown> | null): string | null {
-  if (!config || typeof config !== 'object') return null
-  const youtubeConfig = (config as { youtube?: Record<string, unknown> }).youtube
-  if (!youtubeConfig || typeof youtubeConfig !== 'object') return null
-  const channel = youtubeConfig.channel ?? youtubeConfig.channelId
+function resolveChannelIdentifier(config: DiscoverySourceConfig | null): string | null {
+  const channel = config?.youtube?.channel
   if (typeof channel === 'string' && channel.trim()) {
     return channel.trim()
   }

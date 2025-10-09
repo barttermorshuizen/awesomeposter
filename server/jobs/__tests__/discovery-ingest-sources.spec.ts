@@ -152,13 +152,97 @@ describe('runDiscoveryIngestionJob', () => {
       items: [],
     })
     const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
-    expect(metrics).toMatchObject({ normalizedCount: 0, insertedCount: 0, duplicateCount: 0 })
+    expect(metrics).toMatchObject({
+      normalizedCount: 0,
+      insertedCount: 0,
+      duplicateCount: 0,
+      webListConfigured: false,
+      webListApplied: false,
+    })
     expect(publishSourceHealthStatus).toHaveBeenCalledWith(expect.objectContaining({
       clientId: source.clientId,
       sourceId: source.id,
       status: 'healthy',
       consecutiveFailures: 0,
     }))
+  })
+
+  it('records webList telemetry when configuration is present', async () => {
+    const source = buildSource({
+      configJson: {
+        webList: {
+          list_container_selector: '.articles',
+          item_selector: '.article',
+          fields: {
+            title: '.title',
+            url: { selector: 'a', attribute: 'href' },
+          },
+          pagination: {
+            next_page: { selector: '.next', attribute: 'href' },
+            max_depth: 4,
+          },
+        },
+      },
+    })
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter).mockImplementation(async (input) => {
+      expect(input.config?.webList?.listContainerSelector).toBe('.articles')
+      expect(input.config?.webList?.pagination?.maxDepth).toBe(4)
+      return {
+        ok: true,
+        items: [],
+        metadata: {
+          adapter: 'http',
+          webListApplied: true,
+          listItemCount: 5,
+          paginationDepth: 3,
+        },
+      }
+    })
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
+    expect(metrics).toMatchObject({
+      webListConfigured: true,
+      webListApplied: true,
+      listItemCount: 5,
+      paginationDepth: 3,
+    })
+  })
+
+  it('captures configuration validation issues when parsing fails', async () => {
+    const source = buildSource({
+      configJson: {
+        webList: {
+          list_container_selector: '.list',
+        },
+      },
+    })
+
+    vi.mocked(listDiscoverySourcesDue).mockResolvedValue([source])
+    vi.mocked(claimDiscoverySourceForFetch).mockResolvedValue(source)
+    vi.mocked(executeIngestionAdapter).mockImplementation(async (input) => {
+      expect(input.config).toBeNull()
+      return {
+        ok: true,
+        items: [],
+        metadata: { adapter: 'http' },
+      }
+    })
+
+    await runDiscoveryIngestionJob({ now: () => new Date(now) })
+
+    const metrics = vi.mocked(completeDiscoverySourceFetch).mock.calls[0][0].metrics as Record<string, unknown>
+    expect(metrics).toMatchObject({
+      webListConfigured: false,
+      webListApplied: false,
+    })
+    expect(metrics.configValidationIssues).toEqual(expect.arrayContaining([
+      expect.stringContaining('item_selector'),
+    ]))
   })
 
   it('scores newly inserted items inline when conditions allow', async () => {

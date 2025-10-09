@@ -5,6 +5,7 @@ import type {
   DiscoveryIngestionFailureReason,
 } from '../discovery.js'
 import { discoverySourceTypeSchema } from '../discovery.js'
+import type { DiscoverySourceConfig } from './config.js'
 import { fetchHttpSource } from './adapters/http.js'
 import { fetchRssSource } from './adapters/rss.js'
 import { fetchYoutubeSource } from './adapters/youtube.js'
@@ -24,7 +25,7 @@ export type DiscoveryIngestionAdapterInput = {
   sourceType: DiscoverySourceType
   url: string
   canonicalUrl: string
-  config: Record<string, unknown> | null
+  config: DiscoverySourceConfig | null
 }
 
 export type NormalizedDiscoveryItemEnvelope = {

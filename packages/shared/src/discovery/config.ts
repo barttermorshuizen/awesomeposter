@@ -1,0 +1,406 @@
+import { z, type ZodError, type ZodIssue } from 'zod'
+import type { DiscoverySourceType } from '../discovery.js'
+
+export const DEFAULT_WEB_LIST_MAX_DEPTH = 5
+
+const trimmedString = z.string().trim().min(1)
+
+const numericDepthSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value === 'number') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value.trim(), 10)
+    return Number.isFinite(parsed) ? parsed : value
+  }
+  return value
+}, z.number().int().min(1).max(20).optional())
+
+const rawSelectorSchema = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    return { selector: value }
+  }
+  if (value && typeof value === 'object') {
+    return value
+  }
+  return value
+}, z.object({
+  selector: trimmedString,
+  attribute: trimmedString.optional(),
+  valueTemplate: trimmedString.optional(),
+}).strict().passthrough())
+
+type RawSelector = z.infer<typeof rawSelectorSchema>
+
+export type DiscoverySourceWebListSelector = {
+  selector: string
+  attribute?: string
+  valueTemplate?: string
+} & Record<string, unknown>
+
+function normalizeSelector(raw: RawSelector): DiscoverySourceWebListSelector {
+  const { selector, attribute, valueTemplate, ...rest } = raw
+  const normalized: DiscoverySourceWebListSelector = {
+    selector,
+    ...rest,
+  }
+  if (attribute) {
+    normalized.attribute = attribute
+  }
+  if (valueTemplate) {
+    normalized.valueTemplate = valueTemplate
+  }
+  return normalized
+}
+
+function denormalizeSelector(selector: DiscoverySourceWebListSelector): RawSelector {
+  const { selector: value, attribute, valueTemplate, ...rest } = selector
+  const payload: RawSelector = {
+    selector: value.trim(),
+    ...rest,
+  }
+  if (attribute) {
+    payload.attribute = attribute.trim()
+  }
+  if (valueTemplate) {
+    payload.valueTemplate = valueTemplate.trim()
+  }
+  return payload
+}
+
+const rawWebListFieldsSchema = z.object({
+  title: rawSelectorSchema.optional(),
+  excerpt: rawSelectorSchema.optional(),
+  url: rawSelectorSchema.optional(),
+  timestamp: rawSelectorSchema.optional(),
+}).partial().default({})
+
+type RawWebListFields = z.infer<typeof rawWebListFieldsSchema>
+
+const rawPaginationSchema = z.preprocess((value) => {
+  if (value === undefined || value === null || value === false) {
+    return undefined
+  }
+  if (typeof value === 'string') {
+    return { next_page: value }
+  }
+  if (typeof value === 'object') {
+    return value
+  }
+  return value
+}, z.object({
+  next_page: rawSelectorSchema,
+  max_depth: numericDepthSchema,
+}).strict().passthrough()).transform((value) => ({
+  next_page: value.next_page,
+  max_depth: value.max_depth ?? DEFAULT_WEB_LIST_MAX_DEPTH,
+}))
+
+type RawWebListPagination = z.infer<typeof rawPaginationSchema>
+
+const rawWebListConfigSchema = z.object({
+  list_container_selector: trimmedString,
+  item_selector: trimmedString,
+  fields: rawWebListFieldsSchema.optional(),
+  pagination: rawPaginationSchema.optional(),
+}).strict().passthrough()
+
+type RawWebListConfig = z.infer<typeof rawWebListConfigSchema>
+
+export type DiscoverySourceWebListFieldMap = {
+  title?: DiscoverySourceWebListSelector
+  excerpt?: DiscoverySourceWebListSelector
+  url?: DiscoverySourceWebListSelector
+  timestamp?: DiscoverySourceWebListSelector
+} & Record<string, unknown>
+
+export type DiscoverySourceWebListConfig = {
+  listContainerSelector: string
+  itemSelector: string
+  fields: DiscoverySourceWebListFieldMap
+  pagination?: {
+    nextPage: DiscoverySourceWebListSelector
+    maxDepth: number
+  }
+} & Record<string, unknown>
+
+function normalizeWebListFields(fields: RawWebListFields | undefined): DiscoverySourceWebListFieldMap {
+  if (!fields) {
+    return {}
+  }
+  const { title, excerpt, url, timestamp, ...rest } = fields
+  const normalized: DiscoverySourceWebListFieldMap = { ...rest }
+  if (title) {
+    normalized.title = normalizeSelector(title)
+  }
+  if (excerpt) {
+    normalized.excerpt = normalizeSelector(excerpt)
+  }
+  if (url) {
+    normalized.url = normalizeSelector(url)
+  }
+  if (timestamp) {
+    normalized.timestamp = normalizeSelector(timestamp)
+  }
+  return normalized
+}
+
+function denormalizeWebListFields(fields: DiscoverySourceWebListFieldMap): RawWebListFields | undefined {
+  if (!fields) {
+    return undefined
+  }
+  const { title, excerpt, url, timestamp, ...rest } = fields
+  const payload: RawWebListFields = { ...rest }
+  if (title) {
+    payload.title = denormalizeSelector(title)
+  }
+  if (excerpt) {
+    payload.excerpt = denormalizeSelector(excerpt)
+  }
+  if (url) {
+    payload.url = denormalizeSelector(url)
+  }
+  if (timestamp) {
+    payload.timestamp = denormalizeSelector(timestamp)
+  }
+  return Object.keys(payload).length ? payload : undefined
+}
+
+function normalizeWebListConfig(raw: RawWebListConfig): DiscoverySourceWebListConfig {
+  const {
+    list_container_selector,
+    item_selector,
+    fields,
+    pagination,
+    ...rest
+  } = raw
+  const normalized: DiscoverySourceWebListConfig = {
+    listContainerSelector: list_container_selector,
+    itemSelector: item_selector,
+    fields: normalizeWebListFields(fields),
+    ...rest,
+  }
+  if (pagination) {
+    normalized.pagination = {
+      nextPage: normalizeSelector(pagination.next_page),
+      maxDepth: pagination.max_depth,
+    }
+  }
+  return normalized
+}
+
+function denormalizeWebListConfig(config: DiscoverySourceWebListConfig): RawWebListConfig {
+  const {
+    listContainerSelector,
+    itemSelector,
+    fields,
+    pagination,
+    ...rest
+  } = config
+  const payload: RawWebListConfig = {
+    list_container_selector: listContainerSelector.trim(),
+    item_selector: itemSelector.trim(),
+    ...rest,
+  }
+  const serializedFields = fields ? denormalizeWebListFields(fields) : undefined
+  if (serializedFields && Object.keys(serializedFields).length) {
+    payload.fields = serializedFields
+  }
+  if (pagination) {
+    payload.pagination = {
+      next_page: denormalizeSelector(pagination.nextPage),
+      max_depth: pagination.maxDepth,
+    }
+  }
+  return payload
+}
+
+export type DiscoverySourceYoutubeConfig = {
+  channel?: string
+  playlist?: string
+} & Record<string, unknown>
+
+const rawYoutubeConfigSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value === 'object') {
+    return value
+  }
+  return value
+}, z.object({
+  channel: trimmedString.optional(),
+  channelId: trimmedString.optional(),
+  playlist: trimmedString.optional(),
+  playlistId: trimmedString.optional(),
+}).partial().passthrough()).transform((value) => {
+  const { channel, channelId, playlist, playlistId, ...rest } = value
+  const normalized: DiscoverySourceYoutubeConfig = { ...rest }
+  if (channel ?? channelId) {
+    normalized.channel = (channel ?? channelId)!.trim()
+  }
+  if (playlist ?? playlistId) {
+    normalized.playlist = (playlist ?? playlistId)!.trim()
+  }
+  return normalized
+})
+
+export type DiscoverySourceRssConfig = {
+  canonical?: boolean
+} & Record<string, unknown>
+
+const rawRssConfigSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value === 'object') {
+    return value
+  }
+  return value
+}, z.object({
+  canonical: z.boolean().optional(),
+}).partial().passthrough()).transform((value) => {
+  const { canonical, ...rest } = value
+  const normalized: DiscoverySourceRssConfig = { ...rest }
+  if (typeof canonical === 'boolean') {
+    normalized.canonical = canonical
+  }
+  return normalized
+})
+
+const rawDiscoverySourceConfigSchema = z.object({
+  youtube: rawYoutubeConfigSchema.optional(),
+  rss: rawRssConfigSchema.optional(),
+  webList: rawWebListConfigSchema.optional(),
+}).partial().passthrough()
+
+type RawDiscoverySourceConfig = z.infer<typeof rawDiscoverySourceConfigSchema>
+
+export type DiscoverySourceConfig = {
+  youtube?: DiscoverySourceYoutubeConfig
+  rss?: DiscoverySourceRssConfig
+  webList?: DiscoverySourceWebListConfig
+} & Record<string, unknown>
+
+function normalizeDiscoverySourceConfig(raw: RawDiscoverySourceConfig): DiscoverySourceConfig {
+  const { youtube, rss, webList, ...rest } = raw
+  const config: DiscoverySourceConfig = { ...rest }
+  if (youtube && Object.keys(youtube).length > 0) {
+    config.youtube = youtube
+  }
+  if (rss && Object.keys(rss).length > 0) {
+    config.rss = rss
+  }
+  if (webList) {
+    config.webList = normalizeWebListConfig(webList)
+  }
+  return config
+}
+
+export type DiscoverySourceConfigParseSuccess = {
+  ok: true
+  config: DiscoverySourceConfig
+}
+
+export type DiscoverySourceConfigParseFailure = {
+  ok: false
+  issues: ZodIssue[]
+  error: ZodError<unknown>
+}
+
+export type DiscoverySourceConfigParseResult =
+  | DiscoverySourceConfigParseSuccess
+  | DiscoverySourceConfigParseFailure
+
+export const discoverySourceConfigInputSchema = rawDiscoverySourceConfigSchema
+export const discoverySourceWebListConfigInputSchema = rawWebListConfigSchema
+
+export function safeParseDiscoverySourceConfig(raw: unknown): DiscoverySourceConfigParseResult {
+  if (raw === undefined || raw === null) {
+    return { ok: true, config: {} as DiscoverySourceConfig }
+  }
+  const result = rawDiscoverySourceConfigSchema.safeParse(raw)
+  if (!result.success) {
+    return { ok: false, issues: result.error.issues, error: result.error }
+  }
+  return { ok: true, config: normalizeDiscoverySourceConfig(result.data) }
+}
+
+export function parseDiscoverySourceConfig(raw: unknown): DiscoverySourceConfig {
+  const result = safeParseDiscoverySourceConfig(raw)
+  if (!result.ok) {
+    throw result.error
+  }
+  return result.config
+}
+
+export function serializeDiscoverySourceConfig(
+  config: DiscoverySourceConfig | null | undefined,
+): Record<string, unknown> | null {
+  if (!config) {
+    return null
+  }
+  const { youtube, rss, webList, ...rest } = config
+  const payload: Record<string, unknown> = { ...rest }
+
+  if (youtube && Object.keys(youtube).length > 0) {
+    const { channel, playlist, ...youtubeRest } = youtube
+    const youtubePayload: Record<string, unknown> = { ...youtubeRest }
+    if (typeof channel === 'string' && channel.trim()) {
+      youtubePayload.channel = channel.trim()
+    }
+    if (typeof playlist === 'string' && playlist.trim()) {
+      youtubePayload.playlist = playlist.trim()
+    }
+    if (Object.keys(youtubePayload).length > 0) {
+      payload.youtube = youtubePayload
+    }
+  }
+
+  if (rss && Object.keys(rss).length > 0) {
+    const { canonical, ...rssRest } = rss
+    const rssPayload: Record<string, unknown> = { ...rssRest }
+    if (typeof canonical === 'boolean') {
+      rssPayload.canonical = canonical
+    }
+    if (Object.keys(rssPayload).length > 0) {
+      payload.rss = rssPayload
+    }
+  }
+
+  if (webList) {
+    payload.webList = denormalizeWebListConfig(webList)
+  }
+
+  return Object.keys(payload).length > 0 ? payload : null
+}
+
+export function createDefaultConfigForSource(
+  type: DiscoverySourceType,
+  identifier: string,
+): Record<string, unknown> | null {
+  const trimmedIdentifier = identifier.trim()
+  switch (type) {
+    case 'youtube-channel':
+      return serializeDiscoverySourceConfig({
+        youtube: { channel: trimmedIdentifier },
+      })
+    case 'youtube-playlist':
+      return serializeDiscoverySourceConfig({
+        youtube: { playlist: trimmedIdentifier },
+      })
+    case 'rss':
+      return serializeDiscoverySourceConfig({
+        rss: { canonical: true },
+      })
+    default:
+      return null
+  }
+}
+
+export function hasWebListConfig(config: DiscoverySourceConfig | null | undefined): boolean {
+  return Boolean(config?.webList)
+}

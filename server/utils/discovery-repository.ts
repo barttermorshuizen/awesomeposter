@@ -32,6 +32,7 @@ import {
   type DiscoverySearchItem,
   type DiscoverySearchHighlight,
   type DiscoverySearchStatus,
+  createDefaultConfigForSource,
 } from '@awesomeposter/shared'
 import type { SourceHealthStatus } from './discovery-health'
 import { requireDiscoveryFeatureEnabled } from './client-config/feature-flags'
@@ -323,16 +324,7 @@ export function computeNextFetchAt(
 }
 
 function buildConfigPayload(type: DiscoverySourceType, identifier: string) {
-  if (type === 'youtube-channel') {
-    return { youtube: { channel: identifier } }
-  }
-  if (type === 'youtube-playlist') {
-    return { youtube: { playlist: identifier } }
-  }
-  if (type === 'rss') {
-    return { rss: { canonical: true } }
-  }
-  return null
+  return createDefaultConfigForSource(type, identifier)
 }
 
 export async function listDiscoverySources(clientId: string) {

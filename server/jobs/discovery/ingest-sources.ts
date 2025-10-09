@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { defineTask } from 'nitropack/runtime'
-import type { DiscoveryAdapterResult } from '@awesomeposter/shared'
+import type { DiscoveryAdapterResult, DiscoverySourceConfig } from '@awesomeposter/shared'
 import {
   executeIngestionAdapter,
   discoveryIngestionFailureReasonSchema,
   FEATURE_DISCOVERY_AGENT,
   type DiscoveryIngestionFailureReason,
+  safeParseDiscoverySourceConfig,
+  hasWebListConfig,
 } from '@awesomeposter/shared'
 import {
   listDiscoverySourcesDue,
@@ -531,6 +533,25 @@ async function processSource(
   const runMetrics: Record<string, unknown> = {}
   const ingestionIssues: Array<{ reason: string; count: number; details?: unknown }> = []
   let healthUpdate: DiscoverySourceHealthUpdate | null = null
+  const configParse = safeParseDiscoverySourceConfig(claimed.configJson ?? null)
+  const sourceConfig: DiscoverySourceConfig | null = configParse.ok ? configParse.config : null
+  const webListConfigured = hasWebListConfig(sourceConfig)
+  runMetrics.webListConfigured = webListConfigured
+  runMetrics.webListApplied = false
+  if (!configParse.ok) {
+    runMetrics.configValidationIssues = configParse.issues.map((issue) => {
+      const path = issue.path.length ? issue.path.join('.') : '(root)'
+      return `${path}: ${issue.message}`
+    })
+    console.warn('[discovery.ingest] invalid discovery source configuration', {
+      sourceId: claimed.id,
+      clientId: claimed.clientId,
+      issues: configParse.issues.map((issue) => ({
+        path: issue.path,
+        message: issue.message,
+      })),
+    })
+  }
 
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -544,7 +565,7 @@ async function processSource(
             sourceType: claimed.sourceType,
             url: claimed.url,
             canonicalUrl: claimed.canonicalUrl,
-            config: claimed.configJson ?? null,
+            config: sourceConfig,
           },
           {
             fetch: options.fetch,
@@ -570,6 +591,26 @@ async function processSource(
       const attemptDurationMs = Math.max(0, attemptCompletedAt.getTime() - attemptStartedAt.getTime())
       const adapterName = typeof result.metadata?.adapter === 'string' ? result.metadata!.adapter : runMetrics.adapter ?? 'unknown'
       runMetrics.adapter = adapterName
+
+      if (webListConfigured) {
+        const metadata = result.metadata ?? {}
+        const applied = (metadata as { webListApplied?: unknown }).webListApplied
+        if (typeof applied === 'boolean') {
+          runMetrics.webListApplied = applied
+        } else if (result.ok) {
+          runMetrics.webListApplied = result.items.length > 1
+        }
+        const listItemCount = (metadata as { listItemCount?: unknown }).listItemCount
+        if (typeof listItemCount === 'number' && Number.isFinite(listItemCount)) {
+          runMetrics.listItemCount = listItemCount
+        } else if (result.ok) {
+          runMetrics.listItemCount = result.items.length
+        }
+        const paginationDepth = (metadata as { paginationDepth?: unknown }).paginationDepth
+        if (typeof paginationDepth === 'number' && Number.isFinite(paginationDepth)) {
+          runMetrics.paginationDepth = paginationDepth
+        }
+      }
 
       if (result.ok) {
         const metadata = result.metadata ?? {}

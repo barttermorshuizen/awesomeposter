@@ -138,6 +138,13 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 - **Caching & timeouts**: requests enforce a tight timeout (default 8 seconds) and reuse Nitro’s fetch cache for repeat URLs within a short TTL to avoid hammering upstream sites. Results are never persisted; the endpoint is advisory only.
 - **Consumers**: UI workflows fetch suggestions, show operator warnings, and let users copy the `webList` block directly into source configuration forms.
 
+## Web List Configuration Contract
+- **Schema location**: `packages/shared/src/discovery/config.ts` defines the canonical Zod schemas consumed by both the Nitro API and ingestion jobs. The block lives inside `discovery_sources.config_json` under the `webList` key.
+- **Required selectors**: `list_container_selector` and `item_selector` are required whenever the block is present. Field mappings (`fields.title`, `fields.url`, `fields.excerpt`, `fields.timestamp`) accept either a raw selector string or `{ selector, attribute?, valueTemplate? }`. Pagination uses `pagination.next_page` with an optional attribute hint; `max_depth` defaults to **5**.
+- **Serialization**: helpers expose `parseDiscoverySourceConfig`/`serializeDiscoverySourceConfig` so Nitro handlers can validate payloads, normalize casing, and persist camelCase-friendly data while the database retains snake_case keys.
+- **Telemetry**: ingestion runs now record `webListConfigured`, `webListApplied`, `listItemCount`, and `paginationDepth` inside `discovery_ingest_runs.metrics_json`, ensuring SSE events report whether list rules were applied.
+- **Sample**: `docs/architecture/discovery_agent_backend/samples/web-list-config.json` shows a multi-page configuration with title/url selectors, timestamp extraction, and pagination hints for operators to reference.
+
 ## Security & Compliance
 - MVP runs in a dev-only environment with no external users; bearer auth is NOT enforced yet (intentionally). Feature flag gating defaults to disabled to fail safe, aside from the new config suggestion endpoint which enforces operator auth and rate limiting from day one.
 - Ingestion respects robots exclusion: adapters check for HTTP status codes and the `X-Discovery-Allow` header override to stay compliant.
