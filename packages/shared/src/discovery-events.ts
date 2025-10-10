@@ -31,10 +31,31 @@ export const discoverySourceCreatedEventSchema = z.object({
 
 export type DiscoverySourceCreatedEvent = z.infer<typeof discoverySourceCreatedEventSchema>
 
+const regexFlagsPattern = /^[gimsuy]*$/
+
+const discoveryValueTransformSchema = z.object({
+  pattern: z.string().min(1),
+  flags: z.string().regex(regexFlagsPattern, { message: 'Invalid regex flags supplied for value transform' }).optional(),
+  replacement: z.string().optional(),
+}).strict().superRefine((value, ctx) => {
+  try {
+    // eslint-disable-next-line no-new
+    new RegExp(value.pattern, value.flags)
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pattern'],
+      message: error instanceof Error ? error.message : 'Invalid regex pattern',
+    })
+  }
+})
+
 const discoveryWebListSelectorSchema = z.object({
   selector: z.string().min(1),
   attribute: z.string().min(1).optional(),
-  valueTemplate: z.string().min(1).optional(),
+  valueTransform: discoveryValueTransformSchema.optional(),
+  legacyValueTemplate: z.string().min(1).optional(),
+  valueTransformWarnings: z.array(z.string().min(1)).optional(),
 }).passthrough()
 
 const discoveryWebListFieldsSchema = z.object({

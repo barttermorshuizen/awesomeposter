@@ -2,15 +2,22 @@ import { computed, reactive, ref, watch } from 'vue'
 import {
   DEFAULT_WEB_LIST_MAX_DEPTH,
   discoverySourceWebListConfigInputSchema,
+  serializeDiscoverySourceConfig,
   type DiscoverySourceWebListConfig,
   type DiscoverySourceWebListSelector,
+  type RegexValueTransform,
 } from '@awesomeposter/shared'
 import type { WebListSuggestionState } from '@/stores/discoverySources'
 
 type SelectorFormState = {
   selector: string
   attribute: string
-  valueTemplate: string
+  valueTransformEnabled: boolean
+  valueTransformPattern: string
+  valueTransformFlags: string
+  valueTransformReplacement: string
+  legacyValueTemplate: string
+  valueTransformWarnings: string[]
 }
 
 type FieldsFormState = {
@@ -36,11 +43,22 @@ export type WebListFormState = {
 
 export type ValidationErrors = Record<string, string[]>
 
-const createSelectorFormState = (selector?: DiscoverySourceWebListSelector | null): SelectorFormState => ({
-  selector: selector?.selector ?? '',
-  attribute: selector?.attribute ?? '',
-  valueTemplate: selector?.valueTemplate ?? '',
-})
+const createSelectorFormState = (selector?: DiscoverySourceWebListSelector | null): SelectorFormState => {
+  const transform = selector?.valueTransform ?? null
+  const warnings = Array.isArray(selector?.valueTransformWarnings)
+    ? [...selector!.valueTransformWarnings!]
+    : []
+  return {
+    selector: selector?.selector ?? '',
+    attribute: selector?.attribute ?? '',
+    valueTransformEnabled: Boolean(transform),
+    valueTransformPattern: transform?.pattern ?? '',
+    valueTransformFlags: transform?.flags ?? '',
+    valueTransformReplacement: transform?.replacement ?? '',
+    legacyValueTemplate: selector?.legacyValueTemplate ?? '',
+    valueTransformWarnings: warnings,
+  }
+}
 
 const createFieldsFormState = (config?: DiscoverySourceWebListConfig | null): FieldsFormState => ({
   title: createSelectorFormState(config?.fields?.title),
@@ -60,21 +78,45 @@ const trimOrNull = (value: string) => {
   return trimmed.length ? trimmed : null
 }
 
+const buildValueTransform = (state: SelectorFormState): RegexValueTransform | null => {
+  if (!state.valueTransformEnabled) {
+    return null
+  }
+  const rawPattern = state.valueTransformPattern
+  const trimmedPattern = rawPattern.trim()
+  const patternToUse = trimmedPattern.length ? trimmedPattern : rawPattern
+  const transform: RegexValueTransform = { pattern: patternToUse }
+  const trimmedFlags = state.valueTransformFlags.trim()
+  if (trimmedFlags) {
+    transform.flags = trimmedFlags
+  }
+  if (state.valueTransformReplacement.length > 0) {
+    transform.replacement = state.valueTransformReplacement
+  }
+  return transform
+}
+
 const toSelectorConfig = (state: SelectorFormState): DiscoverySourceWebListSelector | null => {
   const selector = trimOrNull(state.selector)
   if (!selector) {
     return null
   }
   const attribute = trimOrNull(state.attribute)
-  const valueTemplate = trimOrNull(state.valueTemplate)
+  const valueTransform = buildValueTransform(state)
   const payload: DiscoverySourceWebListSelector = {
     selector,
   }
   if (attribute) {
     payload.attribute = attribute
   }
-  if (valueTemplate) {
-    payload.valueTemplate = valueTemplate
+  if (valueTransform) {
+    payload.valueTransform = valueTransform
+  }
+  if (state.legacyValueTemplate) {
+    payload.legacyValueTemplate = state.legacyValueTemplate
+  }
+  if (state.valueTransformWarnings.length) {
+    payload.valueTransformWarnings = [...state.valueTransformWarnings]
   }
   return payload
 }
@@ -277,44 +319,8 @@ export function useListConfig(options: UseListConfigOptions) {
   }
 }
 
-function buildRawWebListPayload(config: DiscoverySourceWebListConfig) {
-  const payload: Record<string, unknown> = {
-    list_container_selector: config.listContainerSelector,
-    item_selector: config.itemSelector,
-  }
-  const fields = buildFieldsPayload(config)
-  if (fields) {
-    payload.fields = fields
-  }
-  const pagination = buildPaginationPayload(config)
-  if (pagination) {
-    payload.pagination = pagination
-  }
-  return payload
-}
-
-function buildFieldsPayload(config: DiscoverySourceWebListConfig) {
-  if (!config.fields) return undefined
-  const payload: Record<string, unknown> = {}
-  for (const [key, selector] of Object.entries(config.fields)) {
-    if (!selector) continue
-    payload[key] = {
-      selector: selector.selector,
-      ...(selector.attribute ? { attribute: selector.attribute } : {}),
-      ...(selector.valueTemplate ? { valueTemplate: selector.valueTemplate } : {}),
-    }
-  }
-  return Object.keys(payload).length ? payload : undefined
-}
-
-function buildPaginationPayload(config: DiscoverySourceWebListConfig) {
-  if (!config.pagination) return undefined
-  return {
-    next_page: {
-      selector: config.pagination.nextPage.selector,
-      ...(config.pagination.nextPage.attribute ? { attribute: config.pagination.nextPage.attribute } : {}),
-      ...(config.pagination.nextPage.valueTemplate ? { valueTemplate: config.pagination.nextPage.valueTemplate } : {}),
-    },
-    max_depth: config.pagination.maxDepth,
-  }
+function buildRawWebListPayload(config: DiscoverySourceWebListConfig): Record<string, unknown> | null {
+  const serialized = serializeDiscoverySourceConfig({ webList: config })
+  const webList = serialized?.webList
+  return webList && typeof webList === 'object' ? webList as Record<string, unknown> : null
 }

@@ -37,6 +37,15 @@ type WebListExtractionResult = {
   metadata: Record<string, unknown>
 }
 
+type ValueTransformStats = {
+  applied: number
+  misses: number
+}
+
+type FieldTransformState = 'applied' | 'missed' | 'none'
+
+type FieldTransformTelemetry = Partial<Record<'title' | 'excerpt' | 'url' | 'timestamp', FieldTransformState>>
+
 type BuildListItemContext = {
   $: CheerioAPI
   element: Element
@@ -44,6 +53,7 @@ type BuildListItemContext = {
   config: DiscoverySourceWebListConfig
   baseUrl: string
   nowIso: string
+  transformStats: ValueTransformStats
 }
 
 type BuildListItemSuccess = {
@@ -81,10 +91,12 @@ function extractListItems(
   const $ = load(html)
   const metadata: Record<string, unknown> = {
     webListConfigured: true,
-    webListAttempted: true,
+   webListAttempted: true,
     webListApplied: false,
     listItemCount: 0,
     paginationDepth: 1,
+    valueTransformApplied: 0,
+    valueTransformMisses: 0,
   }
   const issues: Array<Record<string, unknown>> = []
   const skipped: Array<Record<string, unknown>> = []
@@ -137,6 +149,7 @@ function extractListItems(
   const nowIso = now.toISOString()
   const seenUrls = new Set<string>()
   const items: NormalizedDiscoveryItemEnvelope[] = []
+  const transformStats: ValueTransformStats = { applied: 0, misses: 0 }
 
   for (const [localIndex, element] of limitedNodes.entries()) {
     const result = buildListItem({
@@ -146,6 +159,7 @@ function extractListItems(
       config,
       baseUrl,
       nowIso,
+      transformStats,
     })
 
     if (!result.ok) {
@@ -174,6 +188,8 @@ function extractListItems(
     items.push(result.item)
   }
 
+  metadata.valueTransformApplied = transformStats.applied
+  metadata.valueTransformMisses = transformStats.misses
   metadata.webListApplied = items.length > 0
   metadata.listItemCount = items.length
   metadata.paginationDepth = 1
@@ -203,11 +219,14 @@ function extractListItems(
 }
 
 function buildListItem(context: BuildListItemContext): BuildListItemResult {
-  const { $, element, config, baseUrl, index, nowIso } = context
+  const { $, element, config, baseUrl, index, nowIso, transformStats } = context
   const itemNode = $(element)
   const itemHtml = $.html(element) ?? ''
 
-  const configuredFields = extractConfiguredFields(itemNode, config)
+  const {
+    values: configuredFields,
+    transformStates,
+  } = extractConfiguredFields(itemNode, config, transformStats)
   const anchor = itemNode.find('a').first()
   const anchorHref = anchor.attr('href')?.trim() ?? null
 
@@ -293,6 +312,9 @@ function buildListItem(context: BuildListItemContext): BuildListItemResult {
     resolvedUrl,
     fields: configuredFields,
   }
+  if (Object.keys(transformStates).length > 0) {
+    rawPayload.valueTransformStates = transformStates
+  }
   if (timestampCandidate) {
     rawPayload.timestampCandidate = timestampCandidate
   }
@@ -314,42 +336,78 @@ function buildListItem(context: BuildListItemContext): BuildListItemResult {
 function extractConfiguredFields(
   node: Cheerio<Element>,
   config: DiscoverySourceWebListConfig,
-): ConfiguredFieldMap {
-  const result: ConfiguredFieldMap = {}
+  stats: ValueTransformStats,
+): { values: ConfiguredFieldMap; transformStates: FieldTransformTelemetry } {
+  const values: ConfiguredFieldMap = {}
+  const transformStates: FieldTransformTelemetry = {}
   const fields = config.fields ?? {}
   for (const [field, descriptor] of Object.entries(fields)) {
     if (!KNOWN_WEB_LIST_FIELDS.has(field)) continue
     if (!descriptor) continue
     const typedDescriptor = descriptor as DiscoverySourceWebListSelector
-    const value = extractSelectorValue(node, typedDescriptor)
-    if (value) {
-      result[field as keyof ConfiguredFieldMap] = value
+    const result = extractSelectorValue(node, typedDescriptor)
+    if (result.transformState === 'applied') {
+      stats.applied += 1
+    }
+    if (result.transformState === 'missed') {
+      stats.misses += 1
+    }
+    if (result.transformState !== 'none') {
+      transformStates[field as keyof FieldTransformTelemetry] = result.transformState
+    }
+    if (result.value) {
+      values[field as keyof ConfiguredFieldMap] = result.value
     }
   }
-  return result
+  return { values, transformStates }
 }
 
 function extractSelectorValue(
   root: Cheerio<Element>,
   descriptor: DiscoverySourceWebListSelector,
-): string | null {
+): { value: string | null; transformState: FieldTransformState } {
   const target = descriptor.selector ? root.find(descriptor.selector).first() : root
-  if (!target.length) return null
+  if (!target.length) {
+    return { value: null, transformState: 'none' }
+  }
   const rawValue = descriptor.attribute ? target.attr(descriptor.attribute) ?? null : target.text()
-  if (!rawValue) return null
+  if (!rawValue) {
+    return { value: null, transformState: 'none' }
+  }
   const trimmed = rawValue.trim()
-  if (!trimmed) return null
-  const templated = applyValueTemplate(descriptor.valueTemplate, trimmed)
-  const finalValue = templated.trim()
-  return finalValue || null
+  if (!trimmed) {
+    return { value: null, transformState: 'none' }
+  }
+  const transformed = applyValueTransform(descriptor.valueTransform, trimmed)
+  const finalValue = transformed.value.trim()
+  return {
+    value: finalValue || null,
+    transformState: transformed.state,
+  }
 }
 
-function applyValueTemplate(template: string | undefined, value: string): string {
-  if (!template) return value
-  if (template.includes('{{')) {
-    return template.replace(/\{\{\s*value\s*\}\}/g, value)
+function applyValueTransform(
+  transform: DiscoverySourceWebListSelector['valueTransform'],
+  value: string,
+): { value: string; state: FieldTransformState } {
+  if (!transform) {
+    return { value, state: 'none' }
   }
-  return `${template}${value}`
+  try {
+    const flags = transform.flags
+    const matcher = new RegExp(transform.pattern, flags)
+    if (!matcher.test(value)) {
+      return { value, state: 'missed' }
+    }
+    const replacement = transform.replacement ?? '$1'
+    const replaced = value.replace(new RegExp(transform.pattern, flags), replacement)
+    return {
+      value: replaced,
+      state: 'applied',
+    }
+  } catch {
+    return { value, state: 'missed' }
+  }
 }
 
 function resolveAbsoluteUrl(value: string | null | undefined, baseUrl: string): string | null {

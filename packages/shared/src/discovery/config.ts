@@ -4,6 +4,73 @@ import type { DiscoverySourceType } from '../discovery.js'
 export const DEFAULT_WEB_LIST_MAX_DEPTH = 5
 
 const trimmedString = z.string().trim().min(1)
+const regexFlagsPattern = /^[gimsuy]*$/
+
+const rawValueTransformSchema = z.object({
+  pattern: trimmedString,
+  flags: z.string().regex(regexFlagsPattern, { message: 'Invalid regex flags supplied for value transform' }).optional(),
+  replacement: z.string().optional(),
+}).strict().superRefine((value, ctx) => {
+  try {
+    // Ensure the pattern compiles with the provided flags
+    // eslint-disable-next-line no-new
+    new RegExp(value.pattern, value.flags)
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pattern'],
+      message: error instanceof Error ? error.message : 'Invalid regex pattern',
+    })
+  }
+})
+
+type RawValueTransform = z.infer<typeof rawValueTransformSchema>
+
+export type RegexValueTransform = {
+  pattern: string
+  flags?: string
+  replacement?: string
+}
+
+export type ValueTransformMigrationResult = {
+  transform: RegexValueTransform | null
+  warnings: string[]
+}
+
+const LEGACY_VALUE_PLACEHOLDER = /\{\{\s*value\s*\}\}/g
+const UNSUPPORTED_LEGACY_PLACEHOLDER = /\{\{\s*(?!\s*value\b)[^}]+\}\}/
+
+export function convertLegacyValueTemplate(template: string): ValueTransformMigrationResult {
+  const trimmedTemplate = template.trim()
+  if (!trimmedTemplate) {
+    return {
+      transform: null,
+      warnings: ['Legacy value template is empty after trimming'],
+    }
+  }
+
+  const warnings: string[] = []
+  if (UNSUPPORTED_LEGACY_PLACEHOLDER.test(trimmedTemplate)) {
+    warnings.push('Legacy value template contains unsupported placeholders and may need manual review')
+  }
+
+  const escaped = trimmedTemplate.replace(/\$/g, '$$$$')
+  const containsMoustache = trimmedTemplate.includes('{{')
+  const hasPlaceholder = /\{\{\s*value\s*\}\}/.test(trimmedTemplate)
+  const replacement = hasPlaceholder
+    ? escaped.replace(LEGACY_VALUE_PLACEHOLDER, '$1')
+    : containsMoustache
+      ? escaped
+      : `${escaped}$1`
+
+  return {
+    transform: {
+      pattern: '^(.*)$',
+      replacement,
+    },
+    warnings,
+  }
+}
 
 const numericDepthSchema = z.preprocess((value) => {
   if (value === undefined || value === null) {
@@ -31,6 +98,9 @@ const rawSelectorSchema = z.preprocess((value) => {
   selector: trimmedString,
   attribute: trimmedString.optional(),
   valueTemplate: trimmedString.optional(),
+  valueTransform: rawValueTransformSchema.optional(),
+  legacyValueTemplate: trimmedString.optional(),
+  valueTransformWarnings: z.array(trimmedString).optional(),
 }).strict().passthrough())
 
 type RawSelector = z.infer<typeof rawSelectorSchema>
@@ -38,11 +108,36 @@ type RawSelector = z.infer<typeof rawSelectorSchema>
 export type DiscoverySourceWebListSelector = {
   selector: string
   attribute?: string
-  valueTemplate?: string
+  valueTransform?: RegexValueTransform
+  legacyValueTemplate?: string
+  valueTransformWarnings?: string[]
 } & Record<string, unknown>
 
+function normalizeValueTransform(raw: RawValueTransform | undefined | null): RegexValueTransform | null {
+  if (!raw) {
+    return null
+  }
+  const normalized: RegexValueTransform = {
+    pattern: raw.pattern.trim(),
+  }
+  const flags = raw.flags?.trim()
+  if (flags) {
+    normalized.flags = flags
+  }
+  if (raw.replacement !== undefined) {
+    normalized.replacement = raw.replacement
+  }
+  return normalized
+}
+
 function normalizeSelector(raw: RawSelector): DiscoverySourceWebListSelector {
-  const { selector, attribute, valueTemplate, ...rest } = raw
+  const {
+    selector,
+    attribute,
+    valueTemplate,
+    valueTransform,
+    ...rest
+  } = raw as RawSelector & { valueTransform?: RawValueTransform }
   const normalized: DiscoverySourceWebListSelector = {
     selector,
     ...rest,
@@ -50,14 +145,36 @@ function normalizeSelector(raw: RawSelector): DiscoverySourceWebListSelector {
   if (attribute) {
     normalized.attribute = attribute
   }
-  if (valueTemplate) {
-    normalized.valueTemplate = valueTemplate
+  if (valueTransform) {
+    const normalizedTransform = normalizeValueTransform(valueTransform)
+    if (normalizedTransform) {
+      normalized.valueTransform = normalizedTransform
+    }
+  } else if (valueTemplate) {
+    const migration = convertLegacyValueTemplate(valueTemplate)
+    if (migration.transform) {
+      normalized.valueTransform = migration.transform
+    }
+    normalized.legacyValueTemplate = valueTemplate
+    if (migration.warnings.length) {
+      normalized.valueTransformWarnings = [
+        ...(normalized.valueTransformWarnings ?? []),
+        ...migration.warnings,
+      ]
+    }
   }
   return normalized
 }
 
 function denormalizeSelector(selector: DiscoverySourceWebListSelector): RawSelector {
-  const { selector: value, attribute, valueTemplate, ...rest } = selector
+  const {
+    selector: value,
+    attribute,
+    valueTransform,
+    legacyValueTemplate,
+    valueTransformWarnings,
+    ...rest
+  } = selector
   const payload: RawSelector = {
     selector: value.trim(),
     ...rest,
@@ -65,8 +182,23 @@ function denormalizeSelector(selector: DiscoverySourceWebListSelector): RawSelec
   if (attribute) {
     payload.attribute = attribute.trim()
   }
-  if (valueTemplate) {
-    payload.valueTemplate = valueTemplate.trim()
+  if (valueTransform) {
+    const transformed: RawValueTransform = {
+      pattern: valueTransform.pattern.trim(),
+    }
+    if (valueTransform.flags?.trim()) {
+      transformed.flags = valueTransform.flags.trim()
+    }
+    if (valueTransform.replacement !== undefined) {
+      transformed.replacement = valueTransform.replacement
+    }
+    payload.valueTransform = transformed
+  }
+  if (legacyValueTemplate) {
+    payload.legacyValueTemplate = legacyValueTemplate
+  }
+  if (valueTransformWarnings?.length) {
+    payload.valueTransformWarnings = [...valueTransformWarnings]
   }
   return payload
 }

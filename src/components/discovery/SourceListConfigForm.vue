@@ -53,19 +53,41 @@ const emit = defineEmits<{
 const listContainerErrors = computed(() => props.errors.listContainerSelector ?? [])
 const itemSelectorErrors = computed(() => props.errors.itemSelector ?? [])
 
-function selectorErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
+type FieldKey = 'title' | 'url' | 'excerpt' | 'timestamp'
+
+const fieldOrder: FieldKey[] = ['title', 'url', 'excerpt', 'timestamp']
+const fieldLabels: Record<FieldKey, string> = {
+  title: 'Title',
+  url: 'URL',
+  excerpt: 'Excerpt',
+  timestamp: 'Timestamp',
+}
+
+function selectorErrors(field: FieldKey) {
   return [
     ...(props.errors[`fields.${field}`] ?? []),
     ...(props.errors[`fields.${field}.selector`] ?? []),
   ]
 }
 
-function attributeErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
+function attributeErrors(field: FieldKey) {
   return props.errors[`fields.${field}.attribute`] ?? []
 }
 
-function valueTemplateErrors(field: 'title' | 'url' | 'excerpt' | 'timestamp') {
-  return props.errors[`fields.${field}.valueTemplate`] ?? []
+function transformPatternErrors(field: FieldKey) {
+  return props.errors[`fields.${field}.valueTransform.pattern`] ?? []
+}
+
+function transformFlagsErrors(field: FieldKey) {
+  return props.errors[`fields.${field}.valueTransform.flags`] ?? []
+}
+
+function transformReplacementErrors(field: FieldKey) {
+  return props.errors[`fields.${field}.valueTransform.replacement`] ?? []
+}
+
+function transformBaseErrors(field: FieldKey) {
+  return props.errors[`fields.${field}.valueTransform`] ?? []
 }
 
 const paginationSelectorErrors = computed(() => [
@@ -83,6 +105,14 @@ function onApplySuggestion() {
 
 function onDiscardSuggestion() {
   emit('discard-suggestion')
+}
+
+function onToggleTransform(field: FieldKey, enabled: boolean) {
+  const target = props.form.fields[field]
+  if (!target) return
+  if (enabled && !target.valueTransformPattern.trim()) {
+    target.valueTransformPattern = '^(.*)$'
+  }
 }
 </script>
 
@@ -192,125 +222,106 @@ function onDiscardSuggestion() {
         Leave selectors blank to fall back to default extraction. Provide only overrides that differ from defaults.
       </p>
 
-      <v-row dense>
-        <v-col cols="12" md="6" lg="6">
-          <v-text-field
-            v-model="form.fields.title.selector"
-            label="Title selector"
-            :disabled="disabled || !form.enabled"
-            :error-messages="selectorErrors('title')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.title.attribute"
-            label="Title attribute"
-            :disabled="disabled || !form.enabled"
-            :error-messages="attributeErrors('title')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.title.valueTemplate"
-            label="Title template"
-            :disabled="disabled || !form.enabled"
-            :error-messages="valueTemplateErrors('title')"
-            hide-details="auto"
-          />
-        </v-col>
-      </v-row>
-
-      <v-row dense>
-        <v-col cols="12" md="6" lg="6">
-          <v-text-field
-            v-model="form.fields.url.selector"
-            label="URL selector"
-            :disabled="disabled || !form.enabled"
-            :error-messages="selectorErrors('url')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.url.attribute"
-            label="URL attribute"
-            :disabled="disabled || !form.enabled"
-            :error-messages="attributeErrors('url')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.url.valueTemplate"
-            label="URL template"
-            :disabled="disabled || !form.enabled"
-            :error-messages="valueTemplateErrors('url')"
-            hide-details="auto"
-          />
-        </v-col>
-      </v-row>
-
-      <v-row dense>
-        <v-col cols="12" md="6" lg="6">
-          <v-text-field
-            v-model="form.fields.excerpt.selector"
-            label="Excerpt selector"
-            :disabled="disabled || !form.enabled"
-            :error-messages="selectorErrors('excerpt')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.excerpt.attribute"
-            label="Excerpt attribute"
-            :disabled="disabled || !form.enabled"
-            :error-messages="attributeErrors('excerpt')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.excerpt.valueTemplate"
-            label="Excerpt template"
-            :disabled="disabled || !form.enabled"
-            :error-messages="valueTemplateErrors('excerpt')"
-            hide-details="auto"
-          />
-        </v-col>
-      </v-row>
-
-      <v-row dense>
-        <v-col cols="12" md="6" lg="6">
-          <v-text-field
-            v-model="form.fields.timestamp.selector"
-            label="Timestamp selector"
-            :disabled="disabled || !form.enabled"
-            :error-messages="selectorErrors('timestamp')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.timestamp.attribute"
-            label="Timestamp attribute"
-            :disabled="disabled || !form.enabled"
-            :error-messages="attributeErrors('timestamp')"
-            hide-details="auto"
-          />
-        </v-col>
-        <v-col cols="12" md="3" lg="3">
-          <v-text-field
-            v-model="form.fields.timestamp.valueTemplate"
-            label="Timestamp template"
-            :disabled="disabled || !form.enabled"
-            :error-messages="valueTemplateErrors('timestamp')"
-            hide-details="auto"
-          />
-        </v-col>
-      </v-row>
+      <template v-for="field in fieldOrder" :key="field">
+        <v-row dense>
+          <v-col cols="12" md="5" lg="5">
+            <v-text-field
+              v-model="form.fields[field].selector"
+              :label="`${fieldLabels[field]} selector`"
+              :disabled="disabled || !form.enabled"
+              :error-messages="selectorErrors(field)"
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12" md="3" lg="3">
+            <v-text-field
+              v-model="form.fields[field].attribute"
+              :label="`${fieldLabels[field]} attribute`"
+              :disabled="disabled || !form.enabled"
+              :error-messages="attributeErrors(field)"
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12" md="4" lg="4" class="d-flex flex-column">
+            <v-switch
+              v-model="form.fields[field].valueTransformEnabled"
+              color="primary"
+              inset
+              hide-details
+              label="Regex transform"
+              :disabled="disabled || !form.enabled"
+              @update:model-value="(value: boolean) => onToggleTransform(field, value)"
+            />
+            <v-messages
+              v-if="transformBaseErrors(field).length"
+              :value="transformBaseErrors(field)"
+              class="text-error mt-n2"
+            />
+            <div
+              v-if="form.fields[field].legacyValueTemplate"
+              class="text-caption text-medium-emphasis mt-2"
+            >
+              Legacy template:&nbsp;<code>{{ form.fields[field].legacyValueTemplate }}</code>
+            </div>
+            <v-alert
+              v-if="form.fields[field].valueTransformWarnings.length"
+              type="warning"
+              variant="tonal"
+              density="comfortable"
+              border="start"
+              border-color="warning"
+              class="mt-2"
+            >
+              <ul class="ps-4 mb-0 text-body-2">
+                <li v-for="message in form.fields[field].valueTransformWarnings" :key="message">
+                  {{ message }}
+                </li>
+              </ul>
+            </v-alert>
+          </v-col>
+        </v-row>
+        <v-expand-transition>
+          <div v-if="form.fields[field].valueTransformEnabled" class="mt-2">
+            <v-row dense>
+              <v-col cols="12" md="6" lg="6">
+                <v-text-field
+                  v-model="form.fields[field].valueTransformPattern"
+                  :label="`${fieldLabels[field]} pattern`"
+                  :disabled="disabled || !form.enabled"
+                  :error-messages="transformPatternErrors(field)"
+                  hide-details="auto"
+                  hint="Regular expression evaluated after extraction."
+                  persistent-hint
+                />
+              </v-col>
+              <v-col cols="12" md="2" lg="2">
+                <v-text-field
+                  v-model="form.fields[field].valueTransformFlags"
+                  label="Flags"
+                  :disabled="disabled || !form.enabled"
+                  :error-messages="transformFlagsErrors(field)"
+                  hide-details="auto"
+                  hint="Regex flags (e.g., i, g)."
+                  persistent-hint
+                />
+              </v-col>
+              <v-col cols="12" md="4" lg="4">
+                <v-text-field
+                  v-model="form.fields[field].valueTransformReplacement"
+                  label="Replacement"
+                  :disabled="disabled || !form.enabled"
+                  :error-messages="transformReplacementErrors(field)"
+                  hide-details="auto"
+                  hint="Replacement string (defaults to $1 when left blank)."
+                  persistent-hint
+                  placeholder="$1"
+                />
+              </v-col>
+            </v-row>
+          </div>
+        </v-expand-transition>
+        <v-divider v-if="field !== 'timestamp'" class="my-4" />
+      </template>
     </div>
 
     <v-divider />

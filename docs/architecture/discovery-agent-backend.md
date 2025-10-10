@@ -140,9 +140,9 @@ No new databases or queues are required. For now we reuse Postgres as the durabl
 
 ## Web List Configuration Contract
 - **Schema location**: `packages/shared/src/discovery/config.ts` defines the canonical Zod schemas consumed by both the Nitro API and ingestion jobs. The block lives inside `discovery_sources.config_json` under the `webList` key.
-- **Required selectors**: `list_container_selector` and `item_selector` are required whenever the block is present. Field mappings (`fields.title`, `fields.url`, `fields.excerpt`, `fields.timestamp`) accept either a raw selector string or `{ selector, attribute?, valueTemplate? }`. Pagination metadata (`pagination.next_page`, `max_depth`) remains part of the schema for forward compatibility but is ignored by the current ingestion runtime.
+- **Required selectors**: `list_container_selector` and `item_selector` are required whenever the block is present. Field mappings (`fields.title`, `fields.url`, `fields.excerpt`, `fields.timestamp`) accept either a raw selector string or an object `{ selector, attribute?, valueTransform?, legacyValueTemplate?, valueTransformWarnings? }`. Pagination metadata (`pagination.next_page`, `max_depth`) remains part of the schema for forward compatibility but is ignored by the current ingestion runtime.
 - **Serialization**: helpers expose `parseDiscoverySourceConfig`/`serializeDiscoverySourceConfig` so Nitro handlers can validate payloads, normalize casing, and persist camelCase-friendly data while the database retains snake_case keys.
-- **Telemetry**: ingestion runs now record `webListConfigured`, `webListApplied`, and `listItemCount` inside `discovery_ingest_runs.metrics_json`, ensuring SSE events report whether list rules were applied.
+- **Telemetry**: ingestion runs now record `webListConfigured`, `webListApplied`, `listItemCount`, `valueTransformApplied`, and `valueTransformMisses` inside `discovery_ingest_runs.metrics_json`, ensuring SSE events report whether list rules and regex transforms were applied.
 - **Sample**: `docs/architecture/discovery_agent_backend/samples/web-list-config.json` shows a configuration that includes pagination hints for future use; the current runtime ignores those fields while still accepting them in stored configs.
 
 ## Security & Compliance

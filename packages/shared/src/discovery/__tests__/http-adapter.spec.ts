@@ -54,7 +54,13 @@ describe('fetchHttpSource web list extraction', () => {
             listContainerSelector: '.feed',
             itemSelector: '.entry',
             fields: {
-              title: { selector: '.title' },
+              title: {
+                selector: '.title',
+                valueTransform: {
+                  pattern: '^(.*?)\\s•.*$',
+                  replacement: '$1',
+                },
+              },
               excerpt: { selector: '.summary' },
               url: { selector: '.title', attribute: 'href' },
               timestamp: { selector: '.time', attribute: 'data-published' },
@@ -72,7 +78,7 @@ describe('fetchHttpSource web list extraction', () => {
     expect(result.items).toHaveLength(3)
 
     const [first, second, third] = result.items
-    expect(first.normalized.title).toBe('First Post • Launch Plan')
+    expect(first.normalized.title).toBe('First Post')
     expect(first.normalized.url).toBe('https://example.com/post-1')
     expect(first.normalized.publishedAt).toBe('2025-03-01T08:00:00.000Z')
 
@@ -89,10 +95,17 @@ describe('fetchHttpSource web list extraction', () => {
       webListApplied: true,
       listItemCount: 3,
       itemCount: 3,
+      valueTransformApplied: 1,
+      valueTransformMisses: 2,
     })
     const thirdRaw = third.rawPayload as Record<string, unknown>
     expect(Array.isArray(thirdRaw.fields)).toBe(false)
     expect(thirdRaw.fields).toEqual(expect.objectContaining({ url: '/post-3' }))
+    expect(thirdRaw.valueTransformStates).toEqual({ title: 'missed' })
+    const firstRaw = first.rawPayload as Record<string, unknown>
+    expect(firstRaw.valueTransformStates).toEqual({ title: 'applied' })
+    const secondRaw = second.rawPayload as Record<string, unknown>
+    expect(secondRaw.valueTransformStates).toEqual({ title: 'missed' })
   })
 
   it('falls back to anchor text and body when specific field mappings are absent', async () => {
@@ -144,6 +157,8 @@ describe('fetchHttpSource web list extraction', () => {
       webListConfigured: true,
       webListApplied: true,
       listItemCount: 1,
+      valueTransformApplied: 0,
+      valueTransformMisses: 0,
     })
   })
 
@@ -176,6 +191,8 @@ describe('fetchHttpSource web list extraction', () => {
       webListConfigured: true,
       webListApplied: false,
       listItemCount: 0,
+      valueTransformApplied: 0,
+      valueTransformMisses: 0,
     })
     expect(Array.isArray(metadata.webListIssues)).toBe(true)
   })
