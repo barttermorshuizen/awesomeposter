@@ -9,7 +9,7 @@ Key design docs live under `docs/` (start with `docs/orchestrator_requirements.m
 - **Nitro API (`server/`)** – REST endpoints for clients, briefs, assets, task inbox, HITL run management, Mailgun webhook ingestion, and agent workflow triggers. Running at port `3001` in dev.
 - **Agents server (`packages/agents-server/`)** – Nitro runtime that exposes Server-Sent Event (SSE) streaming endpoints for create-post orchestration (plan → draft → critique → revise), handles operator pauses/resumes, and stores telemetry.
 - **Database package (`packages/db/`)** – Drizzle ORM schema + migrations targeting Neon Postgres. Re-exported helper functions (`getDb`, `getPool`) are consumed by both Nitro servers.
-- **Shared package (`packages/shared/`)** – Zod schemas, DTOs, feature flag helpers, and typed responses shared across UI, API, and orchestrator.
+- **Shared package (`packages/shared/`)** – Zod schemas, DTOs, feature flag helpers, and typed responses shared across UI, API, and orchestrator. Flex contracts now live in `@awesomeposter/shared/flex` so planners, agents, and the SPA import the same TaskEnvelope/NodeContract definitions.
 - **Operational tooling (`scripts/`)** – Feature flag CLI, IMAP email poller, Gmail OAuth helper, and other one-off utilities referenced in `imap-polling-readme.md`.
 
 ## Current Status

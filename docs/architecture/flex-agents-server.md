@@ -38,6 +38,7 @@ The flex server keeps the familiar Nitro deployment but swaps the orchestration 
 ```
 
 ## 5. Core Concepts
+All canonical types and Zod validators for the concepts below are exported from `@awesomeposter/shared/flex` (source: `packages/shared/src/flex/types.ts`). Planner, agents, and UI code should import from that module to stay in sync.
 ### 5.1 TaskEnvelope
 Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
 

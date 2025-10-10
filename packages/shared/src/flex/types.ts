@@ -1,15 +1,38 @@
 import { z } from 'zod'
 
-// Generic JSON schema placeholder (accept any valid JSON object)
+/**
+ * Canonical flex Orchestrator contracts shared between the planner,
+ * participating agents, and UI surfaces. Each schema is paired with a
+ * TypeScript type via `z.infer` so downstream packages can leverage
+ * the same runtime validation and static typing.
+ */
+
+/**
+ * Generic JSON Schema placeholder (accept any valid JSON object) used when
+ * callers supply arbitrary structured output expectations.
+ */
 export const JsonSchemaShapeSchema = z.object({}).passthrough()
 export type JsonSchemaShape = z.infer<typeof JsonSchemaShapeSchema>
 
 const JsonSchemaContractCore = z.object({
+  /**
+   * JSON Schema definition describing the expected output payload.
+   */
   schema: JsonSchemaShapeSchema,
-  hints: z.record(z.any()).optional()
+  /**
+   * Optional planner / validator hints such as `{ coerceDates: true }`.
+   */
+  hints: z.record(z.unknown()).optional(),
+  /**
+   * Example payload satisfying the schema. Enables previews in tooling.
+   */
+  example: z.unknown().optional()
 })
 
-const JsonSchemaContractSchema = z.union([
+/**
+ * Structured mode for output contracts that rely on JSON Schema validation.
+ */
+export const JsonSchemaContractSchema = z.union([
   z.object({
     mode: z.literal('json_schema')
   }).merge(JsonSchemaContractCore),
@@ -20,6 +43,9 @@ const JsonSchemaContractSchema = z.union([
 ])
 export type JsonSchemaContract = z.infer<typeof JsonSchemaContractSchema>
 
+/**
+ * Freeform instructions for agents when a strict schema is unnecessary.
+ */
 export const FreeformContractSchema = z.object({
   mode: z.literal('freeform'),
   instructions: z.string().min(1),
@@ -28,9 +54,21 @@ export const FreeformContractSchema = z.object({
 })
 export type FreeformContract = z.infer<typeof FreeformContractSchema>
 
+/**
+ * Union of supported output contract strategies.
+ */
 export const OutputContractSchema = z.union([JsonSchemaContractSchema, FreeformContractSchema])
 export type OutputContract = z.infer<typeof OutputContractSchema>
 
+/**
+ * Shared loose record schema used for envelope metadata and agent artifacts.
+ */
+export const LooseRecordSchema = z.record(z.unknown())
+export type LooseRecord = z.infer<typeof LooseRecordSchema>
+
+/**
+ * Contract describing expectations attached to a specific plan node.
+ */
 export const NodeContractSchema = z.object({
   contractId: z.string().optional(),
   description: z.string().optional(),
@@ -41,6 +79,9 @@ export const NodeContractSchema = z.object({
 })
 export type NodeContract = z.infer<typeof NodeContractSchema>
 
+/**
+ * Metadata accompanying a task envelope, typically used for analytics.
+ */
 export const TaskMetadataSchema = z.object({
   clientId: z.string().optional(),
   brandId: z.string().optional(),
@@ -48,9 +89,11 @@ export const TaskMetadataSchema = z.object({
   correlationId: z.string().optional(),
   runLabel: z.string().optional()
 })
+export type TaskMetadata = z.infer<typeof TaskMetadataSchema>
 
-const LooseRecordSchema = z.record(z.any())
-
+/**
+ * Canonical wrapper for planner requests including objectives and policies.
+ */
 export const TaskEnvelopeSchema = z.object({
   objective: z.string().min(1),
   inputs: LooseRecordSchema.optional(),
@@ -62,6 +105,9 @@ export const TaskEnvelopeSchema = z.object({
 })
 export type TaskEnvelope = z.infer<typeof TaskEnvelopeSchema>
 
+/**
+ * Data bundle passed to agents for a specific node execution.
+ */
 export const ContextBundleSchema = z.object({
   runId: z.string(),
   nodeId: z.string(),
@@ -84,6 +130,9 @@ export const ContextBundleSchema = z.object({
 })
 export type ContextBundle = z.infer<typeof ContextBundleSchema>
 
+/**
+ * Core set of event types emitted by the flex orchestrator over SSE.
+ */
 export const FlexEventTypeSchema = z.enum([
   'start',
   'plan_generated',
@@ -100,11 +149,14 @@ export const FlexEventTypeSchema = z.enum([
 ])
 export type FlexEventType = z.infer<typeof FlexEventTypeSchema>
 
+/**
+ * Unified event payload used by the UI and agents server telemetry feeds.
+ */
 export const FlexEventSchema = z.object({
   type: FlexEventTypeSchema,
   id: z.string().optional(),
   timestamp: z.string(),
-  payload: z.any().optional(),
+  payload: z.unknown().optional(),
   correlationId: z.string().optional(),
   nodeId: z.string().optional(),
   runId: z.string().optional(),
@@ -137,6 +189,9 @@ const HeartbeatSchema = z
   })
   .optional()
 
+/**
+ * Payload agents submit during registration to advertise their capabilities.
+ */
 export const CapabilityRegistrationSchema = z.object({
   capabilityId: z.string().min(1),
   version: z.string().min(1),
@@ -151,6 +206,9 @@ export const CapabilityRegistrationSchema = z.object({
 })
 export type CapabilityRegistration = z.infer<typeof CapabilityRegistrationSchema>
 
+/**
+ * Persisted capability entry augmented by orchestrator health tracking.
+ */
 export const CapabilityRecordSchema = CapabilityRegistrationSchema.extend({
   status: z.enum(['active', 'inactive']).default('active'),
   lastSeenAt: z.string().optional(),
