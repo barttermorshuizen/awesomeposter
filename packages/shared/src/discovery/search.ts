@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { discoveryBriefReferenceSchema } from './item.js'
 
 const ALLOWED_PAGE_SIZES = [25, 50, 100] as const
 
@@ -89,6 +90,7 @@ export const discoverySearchItemSchema = z.object({
   title: z.string(),
   url: z.string().url(),
   status: discoverySearchStatusSchema,
+  briefRef: discoveryBriefReferenceSchema.nullable().optional(),
   score: z.number().min(0).max(1).nullable(),
   sourceId: z.string().uuid(),
   fetchedAt: z.string().datetime(),

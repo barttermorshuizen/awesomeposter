@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import { discoverySourceTypeSchema, discoveryIngestionFailureReasonSchema } from './discovery.js'
+import {
+  discoveryBriefReferenceSchema,
+  discoveryItemHistoryEntrySchema,
+} from './discovery/item.js'
 
 export const discoverySourceSchema = z.object({
   id: z.string().uuid(),
@@ -297,6 +301,24 @@ export const discoverySearchCompletedEventSchema = z.object({
 
 export type DiscoverySearchCompletedEvent = z.infer<typeof discoverySearchCompletedEventSchema>
 
+export const discoveryBriefPromotedEventSchema = z.object({
+  type: z.literal('brief.promoted'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    clientId: z.string().uuid(),
+    itemId: z.string().uuid(),
+    briefId: z.string().uuid(),
+    promotedAt: z.string(),
+    actorId: z.string().uuid(),
+    actorName: z.string(),
+    note: z.string(),
+    statusHistory: z.array(discoveryItemHistoryEntrySchema),
+    briefRef: discoveryBriefReferenceSchema,
+  }),
+})
+
+export type DiscoveryBriefPromotedEvent = z.infer<typeof discoveryBriefPromotedEventSchema>
+
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
   discoverySourceUpdatedEventSchema,
@@ -310,6 +332,7 @@ export const discoveryEventEnvelopeSchema = z.union([
   discoveryScoringFailedEventSchema,
   discoverySearchRequestedEventSchema,
   discoverySearchCompletedEventSchema,
+  discoveryBriefPromotedEventSchema,
 ])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>
@@ -370,6 +393,15 @@ const discoveryScoringFailedTelemetrySchema = z.object({
   payload: discoveryScoringFailedEventSchema.shape.payload,
 })
 
+const discoveryBriefPromotedTelemetrySchema = z.object({
+  schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+  eventType: z.literal('brief.promoted'),
+  clientId: z.string().uuid(),
+  entityId: z.string().uuid(),
+  timestamp: z.string(),
+  payload: discoveryBriefPromotedEventSchema.shape.payload,
+})
+
 export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoverySourceCreatedTelemetrySchema,
   discoverySourceUpdatedTelemetrySchema,
@@ -377,6 +409,7 @@ export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoveryScoreCompleteTelemetrySchema,
   discoveryQueueUpdatedTelemetrySchema,
   discoveryScoringFailedTelemetrySchema,
+  discoveryBriefPromotedTelemetrySchema,
   z.object({
     schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
     eventType: z.literal('ingestion.started'),

@@ -1,4 +1,4 @@
-import { getDb, briefs, assets, eq } from '@awesomeposter/db'
+import { getDb, briefs, assets, discoveryItems, eq } from '@awesomeposter/db'
 import { deleteBriefAssets } from '../../../utils/storage'
 
 export default defineEventHandler(async (event) => {
@@ -21,6 +21,12 @@ export default defineEventHandler(async (event) => {
   
   // Delete the brief itself (this will cascade to brief_versions and other related tables)
   await db.delete(briefs).where(eq(briefs.id, briefId))
+
+  // Unlink discovery items that pointed to this brief
+  await db
+    .update(discoveryItems)
+    .set({ briefId: null })
+    .where(eq(discoveryItems.briefId, briefId))
   
   // Clean up R2 storage
   try {

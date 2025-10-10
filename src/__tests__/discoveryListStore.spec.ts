@@ -3,17 +3,28 @@ import { setActivePinia, createPinia } from 'pinia'
 import type { Router, RouteLocationNormalizedLoaded } from 'vue-router'
 import { useDiscoveryListStore, DISCOVERY_MIN_SEARCH_LENGTH } from '@/stores/discoveryList'
 import { searchDiscoveryItems } from '@/services/discovery/search'
+import { fetchDiscoveryItemDetail, promoteDiscoveryItem } from '@/services/discovery/items'
+import type { DiscoveryTelemetryEvent } from '@awesomeposter/shared'
 
 vi.mock('@/services/discovery/search', () => ({
   searchDiscoveryItems: vi.fn(),
 }))
 
+vi.mock('@/services/discovery/items', () => ({
+  fetchDiscoveryItemDetail: vi.fn(),
+  promoteDiscoveryItem: vi.fn(),
+}))
+
 const searchDiscoveryItemsMock = vi.mocked(searchDiscoveryItems)
+const fetchDiscoveryItemDetailMock = vi.mocked(fetchDiscoveryItemDetail)
+const promoteDiscoveryItemMock = vi.mocked(promoteDiscoveryItem)
 
 describe('useDiscoveryListStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     searchDiscoveryItemsMock.mockReset()
+    fetchDiscoveryItemDetailMock.mockReset()
+    promoteDiscoveryItemMock.mockReset()
   })
 
   afterEach(() => {
@@ -189,14 +200,28 @@ describe('useDiscoveryListStore', () => {
       latencyMs: 0,
     })
 
-    const event = {
+    const completedAt = new Date().toISOString()
+    const event: DiscoveryTelemetryEvent = {
+      schemaVersion: 1,
       eventType: 'discovery.search.completed',
       clientId: 'client-99',
+      entityId: 'req-99',
+      timestamp: completedAt,
       payload: {
-        degraded: true,
-        degradeReason: 'latency' as const,
+        requestId: 'req-99',
+        clientId: 'client-99',
         latencyMs: 420,
         total: 500,
+        returned: 0,
+        page: 1,
+        pageSize: 25,
+        statuses: ['spotted'],
+        sourceCount: 0,
+        topicCount: 0,
+        searchTermLength: 0,
+        degraded: true,
+        degradeReason: 'latency',
+        completedAt,
       },
     }
 
@@ -208,6 +233,246 @@ describe('useDiscoveryListStore', () => {
 
     vi.runOnlyPendingTimers()
     vi.useRealTimers()
+  })
+
+  it('loads selected item detail via service and updates state', async () => {
+    const store = useDiscoveryListStore()
+    const iso = new Date().toISOString()
+    store.items = [
+      {
+        id: 'item-1',
+        title: 'Example',
+        url: 'https://example.com',
+        status: 'spotted',
+        score: 0.9,
+        sourceId: 'source-1',
+        fetchedAt: iso,
+        publishedAt: null,
+        ingestedAt: iso,
+        summary: 'Summary',
+        topics: ['topic'],
+        highlights: [],
+        briefRef: undefined,
+      },
+    ]
+
+    const detail = {
+      id: 'item-1',
+      clientId: 'client-1',
+      title: 'Example',
+      url: 'https://example.com',
+      status: 'scored' as const,
+      fetchedAt: iso,
+      publishedAt: null,
+      ingestedAt: iso,
+      source: {
+        id: 'source-1',
+        name: 'Feed',
+        type: 'rss' as const,
+        url: 'https://feed.example.com',
+      },
+      summary: 'Summary',
+      body: 'Body',
+      topics: ['topic'],
+      score: {
+        total: 0.8,
+        keyword: 0.5,
+        recency: 0.2,
+        source: 0.1,
+        appliedThreshold: 0.6,
+      },
+      statusHistory: [],
+      duplicateRefs: [],
+      briefRef: null,
+    }
+
+    fetchDiscoveryItemDetailMock.mockResolvedValue(detail)
+
+    await store.openItemDetail('item-1')
+
+    expect(fetchDiscoveryItemDetailMock).toHaveBeenCalledWith('item-1')
+    expect(store.selectedItemId).toBe('item-1')
+    expect(store.selectedItemDetail).toEqual(detail)
+    expect(store.items[0]?.status).toBe('spotted')
+  })
+
+  it('promotes selected item and updates list and detail state', async () => {
+    const store = useDiscoveryListStore()
+    const iso = new Date().toISOString()
+    store.items = [
+      {
+        id: 'item-2',
+        title: 'Another item',
+        url: 'https://example.com/2',
+        status: 'spotted',
+        score: 0.7,
+        sourceId: 'source-2',
+        fetchedAt: iso,
+        publishedAt: null,
+        ingestedAt: iso,
+        summary: null,
+        topics: [],
+        highlights: [],
+        briefRef: undefined,
+      },
+    ]
+
+    const baseDetail = {
+      id: 'item-2',
+      clientId: 'client-2',
+      title: 'Another item',
+      url: 'https://example.com/2',
+      status: 'scored' as const,
+      fetchedAt: iso,
+      publishedAt: null,
+      ingestedAt: iso,
+      source: {
+        id: 'source-2',
+        name: 'Feed',
+        type: 'rss' as const,
+        url: 'https://feed.example.com/2',
+      },
+      summary: null,
+      body: null,
+      topics: [],
+      score: {
+        total: 0.6,
+        keyword: 0.4,
+        recency: 0.1,
+        source: 0.1,
+        appliedThreshold: 0.5,
+      },
+      statusHistory: [],
+      duplicateRefs: [],
+      briefRef: null,
+    }
+
+    store.selectedItemId = 'item-2'
+    store.selectedItemDetail = baseDetail
+
+    const promotedDetail = {
+      ...baseDetail,
+      status: 'promoted' as const,
+      statusHistory: [
+        {
+          id: 'history-1',
+          itemId: 'item-2',
+          previousStatus: 'scored' as const,
+          nextStatus: 'promoted' as const,
+          note: 'Looks great',
+          actorId: 'user-1',
+          actorName: 'Reviewer',
+          occurredAt: iso,
+        },
+      ],
+      briefRef: {
+        briefId: 'brief-2',
+        editUrl: '/briefs/brief-2/edit',
+      },
+    }
+
+    promoteDiscoveryItemMock.mockResolvedValue(promotedDetail)
+
+    const result = await store.promoteSelectedItem('Looks great')
+
+    expect(promoteDiscoveryItemMock).toHaveBeenCalledWith('item-2', 'Looks great')
+    expect(result).toEqual(promotedDetail)
+    expect(store.selectedItemDetail).toEqual(promotedDetail)
+    expect(store.items[0]?.briefRef).toEqual(promotedDetail.briefRef)
+    expect(store.items[0]?.status).toBe('promoted')
+  })
+
+  it('updates state from brief.promoted telemetry events', () => {
+    const store = useDiscoveryListStore()
+    store.setClientId('client-telemetry')
+    const iso = new Date().toISOString()
+    store.items = [
+      {
+        id: 'item-telemetry',
+        title: 'Telemetry',
+        url: 'https://example.com/t',
+        status: 'spotted',
+        score: 0.5,
+        sourceId: 'source-telemetry',
+        fetchedAt: iso,
+        publishedAt: null,
+        ingestedAt: iso,
+        summary: null,
+        topics: [],
+        highlights: [],
+        briefRef: undefined,
+      },
+    ]
+    store.selectedItemId = 'item-telemetry'
+    store.selectedItemDetail = {
+      id: 'item-telemetry',
+      clientId: 'client-telemetry',
+      title: 'Telemetry',
+      url: 'https://example.com/t',
+      status: 'scored',
+      fetchedAt: iso,
+      publishedAt: null,
+      ingestedAt: iso,
+      source: {
+        id: 'source-telemetry',
+        name: 'Feed',
+        type: 'rss',
+        url: 'https://feed.example.com/t',
+      },
+      summary: null,
+      body: null,
+      topics: [],
+      score: {
+        total: 0.5,
+        keyword: 0.3,
+        recency: 0.1,
+        source: 0.1,
+        appliedThreshold: 0.4,
+      },
+      statusHistory: [],
+      duplicateRefs: [],
+      briefRef: null,
+    }
+
+    const briefEvent: DiscoveryTelemetryEvent = {
+      schemaVersion: 1,
+      eventType: 'brief.promoted',
+      clientId: 'client-telemetry',
+      entityId: 'brief-telemetry',
+      timestamp: iso,
+      payload: {
+        clientId: 'client-telemetry',
+        itemId: 'item-telemetry',
+        briefId: 'brief-telemetry',
+        promotedAt: iso,
+        actorId: 'user-2',
+        actorName: 'Auto Reviewer',
+        note: 'synced',
+        statusHistory: [
+          {
+            id: 'history-telemetry',
+            itemId: 'item-telemetry',
+            previousStatus: 'scored',
+            nextStatus: 'promoted',
+            note: 'synced',
+            actorId: 'user-2',
+            actorName: 'Auto Reviewer',
+            occurredAt: iso,
+          },
+        ],
+        briefRef: {
+          briefId: 'brief-telemetry',
+          editUrl: '/briefs/brief-telemetry/edit',
+        },
+      },
+    }
+
+    store.handleTelemetryEvent(briefEvent)
+
+    expect(store.items[0]?.status).toBe('promoted')
+    expect(store.items[0]?.briefRef).toEqual({ briefId: 'brief-telemetry', editUrl: '/briefs/brief-telemetry/edit' })
+    expect(store.selectedItemDetail?.status).toBe('promoted')
+    expect(store.selectedItemDetail?.statusHistory).toHaveLength(1)
   })
 
   it('loads filter metadata from client endpoints', async () => {

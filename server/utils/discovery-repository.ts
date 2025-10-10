@@ -6,7 +6,11 @@ import {
   discoveryIngestRuns,
   discoveryItems,
   discoveryScores,
+  briefs,
   fetchDiscoveryItemsByIds,
+  fetchDiscoveryItemDetailRow,
+  fetchDiscoveryItemHistory,
+  insertDiscoveryItemHistory,
   persistDiscoveryItems,
   resetDiscoveryItemsToPending as resetDiscoveryItemsToPendingDb,
   upsertDiscoveryScore,
@@ -14,6 +18,7 @@ import {
   type PersistDiscoveryItemInput,
   type PersistDiscoveryItemsResult,
   type DiscoveryItemStatus,
+  type DiscoveryItemDetailRow,
 } from '@awesomeposter/db'
 import { and, desc, ne, or, lte, isNull, inArray, gte, sql, type SQL } from 'drizzle-orm'
 import type { InferModel } from 'drizzle-orm'
@@ -40,6 +45,11 @@ import {
   type DiscoverySourceWebListConfig,
   type DiscoveryWebListPreviewResult,
   executeIngestionAdapter,
+  discoveryPromoteItemInputSchema,
+  type DiscoveryPromoteItemInput,
+  type DiscoveryItemDetail,
+  discoveryItemDetailSchema,
+  type DiscoveryBriefReference,
 } from '@awesomeposter/shared'
 import type { SourceHealthStatus } from './discovery-health'
 import { emitDiscoveryEvent } from './discovery-events'
@@ -201,6 +211,20 @@ export class DiscoverySourcePreviewError extends Error {
   }
 }
 
+export class DiscoveryItemNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoveryItemNotFoundError'
+  }
+}
+
+export class DiscoveryItemAlreadyPromotedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoveryItemAlreadyPromotedError'
+  }
+}
+
 const deleteInputSchema = z.object({
   clientId: z.string().uuid(),
   sourceId: z.string().uuid(),
@@ -236,7 +260,7 @@ const DB_TO_DASHBOARD_STATUS: Record<DiscoveryItemStatus, DiscoverySearchStatus>
   pending_scoring: 'pending',
   scored: 'spotted',
   suppressed: 'suppressed',
-  promoted: 'approved',
+  promoted: 'promoted',
   archived: 'archived',
 }
 
@@ -329,6 +353,33 @@ function summarize(text: string | null | undefined, maxLength = 320): string | n
     return normalized
   }
   return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
+
+function parseDecimal(value: string | null): number | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function buildBriefReference(briefId: string): DiscoveryBriefReference {
+  return {
+    briefId,
+    editUrl: `/briefs/${briefId}/edit`,
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value)
+}
+
+function ensureUuid(value: string | null | undefined): string {
+  if (typeof value !== 'string') {
+    return randomUUID()
+  }
+  const trimmed = value.trim()
+  return isUuid(trimmed) ? trimmed : randomUUID()
 }
 
 const KEYWORD_LIMIT = 20
@@ -678,6 +729,7 @@ type DiscoverySearchRow = {
   ingestedAt: Date
   normalized: Record<string, unknown>
   metadata: Record<string, unknown> | null
+  briefId: string | null
   score: string | null
   titleHeadline?: string | null
   excerptHeadline?: string | null
@@ -752,6 +804,7 @@ export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Pro
     normalized: discoveryItems.normalizedJson,
     metadata: discoveryScores.metadataJson,
     score: discoveryScores.score,
+    briefId: discoveryItems.briefId,
   }
 
   const orderings: SQL[] = []
@@ -801,6 +854,9 @@ export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Pro
     const metadataTopics = readStringArray(metadata, 'topics')
     const normalizedTopics = readStringArray(normalized, 'topics')
     const topics = metadataTopics.length ? metadataTopics : normalizedTopics
+    const briefRef = typeof typedRow.briefId === 'string' && typedRow.briefId.length > 0
+      ? buildBriefReference(typedRow.briefId)
+      : null
 
     const highlights: DiscoverySearchHighlight[] = []
     const titleHighlight = buildHighlight('title', typedRow.titleHeadline)
@@ -834,6 +890,7 @@ export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Pro
       summary,
       topics,
       highlights,
+      briefRef: briefRef ?? undefined,
     }
   })
 
@@ -841,6 +898,222 @@ export async function searchDiscoveryItems(filters: DiscoverySearchFilters): Pro
     items,
     total: Number(count ?? 0),
   }
+}
+
+function extractDiscoverySummary(record: Record<string, unknown> | null | undefined): string | null {
+  const excerpt = readStringField(record, 'excerpt')
+  if (excerpt) return summarize(excerpt, 480)
+  const summary = readStringField(record, 'summary')
+  if (summary) return summarize(summary, 480)
+  const body = readStringField(record, 'extractedBody')
+  return body ? summarize(body, 480) : null
+}
+
+function extractTopics(primary: Record<string, unknown> | null | undefined, fallback: Record<string, unknown> | null | undefined): string[] {
+  const primaryTopics = readStringArray(primary, 'topics')
+  if (primaryTopics.length) {
+    return primaryTopics
+  }
+  return readStringArray(fallback, 'topics')
+}
+
+function resolveSourceName(row: DiscoveryItemDetailRow): string | null {
+  const metadata = row.sourceMetadata ?? {}
+  const nameFromMetadata = readStringField(metadata, 'name') ?? readStringField(metadata, 'title')
+  if (nameFromMetadata) {
+    return nameFromMetadata
+  }
+  if (typeof row.sourceIdentifier === 'string' && row.sourceIdentifier.trim().length > 0) {
+    return row.sourceIdentifier.trim()
+  }
+  return null
+}
+
+function resolveSourceUrl(row: DiscoveryItemDetailRow): string | null {
+  const metadata = row.sourceMetadata ?? {}
+  const urlFromMetadata = readStringField(metadata, 'url')
+  if (urlFromMetadata) {
+    return urlFromMetadata
+  }
+  return typeof row.sourceUrl === 'string' && row.sourceUrl.length > 0 ? row.sourceUrl : null
+}
+
+function toDiscoveryItemDetail(row: DiscoveryItemDetailRow, history: Awaited<ReturnType<typeof fetchDiscoveryItemHistory>>): DiscoveryItemDetail {
+  const normalized = row.normalized ?? {}
+  const metadata = row.metadata ?? {}
+  const summary = extractDiscoverySummary(metadata) ?? extractDiscoverySummary(normalized)
+  const body = readStringField(normalized, 'extractedBody')
+  const topics = extractTopics(metadata, normalized)
+
+  const fetchedAt = row.fetchedAt ?? new Date(0)
+  const ingestedAt = row.ingestedAt ?? new Date(0)
+
+  const detail: DiscoveryItemDetail = {
+    id: row.id,
+    clientId: row.clientId,
+    title: row.title,
+    url: row.url,
+    status: row.status,
+    fetchedAt: fetchedAt.toISOString(),
+    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    ingestedAt: ingestedAt.toISOString(),
+    source: {
+      id: row.sourceId,
+      name: resolveSourceName(row),
+      type: (row.sourceType ?? 'web-page') as 'rss' | 'youtube-channel' | 'youtube-playlist' | 'web-page',
+      url: resolveSourceUrl(row),
+    },
+    summary,
+    body,
+    topics,
+    score: {
+      total: parseDecimal(row.score),
+      keyword: parseDecimal(row.keywordScore),
+      recency: parseDecimal(row.recencyScore),
+      source: parseDecimal(row.sourceScore),
+      appliedThreshold: parseDecimal(row.appliedThreshold),
+    },
+    statusHistory: history.map((entry) => ({
+      id: entry.id,
+      itemId: entry.itemId,
+      previousStatus: entry.previousStatus ?? null,
+      nextStatus: entry.nextStatus,
+      note: entry.note,
+      actorId: entry.actorId,
+      actorName: entry.actorName,
+      occurredAt: entry.createdAt instanceof Date ? entry.createdAt.toISOString() : new Date(entry.createdAt).toISOString(),
+    })),
+    duplicateRefs: [],
+    briefRef: row.briefId ? buildBriefReference(row.briefId) : null,
+  }
+
+  return discoveryItemDetailSchema.parse(detail)
+}
+
+export async function getDiscoveryItemDetail(itemId: string): Promise<DiscoveryItemDetail | null> {
+  const row = await fetchDiscoveryItemDetailRow(itemId)
+  if (!row) {
+    return null
+  }
+  const history = await fetchDiscoveryItemHistory(itemId)
+  return toDiscoveryItemDetail(row, history)
+}
+
+export type PromoteDiscoveryItemOptions = DiscoveryPromoteItemInput & {
+  itemId: string
+  actorId: string
+  actorName: string
+}
+
+export async function promoteDiscoveryItem(options: PromoteDiscoveryItemOptions): Promise<DiscoveryItemDetail> {
+  const { note: rawNote } = discoveryPromoteItemInputSchema.parse({ note: options.note })
+  const actorName = options.actorName.trim() || 'Unknown reviewer'
+  const actorId = ensureUuid(options.actorId)
+  const db = getDb()
+  let promotedAt = new Date()
+  let briefId: string | null = null
+
+  await db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({
+        id: discoveryItems.id,
+        clientId: discoveryItems.clientId,
+        status: discoveryItems.status,
+        title: discoveryItems.title,
+        url: discoveryItems.url,
+        normalized: discoveryItems.normalizedJson,
+        briefId: discoveryItems.briefId,
+      })
+      .from(discoveryItems)
+      .where(eq(discoveryItems.id, options.itemId))
+      .limit(1)
+
+    if (!item) {
+      throw new DiscoveryItemNotFoundError(`Discovery item ${options.itemId} was not found.`)
+    }
+
+    if (item.briefId) {
+      throw new DiscoveryItemAlreadyPromotedError(`Discovery item ${options.itemId} has already been promoted.`)
+    }
+
+    promotedAt = new Date()
+    const newBriefId = crypto.randomUUID()
+    const normalized = (item.normalized ?? {}) as Record<string, unknown>
+    const summaryLine = extractDiscoverySummary(normalized)
+    const itemUrl = typeof item.url === 'string' && item.url.trim().length > 0 ? item.url.trim() : null
+    const linkLine = itemUrl ? `Link to content: ${itemUrl}` : null
+    const noteLine = rawNote ? `Promotion note: ${rawNote}` : null
+    const descriptionParts = []
+    if (summaryLine) {
+      descriptionParts.push(summaryLine)
+    }
+    if (linkLine) {
+      descriptionParts.push(linkLine)
+    }
+    if (noteLine) {
+      descriptionParts.push(noteLine)
+    }
+    const briefDescription = descriptionParts.join('\n\n')
+    const sanitizedTitle = typeof item.title === 'string' && item.title.trim().length > 0 ? item.title.trim() : 'Discovery brief'
+
+    await tx.insert(briefs).values({
+      id: newBriefId,
+      clientId: item.clientId,
+      title: sanitizedTitle,
+      description: briefDescription,
+      status: 'approved',
+      objective: null,
+      audienceId: null,
+      deadlineAt: null,
+      createdBy: actorId,
+      updatedBy: actorId,
+      createdAt: promotedAt,
+      updatedAt: promotedAt,
+    })
+
+    await tx
+      .update(discoveryItems)
+      .set({ status: 'promoted', briefId: newBriefId })
+      .where(eq(discoveryItems.id, options.itemId))
+
+    await insertDiscoveryItemHistory(
+      {
+        itemId: options.itemId,
+        previousStatus: item.status,
+        nextStatus: 'promoted',
+        note: rawNote,
+        actorId,
+        actorName,
+        createdAt: promotedAt,
+      },
+      { tx },
+    )
+
+    briefId = newBriefId
+  })
+
+  const detail = await getDiscoveryItemDetail(options.itemId)
+  if (!detail || !detail.briefRef) {
+    throw new Error('Promotion succeeded but detail retrieval failed to provide brief reference.')
+  }
+
+  emitDiscoveryEvent({
+    type: 'brief.promoted',
+    version: 1,
+    payload: {
+      clientId: detail.clientId,
+      itemId: detail.id,
+      briefId: detail.briefRef.briefId,
+      promotedAt: promotedAt.toISOString(),
+      actorId,
+      actorName,
+      note: rawNote,
+      statusHistory: detail.statusHistory,
+      briefRef: detail.briefRef,
+    },
+  })
+
+  return detail
 }
 
 export const __discoverySearchInternals = {

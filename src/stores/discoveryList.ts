@@ -2,12 +2,15 @@ import { computed, onScopeDispose, reactive, ref } from 'vue'
 import type { LocationQueryValue, RouteLocationNormalizedLoaded, Router } from 'vue-router'
 import { defineStore } from 'pinia'
 import type {
+  DiscoveryItemDetail,
   DiscoverySearchCompletedEvent,
   DiscoverySearchItem,
   DiscoveryTelemetryEvent,
+  DiscoverySearchStatus,
 } from '@awesomeposter/shared'
 import { DISCOVERY_SEARCH_PAGE_SIZES, normalizeDiscoveryKeyword } from '@awesomeposter/shared'
 import { searchDiscoveryItems } from '@/services/discovery/search'
+import { fetchDiscoveryItemDetail, promoteDiscoveryItem } from '@/services/discovery/items'
 
 export type DiscoveryListFilters = {
   status: string[]
@@ -261,8 +264,15 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
   const filterMetaLoading = ref(false)
   const filterMetaError = ref<string | null>(null)
 
+  const selectedItemId = ref<string | null>(null)
+  const selectedItemDetail = ref<DiscoveryItemDetail | null>(null)
+  const detailLoading = ref(false)
+  const detailError = ref<string | null>(null)
+  const promotionLoading = ref(false)
+  const promotionError = ref<string | null>(null)
+
   let activeController: AbortController | null = null
-  let pollTimer: ReturnType<typeof setInterval> | null = null
+  let pollTimer: number | null = null
 
   const virtualizationEnabled = computed(() => total.value >= VIRTUALIZATION_THRESHOLD)
   const hasResults = computed(() => items.value.length > 0)
@@ -271,11 +281,13 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
   const pageSizeOptions = computed<DiscoveryPageSizeOption[]>(() =>
     DISCOVERY_SEARCH_PAGE_SIZES.map((size) => ({ value: size, label: `${size} per page` })),
   )
+  const detailVisible = computed(() => selectedItemId.value !== null)
 
   function setClientId(nextClientId: string | null) {
     if (clientId.value === nextClientId) {
       return
     }
+    closeItemDetail()
     clientId.value = nextClientId
     stopPolling()
     degradeActive.value = false
@@ -319,6 +331,40 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
     filters.dateFrom = from
     filters.dateTo = to
     datePreset.value = determineDatePreset(from, to)
+  }
+
+  function mapDetailStatusToSearch(status: DiscoveryItemDetail['status']): DiscoverySearchStatus {
+    switch (status) {
+      case 'promoted':
+        return 'promoted'
+      case 'suppressed':
+        return 'suppressed'
+      case 'archived':
+        return 'archived'
+      case 'pending_scoring':
+        return 'pending'
+      default:
+        return 'spotted'
+    }
+  }
+
+  function applyDetailToList(detail: DiscoveryItemDetail) {
+    const index = items.value.findIndex((item) => item.id === detail.id)
+    if (index === -1) {
+      return
+    }
+    const existing = items.value[index]
+    items.value[index] = {
+      ...existing,
+      status: mapDetailStatusToSearch(detail.status),
+      briefRef: detail.briefRef ?? existing.briefRef,
+      summary: detail.summary ?? existing.summary,
+      topics: detail.topics.length ? detail.topics : existing.topics,
+      fetchedAt: detail.fetchedAt,
+      publishedAt: detail.publishedAt,
+      ingestedAt: detail.ingestedAt,
+    }
+    items.value = [...items.value]
   }
 
   function setDatePreset(preset: 'last48h' | 'custom') {
@@ -449,30 +495,61 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
   }
 
   function handleTelemetryEvent(event: DiscoveryTelemetryEvent) {
-    if (event.eventType !== 'discovery.search.completed') {
+    if (event.clientId && event.clientId !== clientId.value) {
       return
     }
+
+    if (event.eventType === 'discovery.search.completed') {
+      const payload = event.payload as DiscoverySearchCompletedEvent['payload']
+      if (payload.degraded) {
+        degradeActive.value = true
+        degradeReason.value = (payload.degradeReason ?? 'other') as DiscoveryDegradeReason
+        startPolling()
+      } else {
+        degradeActive.value = false
+        degradeReason.value = null
+        if (!sseDisconnected.value) {
+          stopPolling()
+        }
+      }
+      emitSseDegraded({
+        degraded: payload.degraded,
+        reason: payload.degradeReason ?? null,
+        latencyMs: payload.latencyMs,
+        total: payload.total,
+      })
+      return
+    }
+
+    if (event.eventType === 'brief.promoted') {
+      handleBriefPromoted(event)
+    }
+  }
+
+  function handleBriefPromoted(event: Extract<DiscoveryTelemetryEvent, { eventType: 'brief.promoted' }>) {
     if (event.clientId !== clientId.value) {
       return
     }
-    const payload = event.payload as DiscoverySearchCompletedEvent['payload']
-    if (payload.degraded) {
-      degradeActive.value = true
-      degradeReason.value = (payload.degradeReason ?? 'other') as DiscoveryDegradeReason
-      startPolling()
-    } else {
-      degradeActive.value = false
-      degradeReason.value = null
-      if (!sseDisconnected.value) {
-        stopPolling()
+    const payload = event.payload
+    const index = items.value.findIndex((item) => item.id === payload.itemId)
+    if (index !== -1) {
+      const existing = items.value[index]
+      items.value[index] = {
+        ...existing,
+        status: 'promoted',
+        briefRef: payload.briefRef,
+      }
+      items.value = [...items.value]
+    }
+
+    if (selectedItemId.value === payload.itemId && selectedItemDetail.value) {
+      selectedItemDetail.value = {
+        ...selectedItemDetail.value,
+        status: 'promoted',
+        briefRef: payload.briefRef,
+        statusHistory: payload.statusHistory,
       }
     }
-    emitSseDegraded({
-      degraded: payload.degraded,
-      reason: payload.degradeReason ?? null,
-      latencyMs: payload.latencyMs,
-      total: payload.total,
-    })
   }
 
   async function fetchClientSources(client: string): Promise<DiscoverySourceOption[]> {
@@ -497,7 +574,7 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
       const label = identifier ?? url ?? 'Source'
       const sourceType = typeof item?.sourceType === 'string' ? item.sourceType : null
       const subtitle = sourceType
-        ? sourceType.replace(/[_-]/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+        ? sourceType.replace(/[_-]/g, ' ').replace(/\b\w/g, (char: string) => char.toUpperCase())
         : null
       options.push({
         value: id,
@@ -694,6 +771,65 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
     }
   }
 
+  async function openItemDetail(itemId: string) {
+    if (!itemId) {
+      return
+    }
+    selectedItemId.value = itemId
+    detailLoading.value = true
+    detailError.value = null
+    promotionError.value = null
+    try {
+      const detail = await fetchDiscoveryItemDetail(itemId)
+      selectedItemDetail.value = detail
+      applyDetailToList(detail)
+      return detail
+    } catch (error) {
+      detailError.value = error instanceof Error ? error.message : String(error)
+      selectedItemDetail.value = null
+      throw error
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
+  async function reloadSelectedItemDetail() {
+    if (!selectedItemId.value) {
+      return null
+    }
+    return openItemDetail(selectedItemId.value)
+  }
+
+  async function promoteSelectedItem(note: string) {
+    if (!selectedItemId.value) {
+      throw new Error('No discovery item selected for promotion.')
+    }
+    promotionLoading.value = true
+    promotionError.value = null
+    try {
+      const detail = await promoteDiscoveryItem(selectedItemId.value, note)
+      selectedItemDetail.value = detail
+      applyDetailToList(detail)
+      return detail
+    } catch (error) {
+      promotionError.value = error instanceof Error ? error.message : String(error)
+      throw error
+    } finally {
+      promotionLoading.value = false
+    }
+  }
+
+  function closeItemDetail() {
+    selectedItemId.value = null
+    selectedItemDetail.value = null
+    detailError.value = null
+    promotionError.value = null
+  }
+
+  function clearPromotionError() {
+    promotionError.value = null
+  }
+
   function refresh() {
     return fetchResults('manual')
   }
@@ -730,6 +866,13 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
     isEmptyState,
     hasSearchTerm,
     pageSizeOptions,
+    detailVisible,
+    selectedItemId,
+    selectedItemDetail,
+    detailLoading,
+    detailError,
+    promotionLoading,
+    promotionError,
     setClientId,
     setFilters,
     setPagination,
@@ -746,6 +889,11 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
     loadFilterMetadata,
     fetchResults,
     refresh,
+    openItemDetail,
+    reloadSelectedItemDetail,
+    promoteSelectedItem,
+    closeItemDetail,
+    clearPromotionError,
     handleTelemetryEvent,
     markSseDisconnected,
     markSseRecovered,

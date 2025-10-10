@@ -317,7 +317,7 @@ function mapApiRecordForStore(record: Record<string, any>): DiscoverySourceApiRe
     identifier: String(record.identifier),
     notes: typeof record.notes === 'string' && record.notes.length ? record.notes : null,
     configJson: record.configJson ?? null,
-    updatedAt: coerceIsoString(record.updatedAt) ?? null,
+    updatedAt: coerceIsoString(record.updatedAt) ?? undefined,
   }
 }
 

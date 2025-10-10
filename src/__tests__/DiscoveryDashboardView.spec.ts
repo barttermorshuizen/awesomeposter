@@ -39,6 +39,13 @@ function createStubStore() {
     isEmptyState: ref(false),
     pageSizeOptions: ref([25, 50, 100]),
     datePreset: ref<'last48h' | 'custom'>('last48h'),
+    detailVisible: ref(false),
+    selectedItemId: ref<string | null>(null),
+    selectedItemDetail: ref<any>(null),
+    detailLoading: ref(false),
+    detailError: ref<string | null>(null),
+    promotionLoading: ref(false),
+    promotionError: ref<string | null>(null),
     lastSearchTerm: '',
     loadFilterMetadata: loadFilterMetadataMock,
     fetchResults: fetchResultsMock,
@@ -61,6 +68,11 @@ function createStubStore() {
     markSseDisconnected: vi.fn(),
     markSseRecovered: vi.fn(),
     resetRealtimeState: vi.fn(),
+    openItemDetail: vi.fn(),
+    reloadSelectedItemDetail: vi.fn(),
+    promoteSelectedItem: vi.fn().mockResolvedValue({}),
+    closeItemDetail: vi.fn(),
+    clearPromotionError: vi.fn(),
   }
   return store
 }
@@ -116,6 +128,7 @@ const vuetifyStubs = {
   'v-empty-state': wrapperStub,
   'v-divider': wrapperStub,
   'v-pagination': modelStub,
+  DiscoveryItemDetailDrawer: wrapperStub,
   VVirtualScroll: VVirtualScrollStub,
 }
 

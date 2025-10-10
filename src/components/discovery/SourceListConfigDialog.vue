@@ -177,7 +177,7 @@ onBeforeUnmount(() => {
         </div>
         <SourceListConfigForm
           :form="listConfig.form"
-          :errors="listConfig.errors"
+          :errors="listConfig.errors.value"
           :disabled="store.dialog.saving"
           :suggestion="activeWebListState?.suggestion ?? null"
           :applied-suggestion-id="listConfig.appliedSuggestionId.value"

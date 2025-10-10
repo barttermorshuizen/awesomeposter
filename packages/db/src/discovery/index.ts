@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
-import { getDb } from '../client.js'
-import { discoveryItems, discoveryScores } from '../schema.js'
+import { getDb, type Database } from '../client.js'
+import { briefs, discoveryItemStatusHistory, discoveryItems, discoveryScores, discoverySources } from '../schema.js'
 
 export type DiscoveryItemStatus = 'pending_scoring' | 'scored' | 'suppressed' | 'promoted' | 'archived'
 
@@ -27,6 +27,8 @@ export type PersistDiscoveryItemsResult = {
 export type DiscoveryItemRecord = typeof discoveryItems.$inferSelect
 
 export type DiscoveryScoreRecord = typeof discoveryScores.$inferSelect
+
+export type DiscoveryItemStatusHistoryRecord = typeof discoveryItemStatusHistory.$inferSelect
 
 export type DiscoveryScoreStatus = 'scored' | 'suppressed'
 
@@ -246,4 +248,103 @@ export async function upsertDiscoveryScore(input: UpsertDiscoveryScoreInput) {
       .set({ status: input.status })
       .where(eq(discoveryItems.id, input.itemId))
   })
+}
+
+export type DiscoveryItemDetailRow = {
+  id: string
+  clientId: string
+  sourceId: string
+  sourceIdentifier: string | null
+  sourceType: 'rss' | 'youtube-channel' | 'youtube-playlist' | 'web-page' | null
+  sourceUrl: string | null
+  title: string
+  url: string
+  status: DiscoveryItemStatus
+  fetchedAt: Date | null
+  publishedAt: Date | null
+  ingestedAt: Date | null
+  normalized: Record<string, unknown>
+  sourceMetadata: Record<string, unknown>
+  score: string | null
+  keywordScore: string | null
+  recencyScore: string | null
+  sourceScore: string | null
+  appliedThreshold: string | null
+  metadata: Record<string, unknown> | null
+  components: Record<string, unknown> | null
+  briefId: string | null
+}
+
+export async function fetchDiscoveryItemDetailRow(itemId: string): Promise<DiscoveryItemDetailRow | null> {
+  const db = getDb()
+  const [row] = await db
+    .select({
+      id: discoveryItems.id,
+      clientId: discoveryItems.clientId,
+      sourceId: discoveryItems.sourceId,
+      sourceIdentifier: discoverySources.identifier,
+      sourceType: discoverySources.sourceType,
+      sourceUrl: discoverySources.url,
+      title: discoveryItems.title,
+      url: discoveryItems.url,
+      status: discoveryItems.status,
+      fetchedAt: discoveryItems.fetchedAt,
+      publishedAt: discoveryItems.publishedAt,
+      ingestedAt: discoveryItems.ingestedAt,
+      normalized: discoveryItems.normalizedJson,
+      sourceMetadata: discoveryItems.sourceMetadataJson,
+      score: discoveryScores.score,
+      keywordScore: discoveryScores.keywordScore,
+      recencyScore: discoveryScores.recencyScore,
+      sourceScore: discoveryScores.sourceScore,
+      appliedThreshold: discoveryScores.appliedThreshold,
+      metadata: discoveryScores.metadataJson,
+      components: discoveryScores.componentsJson,
+      briefId: discoveryItems.briefId,
+    })
+    .from(discoveryItems)
+    .leftJoin(discoveryScores, eq(discoveryScores.itemId, discoveryItems.id))
+    .leftJoin(discoverySources, eq(discoverySources.id, discoveryItems.sourceId))
+    .where(eq(discoveryItems.id, itemId))
+    .limit(1)
+
+  return row ?? null
+}
+
+export async function fetchDiscoveryItemHistory(itemId: string): Promise<DiscoveryItemStatusHistoryRecord[]> {
+  const db = getDb()
+  return db
+    .select()
+    .from(discoveryItemStatusHistory)
+    .where(eq(discoveryItemStatusHistory.itemId, itemId))
+    .orderBy(desc(discoveryItemStatusHistory.createdAt))
+}
+
+export type InsertDiscoveryItemHistoryInput = {
+  itemId: string
+  previousStatus: DiscoveryItemStatus | null
+  nextStatus: DiscoveryItemStatus
+  note: string
+  actorId: string
+  actorName: string
+  createdAt?: Date
+}
+
+export async function insertDiscoveryItemHistory(
+  input: InsertDiscoveryItemHistoryInput,
+  options: { tx?: Database } = {},
+) {
+  const db = options.tx ?? getDb()
+  const id = randomUUID()
+  await db.insert(discoveryItemStatusHistory).values({
+    id,
+    itemId: input.itemId,
+    previousStatus: input.previousStatus ?? null,
+    nextStatus: input.nextStatus,
+    note: input.note,
+    actorId: input.actorId,
+    actorName: input.actorName,
+    createdAt: input.createdAt ?? new Date(),
+  })
+  return id
 }

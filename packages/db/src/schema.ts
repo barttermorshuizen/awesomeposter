@@ -264,6 +264,7 @@ export const discoveryItems = pgTable('discovery_items', {
   rawPayloadJson: jsonb('raw_payload_json').$type<Record<string, unknown>>().notNull(),
   normalizedJson: jsonb('normalized_json').$type<Record<string, unknown>>().notNull(),
   sourceMetadataJson: jsonb('source_metadata_json').$type<Record<string, unknown>>().notNull(),
+  briefId: uuid('brief_id').references(() => briefs.id, { onDelete: 'set null' }),
 }, (table) => ({
   clientHashUnique: uniqueIndex('discovery_items_client_hash_unique').on(table.clientId, table.rawHash),
   statusIdx: index('discovery_items_status_idx').on(table.status),
@@ -288,6 +289,20 @@ export const discoveryScores = pgTable('discovery_scores', {
   statusOutcome: text('status_outcome').$type<'scored' | 'suppressed'>().notNull(),
   scoredAt: timestamp('scored_at', { withTimezone: true }).defaultNow().notNull(),
 })
+
+export const discoveryItemStatusHistory = pgTable('discovery_item_status_history', {
+  id: uuid('id').primaryKey(),
+  itemId: uuid('item_id').references(() => discoveryItems.id, { onDelete: 'cascade' }).notNull(),
+  previousStatus: text('previous_status').$type<'pending_scoring' | 'scored' | 'suppressed' | 'promoted' | 'archived'>(),
+  nextStatus: text('next_status').$type<'pending_scoring' | 'scored' | 'suppressed' | 'promoted' | 'archived'>().notNull(),
+  note: text('note').notNull(),
+  actorId: uuid('actor_id').notNull(),
+  actorName: text('actor_name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  itemIdx: index('discovery_item_status_history_item_idx').on(table.itemId),
+  createdIdx: index('discovery_item_status_history_created_idx').on(table.createdAt),
+}))
 
 
 export const orchestratorRuns = pgTable('orchestrator_runs', {

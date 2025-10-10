@@ -96,7 +96,7 @@ const paginationSelectorErrors = computed(() => [
 ])
 const paginationDepthErrors = computed(() => props.errors['pagination.maxDepth'] ?? [])
 
-const suggestionApplied = computed(() => props.suggestion && props.appliedSuggestionId === props.suggestion.id)
+const suggestionApplied = computed(() => Boolean(props.suggestion && props.appliedSuggestionId === props.suggestion.id))
 
 function onApplySuggestion() {
   if (!props.suggestion) return
@@ -173,7 +173,7 @@ function onToggleTransform(field: FieldKey, enabled: boolean) {
             color="primary"
             variant="flat"
             @click="onApplySuggestion"
-            :disabled="disabled || suggestionApplied"
+            :disabled="Boolean(disabled || suggestionApplied)"
           >
             {{ suggestionApplied ? 'Suggestion applied' : 'Apply suggestion' }}
           </v-btn>
@@ -250,7 +250,7 @@ function onToggleTransform(field: FieldKey, enabled: boolean) {
               hide-details
               label="Regex transform"
               :disabled="disabled || !form.enabled"
-              @update:model-value="(value: boolean) => onToggleTransform(field, value)"
+              @update:model-value="(value: boolean | null) => onToggleTransform(field, Boolean(value))"
             />
             <v-messages
               v-if="transformBaseErrors(field).length"

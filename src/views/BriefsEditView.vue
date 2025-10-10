@@ -10,6 +10,17 @@ const title = ref('')
 const clientId = ref<string>('')
 const objective = ref('')
 const description = ref('')
+const descriptionLinks = computed(() => {
+  const value = description.value.trim()
+  if (!value) return []
+  const urlRegex = /(https?:\/\/[^\s]+)|(^\/[^\s]+)/g
+  const matches = value.match(urlRegex)
+  if (!matches) return []
+  return matches.map((match) => ({
+    href: match.startsWith('/') ? match : match,
+    label: match,
+  }))
+})
 const deadline = ref('') // datetime-local string
 const audienceId = ref('')
 
@@ -316,17 +327,31 @@ function onCancel() {
           </v-col>
 
           <v-col cols="12" md="6">
-            <v-textarea
-              v-model="description"
-              label="Description"
-              placeholder="Provide additional context, requirements, or campaign details..."
-              variant="outlined"
-              density="comfortable"
-              rows="3"
-              auto-grow
-              hide-details="auto"
-            />
-          </v-col>
+        <v-textarea
+          v-model="description"
+          label="Description"
+          placeholder="Provide additional context, requirements, or campaign details..."
+          variant="outlined"
+          density="comfortable"
+          rows="3"
+          auto-grow
+          hide-details="auto"
+        />
+        <v-alert
+          v-if="descriptionLinks.length"
+          type="info"
+          variant="tonal"
+          density="comfortable"
+          class="mt-2"
+        >
+          <div class="d-flex flex-column gap-1">
+            <strong>Links</strong>
+            <template v-for="link in descriptionLinks" :key="`desc-link-${link.href}`">
+              <a :href="link.href" target="_blank" rel="noopener">{{ link.label }}</a>
+            </template>
+          </div>
+        </v-alert>
+      </v-col>
         </v-row>
       </v-card-text>
     </v-card>

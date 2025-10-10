@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { useDiscoveryListStore, DISCOVERY_MIN_SEARCH_LENGTH } from '@/stores/discoveryList'
+import DiscoveryItemDetailDrawer from '@/components/discovery/DiscoveryItemDetailDrawer.vue'
 import { fetchClientFeatureFlags } from '@/lib/feature-flags'
 import {
   subscribeToDiscoveryEvents,
@@ -48,6 +49,13 @@ const {
   isEmptyState,
   pageSizeOptions,
   datePreset,
+  detailVisible,
+  selectedItemId,
+  selectedItemDetail,
+  detailLoading,
+  detailError,
+  promotionLoading,
+  promotionError,
 } = storeToRefs(listStore)
 
 const lastSearchTerm = computed(() => listStore.lastSearchTerm)
@@ -81,7 +89,7 @@ const isReadyForQueries = computed(() => featureFlagEnabled.value && Boolean(cli
 
 let previousClientId: string | null = null
 let unsubscribeFromSse: (() => void) | null = null
-let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null
+let searchDebounceHandle: number | null = null
 let suppressNextPageFetch = false
 let hasBootstrappedOnce = false
 let syncingCustomDates = false
@@ -603,6 +611,48 @@ const datePresetSelection = computed({
     }
   },
 })
+
+const detailDrawerOpen = computed({
+  get: () => detailVisible.value,
+  set: (value: boolean) => {
+    if (!value) {
+      listStore.closeItemDetail()
+    }
+  },
+})
+
+function openDetail(itemId: string) {
+  void listStore.openItemDetail(itemId)
+}
+
+function reloadDetail() {
+  void listStore.reloadSelectedItemDetail()
+}
+
+async function promoteSelected(note: string) {
+  try {
+    const detail = await listStore.promoteSelectedItem(note)
+    if (detail.briefRef) {
+      await router.push(detail.briefRef.editUrl)
+    }
+  } catch (error) {
+    // handled via store state
+  }
+}
+
+async function openBriefFromDetail() {
+  const brief = selectedItemDetail.value?.briefRef
+  if (!brief) return
+  await router.push(brief.editUrl)
+}
+
+async function openBriefFromList(editUrl: string) {
+  await router.push(editUrl)
+}
+
+function clearPromotionError() {
+  listStore.clearPromotionError()
+}
 </script>
 
 <template>
@@ -875,6 +925,7 @@ const datePresetSelection = computed({
                   v-for="item in items"
                   :key="item.id"
                   class="discovery-item"
+                  :class="{ 'discovery-item--selected': selectedItemId === item.id }"
                 >
                   <div class="d-flex justify-space-between align-start flex-wrap gap-3 mb-2">
                     <div>
@@ -885,7 +936,7 @@ const datePresetSelection = computed({
                         Ingested {{ formatTimestamp(item.ingestedAt) }}
                       </div>
                     </div>
-                    <div class="d-flex align-center gap-2">
+                    <div class="d-flex align-center gap-2 flex-wrap justify-end">
                       <v-chip
                         v-if="item.score !== null"
                         size="small"
@@ -897,6 +948,25 @@ const datePresetSelection = computed({
                       <v-chip size="small" variant="outlined">
                         {{ formatStatus(item.status) }}
                       </v-chip>
+                      <v-btn
+                        variant="text"
+                        size="small"
+                        class="text-none"
+                        color="primary"
+                        @click="openDetail(item.id)"
+                      >
+                        View detail
+                      </v-btn>
+                      <v-btn
+                        v-if="item.briefRef"
+                        variant="text"
+                        size="small"
+                        class="text-none"
+                        color="primary"
+                        @click="openBriefFromList(item.briefRef.editUrl)"
+                      >
+                        Edit brief
+                      </v-btn>
                     </div>
                   </div>
 
@@ -948,6 +1018,18 @@ const datePresetSelection = computed({
       </v-col>
     </v-row>
   </v-container>
+  <DiscoveryItemDetailDrawer
+    v-model="detailDrawerOpen"
+    :loading="detailLoading"
+    :error="detailError ?? undefined"
+    :item="selectedItemDetail"
+    :promotion-loading="promotionLoading"
+    :promotion-error="promotionError ?? undefined"
+    @reload="reloadDetail"
+    @promote="promoteSelected"
+    @open-brief="openBriefFromDetail"
+    @clear-error="clearPromotionError"
+  />
 </template>
 
 <style scoped>
@@ -962,6 +1044,11 @@ const datePresetSelection = computed({
 
 .discovery-item {
   padding: 16px 0;
+}
+
+.discovery-item--selected {
+  background-color: rgba(var(--v-theme-primary), 0.06);
+  border-radius: 12px;
 }
 
 .discovery-item__title {
