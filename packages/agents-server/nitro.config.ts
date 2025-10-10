@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
-const repoRoot = resolve(currentDir, '..')
+const repoRoot = resolve(currentDir, '..', '..')
 
 for (const dir of [repoRoot, currentDir]) {
   loadEnv({ path: resolve(dir, '.env'), override: false })
