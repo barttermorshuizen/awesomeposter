@@ -217,6 +217,10 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 - Planner runs similarity checks between requested outcomes and capability summaries (embedding lookup cached in memory).
 - Context bundler translates expectation (“two variants”) into per-agent instructions so strategists craft two briefs and writers fill both slots without code changes.
 - Agents continue to rely on natural-language prompts but receive machine-readable return schemas and validation hints alongside human context.
+- A dedicated registry service (see `packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
+- The database layer persists metadata to the shared `flex_capabilities` table (Drizzle schema + migration), keyed by `capability_id` with timestamps for `registered_at`, `last_seen_at`, and rolling `status` (`active`/`inactive`).
+- Agents self-register by calling `POST /api/v1/flex/capabilities/register`; the endpoint validates payloads against `CapabilityRegistrationSchema`, upserts the table, and returns the current active registry view.
+- Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
 
 ## 12. UI & Client Integration
 - Introduce a feature-flagged “Create Post (Flex)” popup (gated via env var such as `USE_FLEX_AGENTS_POPUP`) that targets `/api/v1/flex/run.stream`, keeping legacy flows untouched.
@@ -241,3 +245,8 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 - Sketch planner heuristics and policy normalization order; document conflict handling rules.
 - Inventory existing specialist agents, author capability metadata, and identify gaps that block dynamic planning.
 - Align with product/UX on “Create Post (Flex)” popup requirements so the envelope mapping is deterministic.
+
+## 16. Local Development Commands
+- `npm run dev:flex` launches the flex agents server on `FLEX_SERVER_PORT` (default `3003`) without disturbing the legacy agents runtime.
+- `npm run dev:all` now runs SPA, API, legacy agents server, flex agents server, and shared package watchers concurrently.
+- `npm run build:flex` produces the standalone Nitro build artifact for deployment or integration testing.

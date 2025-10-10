@@ -349,3 +349,25 @@ export const hitlResponses = pgTable('hitl_responses', {
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 })
+
+export const flexCapabilities = pgTable('flex_capabilities', {
+  capabilityId: text('capability_id').notNull(),
+  version: text('version').notNull(),
+  displayName: text('display_name').notNull(),
+  summary: text('summary').notNull(),
+  inputTraitsJson: jsonb('input_traits_json').$type<Record<string, unknown> | null>().default(null),
+  defaultContractJson: jsonb('default_contract_json').$type<Record<string, unknown> | null>().default(null),
+  costJson: jsonb('cost_json').$type<Record<string, unknown> | null>().default(null),
+  preferredModels: text('preferred_models').array().default(sql`ARRAY[]::text[]`),
+  heartbeatJson: jsonb('heartbeat_json').$type<Record<string, unknown> | null>().default(null),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown> | null>().default(null),
+  status: text('status').$type<'active' | 'inactive'>().notNull().default('active'),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+}, (table) => ({
+  pk: primaryKey({ columns: [table.capabilityId] }),
+  statusIdx: index('flex_capabilities_status_idx').on(table.status),
+  lastSeenIdx: index('flex_capabilities_last_seen_idx').on(table.lastSeenAt)
+}))
