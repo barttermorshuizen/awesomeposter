@@ -12,11 +12,11 @@ Provide engineers a single entry point for spinning up the discovery agent stack
 ## 1. Environment Prerequisites
 - **Node.js**: v20 LTS (check with `node --version`).
 - **PNPM**: v9.x (install via `corepack enable` if needed).
-- **Postgres**: local instance (14+) or Docker container; replica must include extensions `pgcrypto`, `uuid-ossp`.
+- **Postgres**: local instance (14+) or the repo's `docker-compose.dev.yml`; replica must include extensions `pgcrypto`, `uuid-ossp`.
 - **Redis (optional)**: only required when load-testing SSE; default dev boot uses in-memory mock.
 - **YouTube API key** (Discovery) stored in `.env.discovery.local`; see [Credentials](#5-credentials--secrets).
 
-> Tip: Use `scripts/dev/start-services.sh` (to be added) to spin up Postgres + Redis via Docker Compose.
+> Tip: Run `npm run db:up` from the repo root to start the shared Postgres container defined in `docker-compose.dev.yml`.
 
 ### Repo Bootstrap
 ```bash
@@ -25,7 +25,7 @@ pnpm run build:types # ensures shared contracts compile before first dev server 
 ```
 
 ### Environment Files
-- Copy `.env.example` to `.env.local` for the SPA and Nitro, then append discovery vars from table below.
+- Copy `.env.local.example` to `.env.local` for the SPA and Nitro, then append discovery vars from the table below.
 - Agents server uses `packages/agents-server/.env.local` (copy from `.env.example`).
 
 | Variable | Location | Purpose |
@@ -36,7 +36,7 @@ pnpm run build:types # ensures shared contracts compile before first dev server 
 | `DISCOVERY_SCORING_PENDING_THRESHOLD` | `server/.env` | Inline scoring backlog guard (defaults to `500`). Lower it locally to force deferral during testing. |
 | `YOUTUBE_API_KEY` | `.env.discovery.local` | Required for YouTube channel polling. |
 | `DISCOVERY_SSE_ORIGIN` | `.env.local` | Base URL for SSE connections (`http://localhost:3000`). |
-| `DATABASE_URL_DISCOVERY` | `packages/db/.env` | Points to discovery-aware schema (same database, different schema). |
+| `DATABASE_URL_DISCOVERY` | `.env.local` | Points to discovery-aware schema (same database, different schema). |
 
 ---
 

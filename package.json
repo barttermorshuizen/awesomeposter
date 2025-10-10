@@ -25,6 +25,12 @@
     "lint": "eslint . --fix",
     "imap:poller": "node scripts/imap-poller.mjs",
     "flags": "node scripts/feature-flags.mjs",
+    "db:up": "docker compose -f docker-compose.dev.yml up -d",
+    "db:down": "docker compose -f docker-compose.dev.yml down",
+    "db:logs": "docker compose -f docker-compose.dev.yml logs -f postgres",
+    "db:push": "npm --prefix packages/db run push",
+    "db:gen": "npm --prefix packages/db run gen",
+    "db:sync-clients": "scripts/db-sync-clients.sh",
     "bmad:refresh": "bmad-method install -f -i codex",
     "bmad:list": "bmad-method list:agents",
     "bmad:validate": "bmad-method validate"

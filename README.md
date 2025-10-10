@@ -22,11 +22,17 @@ Key design docs live under `docs/` (start with `docs/orchestrator_requirements.m
 
 ## Prerequisites
 - **Node.js** `^20.19.0` or `>=22.12.0` (matches engines field). Use npm 10 bundled with Node 20+.
-- **Postgres** – Neon (recommended) or any Postgres instance reachable from dev/prod. SSL is required in hosted environments.
+- **Postgres** – Local development uses the included Docker Compose service; hosted environments (Neon, etc.) must expose a Postgres instance with SSL enabled.
 - **Optional integrations** depending on workflow: Cloudflare R2 or S3-compatible storage, Upstash Redis, Mailgun or IMAP credentials, OpenAI API access.
 
 ## Environment Setup
 The repo consumes environment variables from `.env` at the project root (loaded by both Vite and Nitro). The agents server reads the same values; you can symlink or copy `.env` into `packages/agents-server/.env` if you prefer scoped files.
+
+For local development, copy the provided template to `.env.local` (ignored by Git) so you can switch between Neon and the local container without rewriting secrets:
+
+```bash
+cp .env.local.example .env.local
+```
 
 ### Base `.env` example
 ```bash
@@ -49,7 +55,31 @@ QUEUE_URL=https://...
 APP_BASE_URL=http://localhost:5173
 ```
 
-### Neon Postgres configuration
+### Local Postgres (default dev flow)
+1. Copy `.env.local.example` to `.env.local` (or add the `DATABASE_URL` override to your existing local env). The example points to the container started below.
+2. Start the database container:
+   ```bash
+   npm run db:up
+   ```
+   - Follow logs with `npm run db:logs` if you want to confirm it finished booting.
+   - Adminer is available at http://localhost:8080 for inspecting the local database (use the credentials defined in `.env.local`).
+3. Create the required extensions (one-time):
+   ```bash
+   docker compose -f docker-compose.dev.yml exec postgres psql -U awesomeposter -d awesomeposter \
+     -c 'create extension if not exists "uuid-ossp";' \
+     -c 'create extension if not exists pgcrypto;'
+   ```
+4. Apply the Drizzle schema to the local instance:
+   ```bash
+   npm run db:push
+   ```
+5. When you are done developing, stop the container:
+   ```bash
+   npm run db:down
+   ```
+6. Need production-like client records? Set `NEON_DATABASE_URL` to your Neon connection string and run `npm run db:sync-clients` to copy client tables (audit log, features, profiles, discovery sources, clients) into the local database (this truncates dependent tables before importing).
+
+### Hosted Postgres (Neon) configuration
 1. Create a project in [Neon](https://neon.tech/), add a branch (e.g., `dev`), and create a database (defaults are fine).
 2. Open the connection string from the **psql** tab, switch the protocol to `postgresql://`, and append `?sslmode=require` (Neon enforces TLS).
 3. Paste the string into `DATABASE_URL` for both the Nitro API and the agents server (shared `.env` works).
@@ -101,8 +131,9 @@ Run only what you need, or use the orchestration helpers:
 The SPA expects both the API (`3001`) and agents server (`3002`) when exercising end-to-end flows.
 
 ## Database & Migrations
-- Apply new migrations: `cd packages/db && npm run push` (Drizzle will diff the schema against Neon).
-- Generate SQL from schema changes: `npm run gen` inside `packages/db`.
+- Apply new migrations: `npm run db:push` (or `cd packages/db && npm run push` for direct access). Drizzle will diff the schema against whichever database your `DATABASE_URL` points to.
+- Generate SQL from schema changes: `npm run db:gen` (or `npm run gen` inside `packages/db`).
+- Seed client data from Neon: `NEON_DATABASE_URL=postgresql://... npm run db:sync-clients`. Override `LOCAL_DATABASE_URL` or `SYNC_CLIENT_TABLES` if you need a different target or table set; the default exports `client_feature_toggle_audits`, `client_features`, `client_profiles`, `discovery_sources`, and `clients`.
 - Type build for shared contracts: `npm run build` at repo root includes `tsc --build` and Vite build.
 - Discovery scoring backfill: `node scripts/discovery-backfill-scores.mjs [batchSize]` resets legacy discovery items to `pending_scoring` when no `discovery_scores` row exists.
 

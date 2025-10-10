@@ -1,4 +1,10 @@
 import { defineNitroConfig } from 'nitropack/config'
+import { config as loadEnv } from 'dotenv'
+import { resolve } from 'node:path'
+
+const projectRoot = process.cwd()
+loadEnv({ path: resolve(projectRoot, '.env'), override: false })
+loadEnv({ path: resolve(projectRoot, '.env.local'), override: true })
 
 export default defineNitroConfig({
   srcDir: 'server',

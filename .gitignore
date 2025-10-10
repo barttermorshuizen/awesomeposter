@@ -46,6 +46,7 @@ coverage
 .envrc.local
 # Keep example env files
 !.env.example
+!.env.local.example
 !**/.env.example
 
 

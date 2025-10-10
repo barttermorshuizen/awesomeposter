@@ -2,9 +2,16 @@ import type { Config } from 'drizzle-kit'
 import { config as loadEnv } from 'dotenv'
 import { resolve } from 'node:path'
 
-// Try root .env then apps/web/.env (Nuxt app envs)
-loadEnv({ path: resolve(__dirname, '../../.env') })
-loadEnv({ path: resolve(__dirname, '../../apps/web/.env') })
+const projectRoot = resolve(__dirname, '../..')
+const appRoot = resolve(projectRoot, 'apps/web')
+
+for (const filename of ['.env', '.env.local']) {
+  loadEnv({ path: resolve(projectRoot, filename), override: true })
+}
+
+for (const filename of ['.env', '.env.local']) {
+  loadEnv({ path: resolve(appRoot, filename), override: true })
+}
 
 export default {
   schema: './src/schema.ts',
@@ -14,4 +21,3 @@ export default {
     url: process.env.DATABASE_URL || ''
   }
 } satisfies Config
-
