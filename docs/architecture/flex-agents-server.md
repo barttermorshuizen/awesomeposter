@@ -167,6 +167,84 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 - `POST /api/v1/flex/capabilities/register`: agents call this on boot to advertise or refresh their `CapabilityRegistration`; orchestrator updates the registry and acknowledges health status.
 - `GET /api/v1/flex/runs/:id`: debugging endpoint returning persisted envelope, plan graph, and outputs (auth-gated).
 
+### 10.0.1 Flex Run Streaming Contract
+The `/api/v1/flex/run.stream` controller validates the incoming envelope, persists an initial `flex_runs` row, and streams `FlexEvent` frames for planner lifecycle updates. Frames conform to `{ type, id?, timestamp, payload?, message?, runId?, nodeId? }`. Supported event types in this release:
+
+- `start`: emitted after persistence with `payload.runId` and optional `threadId`.
+- `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
+- `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
+- `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
+- `validation_error`: Ajv output validation failures (payload contains `errors[]`).
+- `complete`: final frame containing `payload.output` that satisfies the caller schema.
+- `log`: informational/debug messages.
+
+**Resume after HITL:** Once `/api/hitl/resume` records operator approval, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`.
+
+Example `curl` invocation:
+
+```bash
+curl -N \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "Authorization: Bearer $FLEX_TOKEN" \
+  -d @envelope.json \
+  http://localhost:3003/api/v1/flex/run.stream
+```
+
+Sample envelope payload (`envelope.json`):
+
+```json
+{
+  "objective": "Create LinkedIn post variants promoting AwesomePoster",
+  "inputs": {
+    "channel": "linkedin",
+    "goal": "attract_new_employees",
+    "variantCount": 2,
+    "contextBundles": [
+      {
+        "type": "company_profile",
+        "payload": {
+          "companyName": "AwesomePoster",
+          "coreValue": "Human-first automation",
+          "recentEvent": "Summer retreat in Tahoe"
+        }
+      }
+    ]
+  },
+  "policies": {
+    "brandVoice": "inspiring",
+    "requiresHitlApproval": false
+  },
+  "specialInstructions": [
+    "Variant A should highlight team culture.",
+    "Variant B should highlight career growth opportunities."
+  ],
+  "outputContract": {
+    "mode": "json_schema",
+    "schema": {
+      "type": "object",
+      "required": ["variants"],
+      "properties": {
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["headline", "body", "callToAction"],
+            "properties": {
+              "headline": { "type": "string" },
+              "body": { "type": "string" },
+              "callToAction": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ### 10.1 Sample TaskEnvelope
 ```json
 {

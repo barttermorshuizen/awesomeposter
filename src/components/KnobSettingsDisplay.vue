@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-type Structure = { lengthLevel?: number; scanDensity?: number } | null | undefined
+type Structure = {
+  lengthLevel?: number | string | null
+  scanDensity?: number | string | null
+} | null | undefined
+
 type KnobsLike = {
   formatType?: string | null
-  hookIntensity?: number | null
-  expertiseDepth?: number | null
+  hookIntensity?: number | string | null
+  expertiseDepth?: number | string | null
   structure?: Structure
 } | null | undefined
 
@@ -16,18 +20,25 @@ interface Props {
 const props = defineProps<Props>()
 
 function clamp01(n: unknown): number | null {
-  const x = typeof n === 'number' ? n : Number(n)
-  if (!Number.isFinite(x)) return null
-  return Math.max(0, Math.min(1, x))
+  if (typeof n === 'number') {
+    if (!Number.isFinite(n)) return null
+    return Math.max(0, Math.min(1, n))
+  }
+  if (typeof n === 'string') {
+    const parsed = Number(n)
+    if (!Number.isFinite(parsed)) return null
+    return Math.max(0, Math.min(1, parsed))
+  }
+  return null
 }
 
 const values = computed(() => {
-  const k = props.knobs || {}
-  const hook = clamp01((k as any).hookIntensity)
-  const depth = clamp01((k as any).expertiseDepth)
-  const s = (k as any).structure || {}
-  const length = clamp01((s as any).lengthLevel)
-  const scan = clamp01((s as any).scanDensity)
+  const k = props.knobs
+  const structure = k?.structure ?? null
+  const hook = clamp01(k?.hookIntensity ?? null)
+  const depth = clamp01(k?.expertiseDepth ?? null)
+  const length = clamp01(structure?.lengthLevel ?? null)
+  const scan = clamp01(structure?.scanDensity ?? null)
   return { hook, depth, length, scan }
 })
 
@@ -50,7 +61,7 @@ function formatIcon(fmt?: string | null): { icon: string; label: string; color: 
   }
 }
 
-const fmt = computed(() => formatIcon((props.knobs as any)?.formatType))
+const fmt = computed(() => formatIcon(props.knobs?.formatType ?? null))
 </script>
 
 <template>
@@ -121,10 +132,8 @@ const fmt = computed(() => formatIcon((props.knobs as any)?.formatType))
 </template>
 
 <style scoped>
-.knobs-wrap { }
 .dial { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; min-width: 110px; }
 .dial-value { font-size: 12px; font-weight: 600; }
 .dial-label { font-size: 12px; color: rgba(255,255,255,0.7); }
 .ga-4 { gap: 16px; }
 </style>
-

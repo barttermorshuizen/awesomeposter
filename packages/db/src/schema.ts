@@ -322,6 +322,48 @@ export const orchestratorRuns = pgTable('orchestrator_runs', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
 })
 
+export const flexRuns = pgTable('flex_runs', {
+  runId: text('run_id').primaryKey(),
+  threadId: text('thread_id'),
+  status: text('status')
+    .$type<'pending' | 'running' | 'awaiting_hitl' | 'completed' | 'failed' | 'cancelled'>()
+    .default('pending'),
+  objective: text('objective'),
+  envelopeJson: jsonb('envelope_json').$type<Record<string, unknown>>().notNull(),
+  schemaHash: text('schema_hash'),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}),
+  resultJson: jsonb('result_json').$type<Record<string, unknown> | null>().default(null),
+  planVersion: integer('plan_version').default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+})
+
+export const flexPlanNodes = pgTable(
+  'flex_plan_nodes',
+  {
+    runId: text('run_id')
+      .notNull()
+      .references(() => flexRuns.runId, { onDelete: 'cascade' }),
+    nodeId: text('node_id').notNull(),
+    capabilityId: text('capability_id'),
+    label: text('label'),
+    status: text('status')
+      .$type<'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl'>()
+      .default('pending'),
+    contextJson: jsonb('context_json').$type<Record<string, unknown>>().default({}),
+    outputJson: jsonb('output_json').$type<Record<string, unknown> | null>().default(null),
+    errorJson: jsonb('error_json').$type<Record<string, unknown> | null>().default(null),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.runId, table.nodeId] }),
+    statusIdx: index('flex_plan_nodes_status_idx').on(table.status)
+  })
+)
+
 export const hitlRequests = pgTable('hitl_requests', {
   id: text('id').primaryKey(),
   runId: text('run_id').references(() => orchestratorRuns.runId, { onDelete: 'cascade' }),

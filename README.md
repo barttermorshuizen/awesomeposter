@@ -162,6 +162,30 @@ Event frames include `start`, `phase`, `plan_update`, `handoff`, `delta`, `tool_
 
 Pass the same `threadId` to resume a suspended run. Omitting it starts a new orchestration.
 
+## Flex Agents Streaming API
+The flex agents server exposes `/api/v1/flex/run.stream` for TaskEnvelope-based planning. Enable the new popup in the SPA by setting:
+
+```bash
+VITE_FLEX_POPUP_ENABLED=true
+VITE_FLEX_AGENTS_BASE_URL=http://localhost:3003
+VITE_FLEX_AGENTS_AUTH_BEARER=dev-token-123
+# Optional: force every flex run to require HITL approval for manual QA
+VITE_FLEX_REQUIRE_HITL=true
+```
+
+The envelope mirrors the shared schema exported from `@awesomeposter/shared/flex`. Example request:
+
+```bash
+curl -N \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -H 'Authorization: Bearer dev-token-123' \
+  -d @envelope.json \
+  http://localhost:3003/api/v1/flex/run.stream
+```
+
+Event frames emit `start`, `plan_generated`, `node_start`, `node_complete`, `hitl_request`, `validation_error`, and `complete`. After a HITL approval, start a new stream with the same `threadId` and pass `constraints.resumeRunId` to resume the pending run. The SPA’s “Create post (Flex)” dialog consumes the stream, surfaces HITL prompts via the shared store, and validates the final payload against the caller schema using Ajv.
+
 ## Operational Tooling
 - `npm run imap:poller` – Development-only IMAP poller (see `imap-polling-readme.md`).
 - `npm run flags` – CLI for reading/updating per-client feature flags.

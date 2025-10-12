@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import AgentResultsPopup from '@/components/AgentResultsPopup.vue'
+import FlexCreatePostDialog from '@/components/FlexCreatePostDialog.vue'
 import { useHitlStore } from '@/stores/hitl'
 
 type Brief = {
@@ -11,6 +12,7 @@ type Brief = {
   clientName: string | null
   objective: string | null
   status: 'draft' | 'approved' | 'sent' | 'published' | null
+  description?: string | null
   audienceId?: string | null
   deadlineAt?: string | null
   createdAt?: string | null
@@ -35,9 +37,16 @@ type PendingMenuEntry = {
 }
 const pendingMenuState = ref<Record<string, PendingMenuEntry>>({})
 
+const flexPopupEnabled = (import.meta.env.VITE_FLEX_POPUP_ENABLED || '').toLowerCase() === 'true'
 const createPostOpen = ref(false)
+const createFlexOpen = ref(false)
 const selectedBrief = ref<Brief | null>(null)
+const selectedFlexBrief = ref<Brief | null>(null)
 function onCreatePost(row: Brief): void { selectedBrief.value = row; createPostOpen.value = true }
+function onCreateFlex(row: Brief): void {
+  selectedFlexBrief.value = row
+  createFlexOpen.value = true
+}
 
 function menuEntryForBrief(briefId: string): PendingMenuEntry | undefined {
   return briefId ? pendingMenuState.value[briefId] : undefined
@@ -351,6 +360,13 @@ function statusColor(status?: string | null): string {
               </template>
               <v-list density="comfortable">
                 <v-list-item
+                  v-if="flexPopupEnabled"
+                  prepend-icon="mdi-robot"
+                  title="Create post (Flex)"
+                  subtitle="Run via flex planner"
+                  @click="onCreateFlex(item as any)"
+                />
+                <v-list-item
                   v-if="!canResumeRun((item as any).id)"
                   prepend-icon="mdi-robot-outline"
                   title="Create post"
@@ -411,6 +427,11 @@ function statusColor(status?: string | null): string {
     <AgentResultsPopup
       v-model="createPostOpen"
       :brief="selectedBrief ? { id: selectedBrief.id, clientId: selectedBrief.clientId, title: selectedBrief.title, objective: selectedBrief.objective, audienceId: selectedBrief.audienceId ?? null } : null"
+    />
+    <FlexCreatePostDialog
+      v-if="flexPopupEnabled"
+      v-model="createFlexOpen"
+      :brief="selectedFlexBrief ? { id: selectedFlexBrief.id, clientId: selectedFlexBrief.clientId, title: selectedFlexBrief.title, objective: selectedFlexBrief.objective, audienceId: selectedFlexBrief.audienceId ?? null, description: selectedFlexBrief.description ?? null } : null"
     />
   </v-container>
 </template>

@@ -13,7 +13,7 @@ const rawValueTransformSchema = z.object({
 }).strict().superRefine((value, ctx) => {
   try {
     // Ensure the pattern compiles with the provided flags
-    // eslint-disable-next-line no-new
+     
     new RegExp(value.pattern, value.flags)
   } catch (error) {
     ctx.addIssue({

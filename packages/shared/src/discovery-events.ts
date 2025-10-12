@@ -43,7 +43,7 @@ const discoveryValueTransformSchema = z.object({
   replacement: z.string().optional(),
 }).strict().superRefine((value, ctx) => {
   try {
-    // eslint-disable-next-line no-new
+     
     new RegExp(value.pattern, value.flags)
   } catch (error) {
     ctx.addIssue({

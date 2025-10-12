@@ -1,0 +1,42 @@
+schema: 1
+story: '8.3'
+story_title: 'Story 8.3: Flex Run Endpoint & Planner Skeleton'
+gate: PASS
+status_reason: 'Flex run coordinator now imports getLogger; build succeeds and HITL/SSE flows verified via unit suite.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-04-08T00:15:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 92
+
+evidence:
+  tests_reviewed: 1
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new auth surfaces; envelope parsing reuses existing validation.'
+  performance:
+    status: PASS
+    notes: 'Planner/execution loop lightweight; Ajv validation per run acceptable.'
+  reliability:
+    status: PASS
+    notes: 'Coordinator compilation restored; unit suite exercises resume + validation flows.'
+  maintainability:
+    status: PASS
+    notes: 'Code structure follows existing flex server conventions.'
+
+recommendations:
+  immediate: []
+  future:
+    - action: 'Add multi-capability plan tests once dynamic planner arrives to ensure resume works with branching graphs.'
+      refs:
+        - packages/flex-agents-server/__tests__/flex-run-coordinator.spec.ts
