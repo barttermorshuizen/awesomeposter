@@ -20,6 +20,14 @@ Key design docs live under `docs/` (start with `docs/orchestrator_requirements.m
 - **Discovery pilot** – Discovery SSE stream, source CRUD, and ingestion jobs are scaffolded behind feature flags (`DISCOVERY_ENABLE`). Docs under `docs/discovery-agent-dev-setup.md`.
 - **Analytics & Inbox** – Routes exist with placeholder copy so QA can visualize intended flows; dashboard metrics, inbox filtering, and analytics rollups are in progress.
 
+## Capability Metadata Maintenance
+Each flex agent defines its capability metadata (schema, traits, costs) inside its module (e.g., `packages/flex-agents-server/src/agents/strategy-manager.ts`). A Nitro startup plugin loads these definitions and POSTs them to `/api/v1/flex/capabilities/register` (same validation/logging path as external registrants), then re-registers on a timer (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active. Keep runtime metadata and documentation aligned:
+
+1. Update the capability payload inside the relevant agent module when prompts, IO schema, preferred models, or cost tier change.
+2. Mirror the update in the architecture guide’s capability table (`docs/architecture/flex-agents-server.md#current-inventory`).
+3. Run `npm run test:unit -- packages/flex-agents-server/__tests__/capability-registration.spec.ts packages/flex-agents-server/__tests__/flex-planner.spec.ts` to ensure registrations and planner lookup stay healthy.
+4. If heartbeat expectations shift, adjust the per-capability `heartbeat` fields in the agent module so the registry keeps entries active.
+
 ## Prerequisites
 - **Node.js** `^20.19.0` or `>=22.12.0` (matches engines field). Use npm 10 bundled with Node 20+.
 - **Postgres** – Local development uses the included Docker Compose service; hosted environments (Neon, etc.) must expose a Postgres instance with SSL enabled.

@@ -1,18 +1,79 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
-
-const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
+import type { CapabilityRegistration } from '@awesomeposter/shared'
+import { DEFAULT_MODEL_FALLBACK } from '../utils/model'
 
 export class QualityAssuranceAgent {
   constructor(private runtime: AgentRuntime) {}
 }
 
-// Agents SDK configuration for the QA specialist
+export const QA_CAPABILITY_ID = `${QualityAssuranceAgent.name}.contentReview` as const
+
+export const QA_CAPABILITY: CapabilityRegistration = {
+  capabilityId: QA_CAPABILITY_ID,
+  version: '1.0.0',
+  displayName: 'Quality Assurance',
+  summary: 'Scores generated drafts for readability, clarity, objective fit, and policy risk, returning structured QA signals.',
+  inputTraits: {
+    languages: ['en'],
+    strengths: ['qa_scoring', 'policy_compliance'],
+    limitations: ['Requires prior content draft to review.']
+  },
+  defaultContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        composite: { type: 'number', minimum: 0, maximum: 1 },
+        compliance: { type: 'boolean' },
+        readability: { type: 'number', minimum: 0, maximum: 1 },
+        clarity: { type: 'number', minimum: 0, maximum: 1 },
+        objectiveFit: { type: 'number', minimum: 0, maximum: 1 },
+        brandRisk: { type: 'number', minimum: 0, maximum: 1 },
+        contentRecommendations: {
+          type: 'array',
+          items: { type: 'string' }
+        }
+      },
+      additionalProperties: true
+    }
+  },
+  cost: {
+    tier: 'standard',
+    estimatedTokens: 900,
+    currency: 'USD',
+    pricePer1kTokens: 0.012
+  },
+  preferredModels: [DEFAULT_MODEL_FALLBACK],
+  heartbeat: {
+    intervalSeconds: 600,
+    timeoutSeconds: 1800
+  },
+  metadata: {
+    sourceFiles: [
+      'packages/flex-agents-server/src/agents/quality-assurance.ts',
+      'packages/flex-agents-server/src/tools/qa.ts'
+    ],
+    runMode: 'agent',
+    scenarios: ['qa_review'],
+    inputSchema: {
+      type: 'object',
+      properties: {
+        draft: { type: 'string' },
+        writerBrief: { type: 'object' }
+      },
+      additionalProperties: true
+    }
+  }
+}
+
 export const QA_TOOLS = [
   'qa_evaluate_content',
   HITL_TOOL_NAME
 ] as const
+
+const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
 
 export const QA_INSTRUCTIONS = [
   'You are the Quality Assurance agent.',
@@ -30,20 +91,19 @@ export const QA_INSTRUCTIONS = [
       ]
     : []
 ).join('\n')
-;
 
 export function createQaAgent(
   runtime: AgentRuntime,
   onEvent?: (
     e: {
-      type: 'tool_call' | 'tool_result' | 'metrics';
-      name?: string;
+      type: 'tool_call' | 'tool_result' | 'metrics'
+      name?: string
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK emits arbitrary tool arguments
-      args?: any;
+      args?: any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool outputs are passthrough from agents runtime
-      result?: any;
-      tokens?: number;
-      durationMs?: number;
+      result?: any
+      tokens?: number
+      durationMs?: number
     }
   ) => void,
   opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] }

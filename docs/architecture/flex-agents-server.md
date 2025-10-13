@@ -98,6 +98,26 @@ Registration payloads share a stable contract so the orchestrator can validate a
   },
   "cost": { "tier": "standard", "estimatedTokens": 6000 },
   "preferredModels": ["gpt-5.1"],
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "objective": { "type": "string" },
+      "toneOfVoice": { "type": "array", "items": { "type": "string" } }
+    },
+    "additionalProperties": true
+  },
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "variants": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/writerVariant" }
+      }
+    },
+    "required": ["variants"]
+  },
   "heartbeat": { "intervalSeconds": 60 },
   "metadata": {
     "owner": "marketing-ai",
@@ -113,6 +133,7 @@ Registration payloads share a stable contract so the orchestrator can validate a
 - `summary` (string, required): concise capability description.
 - `inputTraits` (object, optional): declared coverage such as supported languages, formats, strengths, and limitations.
 - `defaultContract` (object or string, optional): baseline output contract (JSON Schema or free-form instructions) the planner can reference if the caller omits a more specific schema.
+- `inputSchema` / `outputSchema` (object, optional): JSON Schema definitions allowing strict validation of the bundle supplied to the capability and the artifact it returns; use when contracts must remain immutable across runs.
 - `cost` (object, optional): estimates around token usage or pricing tier for planner budgeting.
 - `preferredModels` (array, optional): ranked list of model IDs the agent is tuned for.
 - `heartbeat` (object, optional): heartbeat expectations (intervals/timeout) so the orchestrator can mark stale registrations.
@@ -293,14 +314,39 @@ Sample envelope payload (`envelope.json`):
 ```
 
 ## 11. Capability Registry & Agent Contracts
-- Each agent exports metadata (`capabilityId`, `summary`, `inputTraits`, `outputTraits`, `costTier`, `model`, `defaultSchema`).
-- Planner runs similarity checks between requested outcomes and capability summaries (embedding lookup cached in memory).
-- Context bundler translates expectation (“two variants”) into per-agent instructions so strategists craft two briefs and writers fill both slots without code changes.
+- Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/strategy-manager.ts`); the module exports the capability payload and keeps the JSON Schema contract co-located with prompts and tools.
+- A Nitro startup plugin consumes these exports and POSTs them to `/api/v1/flex/capabilities/register`, exercising the same validation/logging path as external registrants, and re-registers on an interval (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active.
+- Planner uses the registry to resolve capabilities by scenario tags declared in capability metadata (`metadata.scenarios`).
+- Context bundler translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
 - Agents continue to rely on natural-language prompts but receive machine-readable return schemas and validation hints alongside human context.
-- A dedicated registry service (see `packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
+- A dedicated registry service (`packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
 - The database layer persists metadata to the shared `flex_capabilities` table (Drizzle schema + migration), keyed by `capability_id` with timestamps for `registered_at`, `last_seen_at`, and rolling `status` (`active`/`inactive`).
-- Agents self-register by calling `POST /api/v1/flex/capabilities/register`; the endpoint validates payloads against `CapabilityRegistrationSchema`, upserts the table, and returns the current active registry view.
+- Each agent module schedules a self-registration with the capability registry during bootstrap so the flex server advertises its capabilities without relying on a separate startup plugin.
 - Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
+
+### Current Inventory
+
+| Capability ID | Display Name | Responsibilities | Input Expectations | Output Contract | Source |
+| --- | --- | --- | --- | --- | --- |
+| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | Requires objective + audience in the client brief; optional asset bundles for deeper feasibility checks. | JSON object containing `rationale`, `writerBrief`, and `knobs` defined within the agent module. | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
+| `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | Needs brief context, tone, company profile bundles, and desired variant count. | JSON schema enforcing a `variants[]` collection with `headline`, `body`, and `callToAction`. | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
+| `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | Expects a prior draft plus optional writer brief metadata. | JSON QA report (`composite`, `compliance`, `contentRecommendations`, etc.). | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
+
+> Capability metadata, costs, and heartbeat settings are the source of truth—update the table and the corresponding agent module together during future agent work.
+
+### Supporting Utilities
+
+- Strategy analysis tools (`packages/flex-agents-server/src/tools/strategy.ts`) expose `strategy_analyze_assets` and `strategy_plan_knobs` for achievable-format detection and knob planning.
+- Content helpers (`packages/flex-agents-server/src/tools/content.ts`) handle format rendering and platform optimisation.
+- QA tooling (`packages/flex-agents-server/src/tools/qa.ts`) provides rubric scoring and recommendation normalisation.
+- HITL adapters (`packages/flex-agents-server/src/tools/hitl.ts`) bridge agent escalations into the shared HITL service.
+
+### Maintenance Checklist
+
+1. Update the capability payload inside the relevant agent module when prompts, IO contracts, or preferred models change.
+2. Mirror those edits in the table above so downstream teams know where source lives and what constraints apply.
+3. Run `npm run test:unit -- packages/flex-agents-server/__tests__/capability-registration.spec.ts packages/flex-agents-server/__tests__/flex-planner.spec.ts` to confirm registration resilience and ensure planner discovery.
+4. If heartbeat expectations change, adjust `FLEX_CAPABILITY_REFRESH_INTERVAL_MS` or the per-capability heartbeat fields so registry status stays accurate.
 
 ## 12. UI & Client Integration
 - Introduce a feature-flagged “Create Post (Flex)” popup (gated via env var such as `USE_FLEX_AGENTS_POPUP`) that targets `/api/v1/flex/run.stream`, keeping legacy flows untouched.

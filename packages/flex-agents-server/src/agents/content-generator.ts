@@ -1,22 +1,90 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
-
-const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
+import type { CapabilityRegistration } from '@awesomeposter/shared'
+import { DEFAULT_MODEL_FALLBACK } from '../utils/model'
 
 export class ContentGeneratorAgent {
   constructor(private runtime: AgentRuntime) {}
 }
 
-// Agents SDK configuration for the Content specialist
+export const CONTENT_CAPABILITY_ID = `${ContentGeneratorAgent.name}.linkedinVariants` as const
+
+export const CONTENT_CAPABILITY: CapabilityRegistration = {
+  capabilityId: CONTENT_CAPABILITY_ID,
+  version: '1.0.0',
+  displayName: 'Copywriter – LinkedIn Variants',
+  summary: 'Generates polished LinkedIn post variants using supplied brief, tone, and policy guidance.',
+  inputTraits: {
+    languages: ['en', 'nl'],
+    formats: ['linkedin_post'],
+    strengths: ['variant_generation', 'platform_optimization'],
+    limitations: ['Best for short-form LinkedIn posts with 1–5 variants.']
+  },
+  defaultContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      required: ['variants'],
+      properties: {
+        variants: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: 'object',
+            required: ['headline', 'body', 'callToAction'],
+            properties: {
+              headline: { type: 'string', minLength: 5 },
+              body: { type: 'string', minLength: 20 },
+              callToAction: { type: 'string', minLength: 2 }
+            },
+            additionalProperties: true
+          }
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  cost: {
+    tier: 'standard',
+    estimatedTokens: 1200,
+    currency: 'USD',
+    pricePer1kTokens: 0.015
+  },
+  preferredModels: [DEFAULT_MODEL_FALLBACK],
+  heartbeat: {
+    intervalSeconds: 600,
+    timeoutSeconds: 1800
+  },
+  metadata: {
+    sourceFiles: [
+      'packages/flex-agents-server/src/agents/content-generator.ts',
+      'packages/flex-agents-server/src/services/flex-execution-engine.ts'
+    ],
+    runMode: 'orchestrated_llm',
+    scenarios: ['linkedin_post_variants'],
+    inputSchema: {
+      type: 'object',
+      properties: {
+        variantCount: { type: 'integer', minimum: 1, maximum: 5 },
+        tone: { type: 'string' },
+        audience: { type: 'string' },
+        contextBundles: { type: 'array' }
+      },
+      additionalProperties: true
+    }
+  }
+}
+
 export const CONTENT_TOOLS = [
   'apply_format_rendering',
   'optimize_for_platform',
   HITL_TOOL_NAME
 ] as const
 
-// Default (app/workflow) instructions – used when the agent is called inside
-// the orchestrated workflow where structured output is desired.
+const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
+
 export const CONTENT_INSTRUCTIONS_APP = [
   'You are the Content Generator agent.',
   'Generate or revise a post based on the description of the brief and the guidelines provided in the writer brief.',
@@ -42,8 +110,6 @@ export const CONTENT_INSTRUCTIONS_APP = [
     : []
 ).join('\n')
 
-// Chat instructions – used when the user is conversing directly with this agent.
-// In chat mode we want plain text, not JSON wrappers.
 export const CONTENT_INSTRUCTIONS_CHAT = [
   'You are the Content Generator agent speaking directly with a user.',
   'Return plain text only (no JSON/code fences).',
@@ -66,14 +132,14 @@ export function createContentAgent(
   runtime: AgentRuntime,
   onEvent?: (
     e: {
-      type: 'tool_call' | 'tool_result' | 'metrics';
-      name?: string;
+      type: 'tool_call' | 'tool_result' | 'metrics'
+      name?: string
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK emits arbitrary tool arguments
-      args?: any;
+      args?: any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool outputs are passthrough from agents runtime
-      result?: any;
-      tokens?: number;
-      durationMs?: number;
+      result?: any
+      tokens?: number
+      durationMs?: number
     }
   ) => void,
   opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] },

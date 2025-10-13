@@ -1,6 +1,6 @@
 # Flex Agents Server Sprint Plan
 
-## Sprint 1 Focus (2 Weeks)
+## Sprint 1 Focus (Completed)
 
 ### Objectives
 - Establish shared flex runtime contracts in `@awesomeposter/shared`.
@@ -33,58 +33,66 @@
 - **Registry persistence conflicts**: coordinate migration IDs with DB team; dry-run on staging DB.
 - **Planner skeleton scope creep**: limit Sprint 1 to mocked capabilities; real agent execution deferred to Sprint 2.
 
-## Sprint 2 Focus (2 Weeks)
+## Sprint 2 Focus (In Progress)
 
 ### Objectives
-- Complete flex run execution path with real capability handoffs, Ajv validation, and HITL resume integration.
-- Persist run outputs and plan snapshots; surface resume/debug endpoints.
-- Ensure flex telemetry/logging reaches parity with legacy orchestrator.
+- Finalize capability inventory and ensure live registration data powers planner decisions (Story 8.7).
+- Enable dynamic plan assembly from registry metadata so flex runs adapt beyond the stubbed happy path (Story 8.8).
+- Land persistence and telemetry foundations needed for policy-driven replanning (Stories 8.4, 8.6) ahead of policy enforcement (Story 8.9).
+- Maintain readiness for Story 8.5 resume/debug work once persistence versioning is available.
+
+### Completed This Sprint
+- **8.10 Flex Planner Phase 2** (extension of 8.3) — dynamic execution path now exercises live capability hooks prepared in Sprint 1.
 
 ### Planned Stories
-- **Planner Execution (Phase 2)**: Remaining work on 8.3 Flex Run Endpoint & Planner Skeleton (real capability dispatch, HITL resume wiring, Ajv validation).
-- **Persistence**: 8.4 Flex Run Output & Snapshot Persistence.
-- **Interfaces**: 8.5 Flex Run Resume & Debug Interfaces.
+- **Capability Inventory & Registration**: 8.7 Flex Capability Inventory & Registration Coverage.
+- **Dynamic Plan Assembly**: 8.8 Flex Dynamic Plan Assembly.
+- **Persistence**: 8.4 Flex Run Output & Snapshot Persistence (immediately after 8.8).
 - **Telemetry**: 8.6 Flex Telemetry & Logging Parity.
+- **Policy Engine**: 8.9 Flex Planner Signals & Policy Overrides (after persistence + telemetry).
+- **Interfaces**: 8.5 Flex Run Resume & Debug Interfaces (follows once 8.4 delivers plan/version storage).
 
 ### Sequencing & Owners
-1. Finish 8.3 core execution (capability dispatch, Ajv validation, HITL flow) — Platform orchestrator owner.
-2. Implement persistence tables and engine writes (8.4) — Backend owner; partner with platform owner for engine hooks.
-3. Resume/debug endpoints (8.5) — Backend owner once persistence is available; QA run regression on HITL UI.
-4. Telemetry/logging parity (8.6) — Platform/SRE owner after execution paths stabilized.
-5. Update documentation & runbooks with new endpoints/metrics — PM + platform owner.
+1. Capability inventory + registration coverage (8.7) — Platform/shared owner; pairs with documentation lead.
+2. Dynamic plan assembly (8.8) — Planner/platform owner; coordinates with shared contracts team.
+3. Persistence foundations (8.4) — Backend owner; collaborates with planner owner for snapshot hooks.
+4. Telemetry/logging parity (8.6) — Platform/SRE owner after persistence wiring is in-place.
+5. Policy engine + signals (8.9) — Planner/platform owner once persistence and telemetry stories land.
+6. Resume/debug interfaces (8.5) — Backend owner immediately after 8.4 delivers persisted plan versions.
 
 ### Capacity Assumptions
-- ~4.5 engineer-weeks (platform 2.0w, backend 1.5w, SRE/observability 1.0w) + 0.5 QA week for integration testing.
-- Hold 0.5 engineer-week buffer for HITL edge-case fixes uncovered during testing.
+- ~4.5 engineer-weeks (platform/planner 2.2w, backend 1.5w, SRE/observability 0.8w) + 0.5 QA week for integration/policy tests.
+- Hold 0.3 engineer-week buffer for registry inventory churn or scoring adjustments discovered during 8.8.
 
-### Quality & Readiness Work/a
-- Integration tests covering happy path, validation failure, HITL pause/resume, and resume endpoint error cases.
-- Real capability dispatch wired through registry + AgentRuntime with structured telemetry and scoped validation errors for UI consumption.
-- Ajv schema compilation caching profiled under load; include regression tests to prevent performance regressions.
-- Logging snapshot tests verifying field presence; update monitoring dashboards with `flex.*` metrics.
-- Run staging environment smoke of flex popup behind env flag; ensure legacy flows untouched.
+### Quality & Readiness Work
+- Validate capability metadata via unit tests consuming registry payloads (8.7) and plan assembly snapshots for multiple envelopes (8.8).
+- Ensure persistence migrations and write paths pass integration tests with resume/replay harnesses (8.4) before enabling policy engine.
+- Telemetry story to deliver log/metric snapshot tests plus dashboard update checklist (8.6) ahead of policy triggers.
+- Policy engine tests simulate policy triggers across quality, cost, latency, and HITL scenarios (8.9) leveraging persisted plan versions.
+- Smoke `npm run dev:flex` after each major milestone to ensure registry, planner, and persistence wiring work end-to-end.
 
 ### Risks & Mitigations
-- **HITL resume race conditions**: rely on plan snapshots, add locking around resume; QA executes concurrency tests.
-- **Ajv validation performance**: cache schemas per run, measure with synthetic payloads before deploy.
-- **Telemetry double counting**: namespace metrics (`flex.`) and coordinate with observability to filter new streams.
+- **Inventory drift delaying dynamic planning**: lock inventory doc updates into review checklist; include validation tests.
+- **Dynamic plan gaps without persistence**: sequence 8.4 immediately after 8.8 to avoid rework; gate policy features behind flag until persistence lands.
+- **Telemetry lagging policy engine**: require 8.6 completion before enabling 8.9 SSE policy events; add logging fallbacks if metrics ingestion misses deadline.
+- **Policy loops once enabled**: enforce guardrails and monitoring during 8.9 delivery; coordinate with QA on scenario coverage.
 
 ## Sprint 3 Outlook
 
 ### Objectives
-- Finalize capability inventory and automated registration for all specialist agents.
+- Extend capability coverage to remaining specialist agents or new variants discovered during Sprint 2.
 - Harden resilience (retry policies, failure handling) and prepare for limited pilot rollout.
-- Address feedback from Sprint 2 testing and align with operator UX readiness.
+- Address feedback from Sprint 2 testing, including policy tuning and operator UX readiness.
 
 ### Candidate Stories
-- 8.7 Flex Capability Inventory & Registration Coverage.
 - Follow-up resilience tasks (e.g., dynamic policy conflict handling, planner heuristics refinements).
 - Operator enablement tasks: finalizing feature flag rollout SOP, UI polish for flex popup.
+- Additional capability onboarding or automation stories (e.g., 8.11+ once prioritized).
 
 ### Dependencies & Considerations
-- Capability inventory (8.7) depends on registry endpoint (8.2) and execution stability (8.3).
-- Planner refinements rely on telemetry insights from Sprint 2.
-- Pilot readiness requires PM coordination for training material updates.
+- Capability inventory rounding (new agents) depends on registry endpoint (8.2) and execution stability (8.3/8.10).
+- Dynamic planning (8.8) must be complete before resilience/policy follow-ups; telemetry insights from Sprint 2 inform Sprint 3 heuristics.
+- Resume/debug interfaces (8.5) and pilot readiness require persistence (8.4) to be hardened during Sprint 2.
 
 ### Risks & Mitigations
 - **Inventory drift**: establish review checklist; consider automated validation script.

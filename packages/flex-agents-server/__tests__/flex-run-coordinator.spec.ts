@@ -5,6 +5,7 @@ import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
 import { FlexPlanner } from '../src/services/flex-planner'
 import { getHitlContext } from '../src/services/hitl-context'
+import { CONTENT_CAPABILITY_ID } from '../src/agents/content-generator'
 
 class MemoryFlexPersistence {
   runs = new Map<string, any>()
@@ -114,7 +115,7 @@ class StubHitlService {
       id: `req_${Math.random().toString(36).slice(2, 8)}`,
       runId: this.runId,
       threadId: this.runId,
-      stepId: 'copywriter.linkedinVariants_1',
+      stepId: `${CONTENT_CAPABILITY_ID}_1`,
       stepStatusAtRequest: 'pending',
       originAgent: 'generation',
       payload,
@@ -149,7 +150,7 @@ class StubHitlService {
 
 function createCoordinator(persistence: MemoryFlexPersistence) {
   const capabilityRecord = {
-    capabilityId: 'copywriter.linkedinVariants',
+    capabilityId: CONTENT_CAPABILITY_ID,
     status: 'active' as const,
     version: '1.0.0',
     displayName: 'LinkedIn Variants',

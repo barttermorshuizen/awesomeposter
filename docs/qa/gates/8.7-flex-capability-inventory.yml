@@ -1,0 +1,37 @@
+schema: 1
+story: '8.7'
+story_title: 'Capability Inventory & Registration Coverage'
+gate: PASS
+status_reason: Capability registration plugin passes retry coverage and planner/execution now source registered capability IDs with validated contracts.
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-13T14:33:30.000Z'
+quality_score: 100
+expires: '2025-10-27T00:00:00.000Z'
+top_issues: []
+waiver:
+  active: false
+evidence:
+  tests_reviewed: 3
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: In-process capability POSTs with structured logging; recommend TLS when targeting remote registry endpoints.
+  performance:
+    status: PASS
+    notes: Registration retries/backoff and registry caching keep overhead minimal.
+  reliability:
+    status: PASS
+    notes: Plugin and service both retry failures and fall back to cached capability lookup paths.
+  maintainability:
+    status: PASS
+    notes: Capability metadata co-located with agent modules and documented inventory keeps updates straightforward.
+recommendations:
+  immediate: []
+  future:
+    - action: Add an integration test to exercise Nitro plugin startup registration end-to-end.
+      refs:
+        - packages/flex-agents-server/server/plugins/capability-registration.ts

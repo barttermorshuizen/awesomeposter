@@ -1,6 +1,7 @@
 import Ajv, { type ErrorObject } from 'ajv'
 import { z } from 'zod'
 import type { FlexPlan, FlexPlanNode } from './flex-planner'
+import { CONTENT_CAPABILITY_ID } from '../agents/content-generator'
 import type {
   TaskEnvelope,
   FlexEvent,
@@ -286,7 +287,7 @@ export class FlexExecutionEngine {
       return capability
     }
     if (capabilityId === 'mock.copywriter.linkedinVariants') {
-      const fallback = await this.capabilityRegistry.getCapabilityById('copywriter.linkedinVariants')
+      const fallback = await this.capabilityRegistry.getCapabilityById(CONTENT_CAPABILITY_ID)
       if (fallback && fallback.status === 'active') {
         return fallback
       }
@@ -318,7 +319,7 @@ export class FlexExecutionEngine {
     envelope: TaskEnvelope
   ): Promise<CapabilityResult> {
     switch (capability.capabilityId) {
-      case 'copywriter.linkedinVariants':
+      case CONTENT_CAPABILITY_ID:
       case 'mock.copywriter.linkedinVariants':
         return this.executeLinkedinVariants(capability, node, envelope)
       default:

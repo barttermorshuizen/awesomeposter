@@ -7,6 +7,7 @@ import type {
 } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
+import { CONTENT_CAPABILITY_ID } from '../agents/content-generator'
 
 export type FlexPlanEdge = { from: string; to: string }
 
@@ -155,7 +156,7 @@ export class FlexPlanner {
       } catch {}
     }
 
-    const fallback = await this.capabilityRegistry.getCapabilityById('copywriter.linkedinVariants')
+    const fallback = await this.capabilityRegistry.getCapabilityById(CONTENT_CAPABILITY_ID)
     if (fallback && fallback.status === 'active') {
       return fallback
     }

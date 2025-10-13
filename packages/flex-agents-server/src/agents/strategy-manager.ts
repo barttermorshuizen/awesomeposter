@@ -1,9 +1,185 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
+import type { CapabilityRegistration } from '@awesomeposter/shared'
+import { DEFAULT_MODEL_FALLBACK } from '../utils/model'
 
 export class StrategyManagerAgent {
   constructor(private runtime: AgentRuntime) {}
+}
+
+export const STRATEGY_CAPABILITY_ID = `${StrategyManagerAgent.name}.briefing` as const
+
+export const STRATEGY_CAPABILITY: CapabilityRegistration = {
+  capabilityId: STRATEGY_CAPABILITY_ID,
+  version: '1.0.0',
+  displayName: 'Strategy Manager',
+  summary: 'Plans rationale, writer brief, and knob configuration using client profile, brief inputs, and asset analysis.',
+  inputTraits: {
+    languages: ['en', 'nl'],
+    strengths: ['brief_planning', 'knob_configuration', 'asset_analysis'],
+    limitations: ['Requires objective and audience details from the client brief before proceeding.']
+  },
+  defaultContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      required: ['rationale', 'writerBrief', 'knobs'],
+      properties: {
+        rationale: {
+          type: 'string',
+          minLength: 10
+        },
+        writerBrief: {
+          type: 'object',
+          required: [
+            'clientName',
+            'objective',
+            'description',
+            'audience',
+            'platform',
+            'language',
+            'tone',
+            'angle',
+            'hooks',
+            'customInstructions',
+            'knobs'
+          ],
+          properties: {
+            clientName: { type: 'string', minLength: 1 },
+            objective: { type: 'string', minLength: 1 },
+            description: { type: 'string', minLength: 1 },
+            audience: { type: 'string', minLength: 1 },
+            platform: { type: 'string', minLength: 1 },
+            language: { type: 'string', minLength: 1 },
+            tone: { type: 'string', minLength: 1 },
+            angle: { type: 'string', minLength: 1 },
+            hooks: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 5,
+              items: { type: 'string', minLength: 3 }
+            },
+            cta: { type: 'string' },
+            customInstructions: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            constraints: {
+              type: 'object',
+              additionalProperties: true
+            },
+            knobs: {
+              type: 'object',
+              required: ['formatType', 'hookIntensity', 'expertiseDepth', 'structure'],
+              properties: {
+                formatType: {
+                  type: 'string',
+                  enum: ['text', 'single_image', 'multi_image', 'document_pdf', 'video']
+                },
+                hookIntensity: {
+                  type: 'number',
+                  minimum: 0,
+                  maximum: 1
+                },
+                expertiseDepth: {
+                  type: 'number',
+                  minimum: 0,
+                  maximum: 1
+                },
+                structure: {
+                  type: 'object',
+                  required: ['lengthLevel', 'scanDensity'],
+                  properties: {
+                    lengthLevel: {
+                      type: 'number',
+                      minimum: 0,
+                      maximum: 1
+                    },
+                    scanDensity: {
+                      type: 'number',
+                      minimum: 0,
+                      maximum: 1
+                    }
+                  },
+                  additionalProperties: false
+                }
+              },
+              additionalProperties: false
+            }
+          },
+          additionalProperties: true
+        },
+        knobs: {
+          type: 'object',
+          required: ['formatType', 'hookIntensity', 'expertiseDepth', 'structure'],
+          properties: {
+            formatType: {
+              type: 'string',
+              enum: ['text', 'single_image', 'multi_image', 'document_pdf', 'video']
+            },
+            hookIntensity: {
+              type: 'number',
+              minimum: 0,
+              maximum: 1
+            },
+            expertiseDepth: {
+              type: 'number',
+              minimum: 0,
+              maximum: 1
+            },
+            structure: {
+              type: 'object',
+              required: ['lengthLevel', 'scanDensity'],
+              properties: {
+                lengthLevel: {
+                  type: 'number',
+                  minimum: 0,
+                  maximum: 1
+                },
+                scanDensity: {
+                  type: 'number',
+                  minimum: 0,
+                  maximum: 1
+                }
+              },
+              additionalProperties: false
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      additionalProperties: true
+    }
+  },
+  cost: {
+    tier: 'standard',
+    estimatedTokens: 1800,
+    currency: 'USD',
+    pricePer1kTokens: 0.015
+  },
+  preferredModels: [DEFAULT_MODEL_FALLBACK],
+  heartbeat: {
+    intervalSeconds: 600,
+    timeoutSeconds: 1800
+  },
+  metadata: {
+    sourceFiles: [
+      'packages/flex-agents-server/src/agents/strategy-manager.ts',
+      'packages/flex-agents-server/src/tools/strategy.ts'
+    ],
+    runMode: 'agent',
+    scenarios: ['briefing', 'knob_planning'],
+    inputSchema: {
+      type: 'object',
+      properties: {
+        clientProfile: { type: 'object' },
+        brief: { type: 'object' },
+        assets: { type: 'array' }
+      },
+      additionalProperties: true
+    }
+  }
 }
 
 // Agents SDK configuration for the Strategy specialist
@@ -13,7 +189,6 @@ export const STRATEGY_TOOLS = [
   HITL_TOOL_NAME
 ] as const
 
-// Default (app/workflow) instructions – structured output preferred
 const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
 
 export const STRATEGY_INSTRUCTIONS_APP = [
@@ -103,14 +278,14 @@ export function createStrategyAgent(
   runtime: AgentRuntime,
   onEvent?: (
     e: {
-      type: 'tool_call' | 'tool_result' | 'metrics';
-      name?: string;
+      type: 'tool_call' | 'tool_result' | 'metrics'
+      name?: string
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Agents SDK emits arbitrary tool arguments
-      args?: any;
+      args?: any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool outputs are passthrough from agents runtime
-      result?: any;
-      tokens?: number;
-      durationMs?: number;
+      result?: any
+      tokens?: number
+      durationMs?: number
     }
   ) => void,
   opts?: { policy?: 'auto' | 'required' | 'off'; requestAllowlist?: string[] },
