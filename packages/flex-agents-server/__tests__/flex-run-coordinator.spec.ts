@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { FlexEvent, TaskEnvelope, HitlRunState, HitlRequestRecord, HitlRequestPayload } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
@@ -114,7 +114,7 @@ class StubHitlService {
       id: `req_${Math.random().toString(36).slice(2, 8)}`,
       runId: this.runId,
       threadId: this.runId,
-      stepId: 'mock.copywriter.linkedinVariants_1',
+      stepId: 'copywriter.linkedinVariants_1',
       stepStatusAtRequest: 'pending',
       originAgent: 'generation',
       payload,
@@ -148,19 +148,79 @@ class StubHitlService {
 }
 
 function createCoordinator(persistence: MemoryFlexPersistence) {
-  const planner = new FlexPlanner({
-    async getCapabilityById() {
-      return {
-        capabilityId: 'mock.copywriter.linkedinVariants',
-        status: 'active'
+  const capabilityRecord = {
+    capabilityId: 'copywriter.linkedinVariants',
+    status: 'active' as const,
+    version: '1.0.0',
+    displayName: 'LinkedIn Variants',
+    summary: 'Generates LinkedIn post variants from envelope context.',
+    defaultContract: {
+      mode: 'json_schema' as const,
+      schema: {
+        type: 'object',
+        required: ['variants'],
+        properties: {
+          variants: {
+            type: 'array',
+            minItems: 2,
+            items: {
+              type: 'object',
+              required: ['headline', 'body', 'callToAction'],
+              properties: {
+                headline: { type: 'string', minLength: 5 },
+                body: { type: 'string', minLength: 20 },
+                callToAction: { type: 'string', minLength: 2 }
+              }
+            }
+          }
+        }
       }
+    },
+    metadata: { scenarios: ['linkedin_post_variants'] }
+  }
+
+  const registry = {
+    async listActive() {
+      return [capabilityRecord]
+    },
+    async getCapabilityById(id: string) {
+      if (id === capabilityRecord.capabilityId) {
+        return capabilityRecord
+      }
+      return undefined
     }
-  } as any, { now: () => new Date('2025-04-01T12:00:00.000Z') })
-  const engine = new FlexExecutionEngine(persistence as any)
+  }
+
+  const planner = new FlexPlanner(registry as any, { now: () => new Date('2025-04-01T12:00:00.000Z') })
+
+  const runtime = {
+    runStructured: vi.fn(async () => ({
+      variants: [
+        {
+          headline: 'Team Retreat Spotlight',
+          body: 'AwesomePoster just wrapped an unforgettable retreat and is searching for creators who love building tooling for developers.',
+          callToAction: 'Join the team'
+        },
+        {
+          headline: 'Build The Future With AwesomePoster',
+          body: 'We are expanding our developer experience crew and want teammates who thrive on human-first automation to shape the roadmap.',
+          callToAction: 'Apply today'
+        }
+      ]
+    }))
+  }
+
+  const engine = new FlexExecutionEngine(persistence as any, {
+    runtime: runtime as any,
+    capabilityRegistry: registry as any
+  })
+
   const hitlService = new StubHitlService()
   return {
     coordinator: new FlexRunCoordinator(persistence as any, planner, engine, hitlService as any),
-    hitlService
+    hitlService,
+    runtime,
+    capability: capabilityRecord
   }
 }
 
@@ -252,8 +312,18 @@ describe('FlexRunCoordinator', () => {
 
   it('emits validation_error and fails when output schema is stricter than stub', async () => {
     const persistence = new MemoryFlexPersistence()
-    const { coordinator } = createCoordinator(persistence)
+    const { coordinator, runtime } = createCoordinator(persistence)
     const events: FlexEvent[] = []
+
+    runtime.runStructured.mockResolvedValueOnce({
+      variants: [
+        {
+          headline: 'Only Variant',
+          body: 'Single variant body content that exceeds the minimum length requirement for validation.',
+          callToAction: 'Learn more'
+        }
+      ]
+    })
 
     const envelope = buildEnvelope({
       inputs: {
@@ -281,11 +351,12 @@ describe('FlexRunCoordinator', () => {
         correlationId: 'cid_fail',
         onEvent: async (evt) => events.push(evt)
       })
-    ).rejects.toThrow('Output validation failed')
+    ).rejects.toThrow('capability_output validation failed')
 
     const validationFrames = events.filter((evt) => evt.type === 'validation_error')
     expect(validationFrames).toHaveLength(1)
     const [frame] = validationFrames
+    expect((frame.payload as any)?.scope).toBe('capability_output')
     expect(Array.isArray((frame.payload as any)?.errors)).toBe(true)
   })
 
@@ -338,5 +409,45 @@ describe('FlexRunCoordinator', () => {
     expect(resumeEvents.map((evt) => evt.type)).toContain('plan_generated')
     expect(resumeEvents.some((evt) => evt.type === 'complete')).toBe(true)
     expect(persistence.statuses.get(resumeResult.runId)).toBe('completed')
+  })
+
+  it('starts a fresh run when threadId matches a completed run', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+
+    const firstEnvelope = buildEnvelope()
+    firstEnvelope.metadata = { ...(firstEnvelope.metadata ?? {}), clientId: 'awesomeposter-marketing', threadId: 'thread_shared' }
+
+    const firstEvents: FlexEvent[] = []
+    const firstResult = await coordinator.run(firstEnvelope, {
+      correlationId: 'cid_thread_fresh_1',
+      onEvent: async (evt) => firstEvents.push(evt)
+    })
+
+    expect(firstResult.status).toBe('completed')
+    const storedFirst = persistence.runs.get(firstResult.runId)
+    expect(storedFirst?.envelope.objective).toBe(firstEnvelope.objective)
+
+    const secondEnvelope = buildEnvelope({
+      objective: 'Create refreshed LinkedIn variants',
+      inputs: {
+        channel: 'linkedin',
+        variantCount: 3
+      } as any
+    })
+    secondEnvelope.metadata = { ...(secondEnvelope.metadata ?? {}), clientId: 'awesomeposter-marketing', threadId: 'thread_shared' }
+
+    const secondEvents: FlexEvent[] = []
+    const secondResult = await coordinator.run(secondEnvelope, {
+      correlationId: 'cid_thread_fresh_2',
+      onEvent: async (evt) => secondEvents.push(evt)
+    })
+
+    expect(secondResult.status).toBe('completed')
+    expect(secondResult.runId).not.toBe(firstResult.runId)
+
+    const storedSecond = persistence.runs.get(secondResult.runId)
+    expect(storedSecond?.envelope.objective).toBe('Create refreshed LinkedIn variants')
+    expect((storedSecond?.envelope.inputs as Record<string, unknown> | undefined)?.variantCount).toBe(3)
   })
 })

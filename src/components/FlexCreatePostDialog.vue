@@ -378,10 +378,14 @@ const parseHitlRequestPayload = (payload: unknown): HitlRequestEventPayload | nu
 
 function handleEvent(evt: FlexEventWithId) {
   frames.value.push(evt)
+  if (typeof evt.runId === 'string' && evt.runId.length > 0) {
+    runId.value = evt.runId
+    hitlStore.setRunId(evt.runId)
+  }
   switch (evt.type) {
     case 'start': {
       const data = evt.payload as Record<string, unknown> | undefined
-      const startedRunId = typeof data?.runId === 'string' ? data.runId : null
+      const startedRunId = typeof data?.runId === 'string' ? data.runId : runId.value
       if (startedRunId) {
         runId.value = startedRunId
         hitlStore.setRunId(startedRunId)
@@ -418,8 +422,15 @@ function handleEvent(evt: FlexEventWithId) {
       break
     }
     case 'validation_error': {
-      errorMsg.value = 'Output did not satisfy caller schema.'
+      const payload = evt.payload as Record<string, unknown> | undefined
+      const errors = Array.isArray(payload?.errors) ? (payload!.errors as Array<Record<string, unknown>>) : []
+      const scope = typeof payload?.scope === 'string' ? payload.scope : 'output'
+      const first = errors.find((entry) => typeof entry?.message === 'string')
+      errorMsg.value = first?.message
+        ? `Validation failed: ${first.message}`
+        : `Validation failed for ${scope.replace(/_/g, ' ')}`
       status.value = 'error'
+      running.value = false
       break
     }
     case 'hitl_request': {
@@ -428,12 +439,13 @@ function handleEvent(evt: FlexEventWithId) {
       const hitlPayload = parseHitlRequestPayload(evt.payload)
       const request = hitlPayload?.request
       if (request) {
+        const threadForRequest = pendingRun.value.threadId ?? props.brief?.id ?? null
         hitlStore.startTrackingRequest({
           requestId: request.id,
           payload: request.payload,
           originAgent: request.originAgent,
           receivedAt: request.createdAt ? new Date(request.createdAt) : new Date(),
-          threadId: runId.value ?? pendingRun.value.threadId ?? null
+          threadId: threadForRequest
         })
         hitlStore.markAwaiting(request.id)
       }

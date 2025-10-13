@@ -57,8 +57,9 @@
 - ~4.5 engineer-weeks (platform 2.0w, backend 1.5w, SRE/observability 1.0w) + 0.5 QA week for integration testing.
 - Hold 0.5 engineer-week buffer for HITL edge-case fixes uncovered during testing.
 
-### Quality & Readiness Work
+### Quality & Readiness Work/a
 - Integration tests covering happy path, validation failure, HITL pause/resume, and resume endpoint error cases.
+- Real capability dispatch wired through registry + AgentRuntime with structured telemetry and scoped validation errors for UI consumption.
 - Ajv schema compilation caching profiled under load; include regression tests to prevent performance regressions.
 - Logging snapshot tests verifying field presence; update monitoring dashboards with `flex.*` metrics.
 - Run staging environment smoke of flex popup behind env flag; ensure legacy flows untouched.

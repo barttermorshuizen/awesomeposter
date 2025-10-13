@@ -60,17 +60,22 @@ export class FlexRunCoordinator {
       : null
     const providedThreadId = resolveThreadId(envelope)
 
-    let existing = providedRunId ? await this.persistence.loadFlexRun(providedRunId) : null
-    if (!existing && providedThreadId) {
-      existing = await this.persistence.findFlexRunByThreadId(providedThreadId)
-    }
+    const loadedByRunId = providedRunId ? await this.persistence.loadFlexRun(providedRunId) : null
+    const loadedByThreadId = providedThreadId ? await this.persistence.findFlexRunByThreadId(providedThreadId) : null
 
-    const runId = existing?.run.runId ?? `flex_${genCorrelationId()}`
-    const threadId = providedThreadId ?? existing?.run.threadId ?? null
-    const envelopeToUse = existing ? existing.run.envelope : envelope
+    const isAwaitingHitl = (snapshot: typeof loadedByRunId | typeof loadedByThreadId | null): snapshot is NonNullable<typeof snapshot> =>
+      Boolean(snapshot && snapshot.run.status === 'awaiting_hitl')
+
+    const resumeCandidate =
+      (isAwaitingHitl(loadedByRunId) ? loadedByRunId : null) ??
+      (isAwaitingHitl(loadedByThreadId) ? loadedByThreadId : null)
+
+    const runId = resumeCandidate?.run.runId ?? `flex_${genCorrelationId()}`
+    const threadId = providedThreadId ?? resumeCandidate?.run.threadId ?? null
+    const envelopeToUse = resumeCandidate ? resumeCandidate.run.envelope : envelope
     const schemaHashValue = schemaHash(envelopeToUse.outputContract)
 
-    if (!existing) {
+    if (!resumeCandidate) {
       await this.persistence.createOrUpdateRun({
         runId,
         envelope: envelopeToUse,
@@ -129,13 +134,13 @@ export class FlexRunCoordinator {
       }
     })
 
-    const isResume = Boolean(existing && existing.run.status === 'awaiting_hitl')
+    const isResume = Boolean(resumeCandidate)
 
-    if (isResume && existing) {
+    if (isResume && resumeCandidate) {
       updateHitlState(hitlState)
       await this.persistence.updateStatus(runId, 'running')
 
-      const plan = this.rehydratePlan(existing, envelopeToUse)
+      const plan = this.rehydratePlan(resumeCandidate, envelopeToUse)
       await opts.onEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -153,13 +158,14 @@ export class FlexRunCoordinator {
         }
       })
 
-      const finalOutput = existing.run.result ?? this.extractFinalOutput(existing.nodes)
+      const finalOutput = resumeCandidate.run.result ?? this.extractFinalOutput(resumeCandidate.nodes)
       if (!finalOutput) {
         throw new Error('No stored output available for flex HITL resume')
       }
 
       await this.engine.resumePending(runId, envelopeToUse, plan, finalOutput, {
         onEvent: opts.onEvent,
+        correlationId: opts.correlationId,
         hitl: {
           service: this.hitlService,
           state: hitlState,
@@ -202,6 +208,7 @@ export class FlexRunCoordinator {
       await this.persistence.updateStatus(runId, 'running')
       const finalOutput = await this.engine.execute(runId, envelopeToUse, plan, {
         onEvent: opts.onEvent,
+        correlationId: opts.correlationId,
         hitl: {
           service: this.hitlService,
           state: hitlState,

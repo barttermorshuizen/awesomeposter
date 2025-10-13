@@ -1,4 +1,5 @@
-import Ajv from 'ajv'
+import Ajv, { type ErrorObject } from 'ajv'
+import { z } from 'zod'
 import type { FlexPlan, FlexPlanNode } from './flex-planner'
 import type {
   TaskEnvelope,
@@ -6,14 +7,35 @@ import type {
   OutputContract,
   HitlRunState,
   HitlRequestRecord,
-  HitlRequestPayload
+  HitlRequestPayload,
+  CapabilityRecord
 } from '@awesomeposter/shared'
 import { FlexRunPersistence } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
 import type { HitlService } from './hitl-service'
+import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
+import { getAgents } from './agents-container'
+import type { AgentRuntime } from './agent-runtime'
+import { getLogger } from './logger'
+
+type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
+type AjvInstance = ReturnType<typeof Ajv>
+type AjvValidateFn = ReturnType<AjvInstance['compile']>
+
+class FlexValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly scope: 'capability_input' | 'capability_output' | 'final_output' | 'envelope',
+    public readonly errors: ErrorObject[]
+  ) {
+    super(message)
+    this.name = 'FlexValidationError'
+  }
+}
 
 export type FlexExecutionOptions = {
   onEvent: (event: FlexEvent) => Promise<void>
+  correlationId?: string
   hitl?: {
     service: HitlService
     state: HitlRunState
@@ -37,17 +59,27 @@ export class HitlPauseError extends Error {
 }
 
 export class FlexExecutionEngine {
-  private readonly ajv: Ajv
+  private readonly ajv: AjvInstance
+  private readonly validatorCache = new Map<string, AjvValidateFn>()
+  private readonly runtime: StructuredRuntime
+  private readonly capabilityRegistry: FlexCapabilityRegistryService
 
   constructor(
     private readonly persistence = new FlexRunPersistence(),
-    options?: { ajv?: Ajv }
+    options?: {
+      ajv?: AjvInstance
+      runtime?: StructuredRuntime
+      capabilityRegistry?: FlexCapabilityRegistryService
+    }
   ) {
-    this.ajv = options?.ajv ?? new Ajv({ allErrors: true, strict: false })
+    this.ajv = options?.ajv ?? new Ajv({ allErrors: true })
+    this.runtime = options?.runtime ?? getAgents().runtime
+    this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
   }
 
   async execute(runId: string, envelope: TaskEnvelope, plan: FlexPlan, opts: FlexExecutionOptions) {
     const nodeOutputs = new Map<string, Record<string, unknown>>()
+
     for (const node of plan.nodes) {
       const startedAt = new Date()
       await this.persistence.markNode(runId, node.id, {
@@ -57,43 +89,85 @@ export class FlexExecutionEngine {
         context: node.bundle,
         startedAt
       })
-      await opts.onEvent(this.buildEvent('node_start', {
-        nodeId: node.id,
-        capabilityId: node.capabilityId,
-        label: node.label,
-        startedAt: startedAt.toISOString()
-      }))
+      try {
+        getLogger().info('flex_node_start', {
+          runId,
+          nodeId: node.id,
+          capabilityId: node.capabilityId,
+          correlationId: opts.correlationId
+        })
+      } catch {}
+      await opts.onEvent(
+        this.buildEvent(
+          'node_start',
+          {
+            capabilityId: node.capabilityId,
+            label: node.label,
+            startedAt: startedAt.toISOString()
+          },
+          { runId, nodeId: node.id }
+        )
+      )
 
       try {
-        const result = await this.executeCapability(node, envelope)
+        const result = await this.invokeCapability(runId, node, envelope, opts)
         nodeOutputs.set(node.id, result.output)
+
         const completedAt = new Date()
         await this.persistence.markNode(runId, node.id, {
           status: 'completed',
           output: result.output,
           completedAt
         })
-        await opts.onEvent(this.buildEvent('node_complete', {
-          nodeId: node.id,
-          capabilityId: node.capabilityId,
-          label: node.label,
-          completedAt: completedAt.toISOString(),
-          output: result.output
-        }))
-      } catch (err) {
+        try {
+          getLogger().info('flex_node_complete', {
+            runId,
+            nodeId: node.id,
+            capabilityId: node.capabilityId,
+            correlationId: opts.correlationId
+          })
+        } catch {}
+        await opts.onEvent(
+          this.buildEvent(
+            'node_complete',
+            {
+              capabilityId: node.capabilityId,
+              label: node.label,
+              completedAt: completedAt.toISOString(),
+              output: result.output
+            },
+            { runId, nodeId: node.id }
+          )
+        )
+      } catch (error) {
         const errorAt = new Date()
+        const serialized = this.serializeError(error)
         await this.persistence.markNode(runId, node.id, {
           status: 'error',
-          error: this.serializeError(err),
+          error: serialized,
           completedAt: errorAt
         })
-        await opts.onEvent(this.buildEvent('node_error', {
-          nodeId: node.id,
-          capabilityId: node.capabilityId,
-          label: node.label,
-          error: this.serializeError(err)
-        }))
-        throw err
+        try {
+          getLogger().error('flex_node_error', {
+            runId,
+            nodeId: node.id,
+            capabilityId: node.capabilityId,
+            correlationId: opts.correlationId,
+            error: serialized.message ?? serialized.name ?? 'unknown_error'
+          })
+        } catch {}
+        await opts.onEvent(
+          this.buildEvent(
+            'node_error',
+            {
+              capabilityId: node.capabilityId,
+              label: node.label,
+              error: serialized
+            },
+            { runId, nodeId: node.id, message: serialized.message as string | undefined }
+          )
+        )
+        throw error
       }
     }
 
@@ -158,64 +232,253 @@ export class FlexExecutionEngine {
       }
     }
 
-    const validation = await this.validateOutput(envelope.outputContract, finalOutput)
-    if (!validation.ok) {
-      await opts.onEvent(this.buildEvent('validation_error', {
-        errors: validation.errors
-      }))
-      throw new Error('Output validation failed')
-    }
+    await this.ensureOutputMatchesContract(
+      envelope.outputContract,
+      finalOutput,
+      { scope: 'final_output', runId },
+      opts
+    )
 
     await this.persistence.recordResult(runId, finalOutput)
-    await opts.onEvent(this.buildEvent('complete', {
-      output: finalOutput
-    }))
+    await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
     return finalOutput
   }
 
-  private async executeCapability(node: FlexPlanNode, envelope: TaskEnvelope): Promise<CapabilityResult> {
-    switch (node.capabilityId) {
-      case 'mock.copywriter.linkedinVariants':
-        return { output: this.runLinkedinStub(node, envelope) }
-      default:
-        throw new Error(`Unsupported capability ${node.capabilityId}`)
+  private async invokeCapability(
+    runId: string,
+    node: FlexPlanNode,
+    envelope: TaskEnvelope,
+    opts: FlexExecutionOptions
+  ): Promise<CapabilityResult> {
+    const capability = await this.resolveCapability(node.capabilityId)
+    await this.validateCapabilityInputs(capability, node, runId, opts)
+    try {
+      getLogger().info('flex_capability_dispatch_start', {
+        runId,
+        nodeId: node.id,
+        capabilityId: capability.capabilityId,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+    const result = await this.dispatchCapability(capability, node, envelope)
+    try {
+      getLogger().info('flex_capability_dispatch_complete', {
+        runId,
+        nodeId: node.id,
+        capabilityId: capability.capabilityId,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+    if (capability.defaultContract) {
+      await this.ensureOutputMatchesContract(
+        capability.defaultContract,
+        result.output,
+        { scope: 'capability_output', runId, nodeId: node.id },
+        opts
+      )
+    }
+    return result
+  }
+
+  private async resolveCapability(capabilityId: string): Promise<CapabilityRecord> {
+    const capability = await this.capabilityRegistry.getCapabilityById(capabilityId)
+    if (capability && capability.status === 'active') {
+      return capability
+    }
+    if (capabilityId === 'mock.copywriter.linkedinVariants') {
+      const fallback = await this.capabilityRegistry.getCapabilityById('copywriter.linkedinVariants')
+      if (fallback && fallback.status === 'active') {
+        return fallback
+      }
+    }
+    throw new Error(`Capability ${capabilityId} not registered or inactive`)
+  }
+
+  private async validateCapabilityInputs(
+    capability: CapabilityRecord,
+    node: FlexPlanNode,
+    runId: string,
+    opts: FlexExecutionOptions
+  ) {
+    const metadata = (capability.metadata ?? {}) as Record<string, unknown>
+    const schema = metadata.inputSchema
+    if (schema && typeof schema === 'object') {
+      await this.validateSchema(
+        schema as Record<string, unknown>,
+        node.bundle.inputs ?? {},
+        { scope: 'capability_input', runId, nodeId: node.id },
+        opts
+      )
     }
   }
 
-  private runLinkedinStub(node: FlexPlanNode, envelope: TaskEnvelope): Record<string, unknown> {
-    const inputs = (node.bundle.inputs ?? {}) as Record<string, unknown>
-    const variantCount = Number(inputs.variantCount || 2)
-    const profile = this.pickCompanyProfile(inputs)
-    const goal = String(inputs.goal ?? envelope.objective ?? '')
+  private async dispatchCapability(
+    capability: CapabilityRecord,
+    node: FlexPlanNode,
+    envelope: TaskEnvelope
+  ): Promise<CapabilityResult> {
+    switch (capability.capabilityId) {
+      case 'copywriter.linkedinVariants':
+      case 'mock.copywriter.linkedinVariants':
+        return this.executeLinkedinVariants(capability, node, envelope)
+      default:
+        throw new Error(`Unsupported capability ${capability.capabilityId}`)
+    }
+  }
 
-    const variants = Array.from({ length: Math.max(1, Math.min(variantCount, 5)) }, (_, idx) => {
-      const tone = String(inputs.tone ?? inputs.brandVoice ?? 'inspiring')
-      const focus = idx === 0 ? 'team culture' : 'career growth'
-      const companyName = profile.companyName || 'AwesomePoster'
-      return {
-        headline: `${companyName} ${focus === 'team culture' ? 'Teams Thrive Together' : 'Is Hiring DX Builders'}`,
-        body: [
-          `${companyName} just wrapped an unforgettable ${profile.recentEvent || 'team retreat'}.`,
-          `We are building human-first automation for developer experience and want teammates who care about ${focus}.`
-        ].join(' '),
-        callToAction: focus === 'team culture' ? 'Join the Adventure' : 'Apply Today',
-        tone
-      }
+  private async executeLinkedinVariants(
+    capability: CapabilityRecord,
+    node: FlexPlanNode,
+    envelope: TaskEnvelope
+  ): Promise<CapabilityResult> {
+    const inputs = (node.bundle.inputs ?? {}) as Record<string, unknown>
+    const requestedCount = inputs.variantCount ?? (envelope.inputs as Record<string, unknown> | undefined)?.variantCount
+    const variantCount = this.normalizeVariantCount(requestedCount)
+    const boundedCount = Math.max(1, Math.min(variantCount, 5))
+
+    const schema = z.object({
+      variants: z
+        .array(
+          z.object({
+            headline: z.string().min(5),
+            body: z.string().min(20),
+            callToAction: z.string().min(2)
+          })
+        )
+        .min(boundedCount)
+        .max(boundedCount)
     })
 
-    return { variants }
+    const companyProfile = this.extractCompanyProfile(inputs)
+    const policies = (envelope.policies ?? {}) as Record<string, unknown>
+    const tone =
+      String(inputs.brandVoice ?? inputs.tone ?? policies.brandVoice ?? '')
+        .trim()
+        .toLowerCase() || 'professional'
+
+    const messages = this.buildLinkedinMessages({
+      envelope,
+      variantCount: boundedCount,
+      tone,
+      companyProfile,
+      instructions: node.bundle.instructions ?? [],
+      inputs
+    })
+
+    try {
+      const key = process.env.FLEX_OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
+      getLogger().info('flex_openai_key_preview', {
+        hasKey: Boolean(key),
+        prefix: key ? `${key.slice(0, 6)}***` : null
+      })
+    } catch {}
+
+    const output = await this.runtime.runStructured(schema, messages, { schemaName: 'FlexLinkedInVariants' })
+    return { output: output as Record<string, unknown> }
   }
 
-  private pickCompanyProfile(inputs: Record<string, unknown>): Record<string, string> {
-    const bundle = Array.isArray(inputs.contextBundles) ? inputs.contextBundles : []
-    const profile = bundle.find((entry: any) => entry && entry.type === 'company_profile')
-    if (profile && typeof profile.payload === 'object' && profile.payload) {
-      return profile.payload as Record<string, string>
+  private buildLinkedinMessages(args: {
+    envelope: TaskEnvelope
+    variantCount: number
+    tone: string
+    companyProfile: Record<string, unknown>
+    instructions: string[]
+    inputs: Record<string, unknown>
+  }) {
+    const { envelope, variantCount, tone, companyProfile, instructions, inputs } = args
+    const sections: string[] = []
+
+    sections.push(`Objective: ${envelope.objective}`)
+
+    const goal =
+      inputs.goal ??
+      (typeof (envelope.inputs as Record<string, unknown> | undefined)?.goal !== 'undefined'
+        ? (envelope.inputs as Record<string, unknown> | undefined)?.goal
+        : undefined)
+    if (goal) sections.push(`Goal: ${String(goal)}`)
+    if (inputs.audience) sections.push(`Audience: ${String(inputs.audience)}`)
+    sections.push(`Tone: ${tone}`)
+
+    const profileSummary = this.describeCompanyProfile(companyProfile)
+    if (profileSummary) {
+      sections.push(profileSummary)
+    }
+
+    const contextBundles = Array.isArray(inputs.contextBundles) ? inputs.contextBundles : []
+    const extraBundles = contextBundles
+      .filter((bundle: any) => bundle && bundle.type && bundle.type !== 'company_profile')
+      .map((bundle: any) => {
+        const descriptor = typeof bundle.type === 'string' ? bundle.type : 'context'
+        const payload = bundle.payload ?? bundle.value ?? bundle
+        return `Context bundle (${descriptor}): ${JSON.stringify(payload)}`
+      })
+    if (extraBundles.length) {
+      sections.push(extraBundles.join('\n'))
+    }
+
+    if (instructions.length) {
+      sections.push(
+        ['Special instructions:']
+          .concat(instructions.map((instruction) => `- ${instruction}`))
+          .join('\n')
+      )
+    }
+
+    sections.push(`Produce ${variantCount} LinkedIn post variant${variantCount === 1 ? '' : 's'} as JSON.`)
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [
+      {
+        role: 'system',
+        content: [
+          'You are a marketing copywriter generating LinkedIn post variants.',
+          `Return a JSON object with a "variants" array containing exactly ${variantCount} entries.`,
+          'Each variant must include "headline", "body", and "callToAction" fields with polished copy.',
+          'Do not include markdown fences or commentary—return JSON only.'
+        ].join('\n')
+      },
+      {
+        role: 'user',
+        content: sections.join('\n\n')
+      }
+    ]
+
+    return messages
+  }
+
+  private describeCompanyProfile(profile: Record<string, unknown>): string | null {
+    const entries = Object.entries(profile).filter(
+      ([, value]) => typeof value === 'string' && value.trim().length > 0
+    )
+    if (!entries.length) return null
+    const humanize = (key: string) =>
+      key
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/[_\s]+/g, ' ')
+        .trim()
+        .replace(/\b\w/g, (ch) => ch.toUpperCase())
+    const lines = entries.map(([key, value]) => `- ${humanize(key)}: ${String(value)}`)
+    return ['Company profile:', ...lines].join('\n')
+  }
+
+  private extractCompanyProfile(inputs: Record<string, unknown>): Record<string, unknown> {
+    const bundles = Array.isArray(inputs.contextBundles) ? inputs.contextBundles : []
+    const profileBundle = bundles.find((entry: any) => entry && entry.type === 'company_profile')
+    if (profileBundle && typeof profileBundle.payload === 'object' && profileBundle.payload) {
+      return profileBundle.payload as Record<string, unknown>
     }
     if (typeof inputs.companyProfile === 'object' && inputs.companyProfile) {
-      return inputs.companyProfile as Record<string, string>
+      return inputs.companyProfile as Record<string, unknown>
     }
     return {}
+  }
+
+  private normalizeVariantCount(raw: unknown): number {
+    const num = Number(raw)
+    if (!Number.isFinite(num)) return 2
+    const clamped = Math.floor(num)
+    if (clamped < 1) return 1
+    if (clamped > 5) return 5
+    return clamped
   }
 
   private composeFinalOutput(plan: FlexPlan, nodeOutputs: Map<string, Record<string, unknown>>) {
@@ -229,7 +492,9 @@ export class FlexExecutionEngine {
     const objective = (envelope.objective || '').trim()
     const summaryLines = [
       objective ? `Objective: ${objective}` : null,
-      variants.length ? `Generated ${variants.length} variant${variants.length === 1 ? '' : 's'} for review.` : 'No structured variants detected.'
+      variants.length
+        ? `Generated ${variants.length} variant${variants.length === 1 ? '' : 's'} for review.`
+        : 'No structured variants detected.'
     ].filter(Boolean) as string[]
 
     return {
@@ -257,25 +522,85 @@ export class FlexExecutionEngine {
     return false
   }
 
-  private async validateOutput(contract: OutputContract, output: Record<string, unknown>) {
-    if (contract.mode === 'json_schema') {
-      const validator = this.ajv.compile(contract.schema as Record<string, unknown>)
-      const ok = validator(output)
-      if (ok) return { ok: true as const }
-      return {
-        ok: false as const,
-        errors: (validator.errors || []).map((err) => ({
-          message: err.message,
-          instancePath: err.instancePath,
-          keyword: err.keyword,
-          params: err.params
-        }))
-      }
+  private async ensureOutputMatchesContract(
+    contract: OutputContract,
+    output: Record<string, unknown>,
+    context: { scope: 'capability_output' | 'final_output'; runId: string; nodeId?: string },
+    opts: FlexExecutionOptions
+  ) {
+    if (contract.mode !== 'json_schema') return
+    await this.validateSchema(contract.schema as Record<string, unknown>, output, context, opts)
+  }
+
+  private getValidator(schema: Record<string, unknown>) {
+    const key = JSON.stringify(schema)
+    let validator = this.validatorCache.get(key)
+    if (!validator) {
+      validator = this.ajv.compile(JSON.parse(key))
+      this.validatorCache.set(key, validator)
     }
-    return { ok: true as const }
+    return validator
+  }
+
+  private async validateSchema(
+    schema: Record<string, unknown>,
+    data: unknown,
+    context: { scope: 'capability_input' | 'capability_output' | 'final_output'; runId: string; nodeId?: string },
+    opts: FlexExecutionOptions
+  ) {
+    const validator = this.getValidator(schema)
+    const ok = validator(data)
+    if (ok) return
+    const errors = (validator.errors || []) as ErrorObject[]
+    await this.emitValidationError(errors, context, opts)
+    throw new FlexValidationError(`${context.scope} validation failed`, context.scope, errors)
+  }
+
+  private mapAjvErrors(errors: ErrorObject[]) {
+    return errors.map((err) => ({
+      message: err.message,
+      instancePath: (err as any).instancePath ?? err.dataPath ?? '',
+      keyword: err.keyword,
+      params: err.params ?? {},
+      schemaPath: err.schemaPath
+    }))
+  }
+
+  private async emitValidationError(
+    errors: ErrorObject[],
+    context: { scope: 'capability_input' | 'capability_output' | 'final_output'; runId: string; nodeId?: string },
+    opts: FlexExecutionOptions
+  ) {
+    const normalized = this.mapAjvErrors(errors)
+    try {
+      getLogger().warn('flex_validation_failed', {
+        runId: context.runId,
+        nodeId: context.nodeId,
+        scope: context.scope,
+        errorCount: normalized.length
+      })
+    } catch {}
+    await opts.onEvent(
+      this.buildEvent(
+        'validation_error',
+        {
+          scope: context.scope,
+          errors: normalized
+        },
+        { runId: context.runId, nodeId: context.nodeId }
+      )
+    )
   }
 
   private serializeError(err: unknown): Record<string, unknown> {
+    if (err instanceof FlexValidationError) {
+      return {
+        message: err.message,
+        name: err.name,
+        scope: err.scope,
+        errors: this.mapAjvErrors(err.errors)
+      }
+    }
     if (err instanceof Error) {
       return {
         message: err.message,
@@ -286,11 +611,18 @@ export class FlexExecutionEngine {
     return { message: String(err) }
   }
 
-  private buildEvent(type: FlexEvent['type'], payload: Record<string, unknown>): FlexEvent {
+  private buildEvent(
+    type: FlexEvent['type'],
+    payload: Record<string, unknown>,
+    meta?: { runId?: string; nodeId?: string; message?: string }
+  ): FlexEvent {
     return {
       type,
       timestamp: new Date().toISOString(),
-      payload
+      payload,
+      runId: meta?.runId,
+      nodeId: meta?.nodeId,
+      message: meta?.message
     }
   }
 
@@ -308,12 +640,17 @@ export class FlexExecutionEngine {
         status: 'running',
         startedAt: startAt
       })
-      await opts.onEvent(this.buildEvent('node_start', {
-        nodeId: terminalNode.id,
-        capabilityId: terminalNode.capabilityId,
-        label: terminalNode.label,
-        startedAt: startAt.toISOString()
-      }))
+      await opts.onEvent(
+        this.buildEvent(
+          'node_start',
+          {
+            capabilityId: terminalNode.capabilityId,
+            label: terminalNode.label,
+            startedAt: startAt.toISOString()
+          },
+          { runId, nodeId: terminalNode.id }
+        )
+      )
 
       const completedAt = new Date()
       await this.persistence.markNode(runId, terminalNode.id, {
@@ -321,27 +658,29 @@ export class FlexExecutionEngine {
         output: finalOutput,
         completedAt
       })
-      await opts.onEvent(this.buildEvent('node_complete', {
-        nodeId: terminalNode.id,
-        capabilityId: terminalNode.capabilityId,
-        label: terminalNode.label,
-        completedAt: completedAt.toISOString(),
-        output: finalOutput
-      }))
+      await opts.onEvent(
+        this.buildEvent(
+          'node_complete',
+          {
+            capabilityId: terminalNode.capabilityId,
+            label: terminalNode.label,
+            completedAt: completedAt.toISOString(),
+            output: finalOutput
+          },
+          { runId, nodeId: terminalNode.id }
+        )
+      )
     }
 
-    const validation = await this.validateOutput(envelope.outputContract, finalOutput)
-    if (!validation.ok) {
-      await opts.onEvent(this.buildEvent('validation_error', {
-        errors: validation.errors
-      }))
-      throw new Error('Output validation failed')
-    }
+    await this.ensureOutputMatchesContract(
+      envelope.outputContract,
+      finalOutput,
+      { scope: 'final_output', runId },
+      opts
+    )
 
     await this.persistence.recordResult(runId, finalOutput)
-    await opts.onEvent(this.buildEvent('complete', {
-      output: finalOutput
-    }))
+    await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
     return finalOutput
   }
 }

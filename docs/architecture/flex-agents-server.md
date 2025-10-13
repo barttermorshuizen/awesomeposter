@@ -127,8 +127,8 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 - `CapabilityRegistry`: accepts registration payloads from agents, persists capability metadata, performs similarity search, and resolves fallbacks when the ideal agent is unavailable.
 - `PlannerService`: synthesizes `PlanGraph` nodes from the objective, policies, and capabilities, and updates the plan if policies change mid-run.
 - `ContextBuilder`: assembles `ContextBundle` instances, redacting sensitive inputs when necessary, and attaches return schemas.
-- `ExecutionEngine`: sequences node execution, handles retries, and coordinates with the HITL gateway for approval-required tasks.
-- `OutputValidator`: runs Ajv against declared schemas, emits structured errors, and prompts rewrites when agents fail validation.
+- `ExecutionEngine`: resolves capabilities via the registry, sequences node execution, streams `flex_capability_dispatch_*` telemetry, handles retries, and coordinates with the HITL gateway for approval-required tasks.
+- `OutputValidator`: runs Ajv against caller contracts and capability defaults, emits structured `validation_error` frames with scope/context, and prompts rewrites when agents fail validation.
 - `PersistenceService`: stores run metadata, plan graphs, and variant outputs to support rehydration, analytics, and audit trails.
 - `TelemetryService`: streams normalized `FlexEvent` frames (start, plan, node_start, hitl_request, validation_error, complete) for UI consumption.
 
@@ -136,8 +136,8 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 1. Client submits `TaskEnvelope` to `run.stream`; controller authenticates, normalizes, and persists an initial `flex_runs` record.
 2. `PolicyNormalizer` validates caller-supplied policies (persona defaults, experiment toggles) and injects the result into the execution context.
 3. `PlannerService` generates a `PlanGraph`, selecting capabilities based on requested outcomes and producing agent-specific node definitions.
-4. `ExecutionEngine` walks the graph, building `ContextBundle`s per node and dispatching them to agents via the shared runtime.
-5. Agents respond with payloads; `OutputValidator` enforces structured contracts where provided or runs orchestrator-defined post-processing for free-form outputs, prompting retries or HITL escalation when expectations are not met.
+4. `ExecutionEngine` walks the graph, building `ContextBundle`s per node, validating inputs against capability metadata, and dispatching them to agents via the shared runtime.
+5. Agents respond with payloads; `OutputValidator` enforces structured contracts (capability defaults and caller schema), emits scoped errors when expectations are not met, and prompts retries or HITL escalation before persisting results.
 6. HITL interrupts pause the run; operator responses trigger plan resumption. Rehydration rebuilds remaining graph state and context bundles.
 7. Once all terminal nodes succeed, the engine composes the final response by combining the validated or normalized artifacts that fulfill the envelope schema and ends the SSE stream.
 
@@ -174,9 +174,11 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 - `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
-- `validation_error`: Ajv output validation failures (payload contains `errors[]`).
+- `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
 - `complete`: final frame containing `payload.output` that satisfies the caller schema.
 - `log`: informational/debug messages.
+
+Each frame carries `runId` (and `nodeId` for node-scoped events) at the top level, allowing consumers to correlate updates without re-parsing payloads.
 
 **Resume after HITL:** Once `/api/hitl/resume` records operator approval, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`.
 

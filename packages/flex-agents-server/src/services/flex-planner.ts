@@ -1,5 +1,12 @@
-import type { TaskEnvelope, ContextBundle, NodeContract, OutputContract } from '@awesomeposter/shared'
-import { getFlexCapabilityRegistryService } from './flex-capability-registry'
+import type {
+  TaskEnvelope,
+  ContextBundle,
+  NodeContract,
+  OutputContract,
+  CapabilityRecord
+} from '@awesomeposter/shared'
+import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
+import { getLogger } from './logger'
 
 export type FlexPlanEdge = { from: string; to: string }
 
@@ -34,7 +41,7 @@ export class FlexPlanner {
   private readonly now: () => Date
 
   constructor(
-    private readonly capabilityRegistry = getFlexCapabilityRegistryService(),
+    private readonly capabilityRegistry: FlexCapabilityRegistryService = getFlexCapabilityRegistryService(),
     options?: PlannerOptions
   ) {
     this.now = options?.now ?? (() => new Date())
@@ -54,8 +61,8 @@ export class FlexPlanner {
       throw new UnsupportedObjectiveError('Objective not supported by planner skeleton')
     }
 
-    const capabilityId = 'mock.copywriter.linkedinVariants'
-    await this.ensureCapabilityRegistered(capabilityId)
+    const capability = await this.selectCapabilityForScenario(scenario)
+    const capabilityId = capability.capabilityId
 
     const nodeId = `${capabilityId.replace(/\W+/g, '_')}_1`
     const contract: NodeContract = {
@@ -81,11 +88,7 @@ export class FlexPlanner {
       policies,
       contract,
       priorOutputs: undefined,
-      artifacts: undefined,
-      metadata: {
-        scenario,
-        createdAt: this.now().toISOString()
-      }
+      artifacts: undefined
     }
 
     const plan: FlexPlan = {
@@ -132,15 +135,31 @@ export class FlexPlanner {
     return contract
   }
 
-  private async ensureCapabilityRegistered(capabilityId: string) {
-    const registry = this.capabilityRegistry
+  private async selectCapabilityForScenario(scenario: string): Promise<CapabilityRecord> {
     try {
-      const capability = await registry.getCapabilityById(capabilityId)
-      if (!capability) {
-        throw new Error(`Capability ${capabilityId} not registered`)
+      const active = await this.capabilityRegistry.listActive()
+      const matched = active.find((entry) => {
+        const meta = (entry.metadata ?? {}) as Record<string, unknown>
+        const scenarios = Array.isArray(meta.scenarios) ? (meta.scenarios as unknown[]) : []
+        return scenarios.some((value) => typeof value === 'string' && value === scenario)
+      })
+      if (matched) {
+        return matched
       }
-    } catch {
-      // Planner skeleton tolerates missing registry entries while stubs are in flight.
+    } catch (error) {
+      try {
+        getLogger().warn('flex_capability_lookup_failed', {
+          scenario,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      } catch {}
     }
+
+    const fallback = await this.capabilityRegistry.getCapabilityById('copywriter.linkedinVariants')
+    if (fallback && fallback.status === 'active') {
+      return fallback
+    }
+
+    throw new UnsupportedObjectiveError(`No active capability available for scenario "${scenario}"`)
   }
 }

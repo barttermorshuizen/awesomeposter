@@ -1,0 +1,10 @@
+schema: 1
+story: '8.10'
+story_title: 'Story 8.10: Flex Planner Execution Phase 2'
+gate: PASS
+status_reason: 'Flex run SSE route now enforces discovery feature gating and fresh executions persist new envelopes unless HITL resume triggers.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-12T15:52:00Z'
+top_issues: []
+waiver:
+  active: false
