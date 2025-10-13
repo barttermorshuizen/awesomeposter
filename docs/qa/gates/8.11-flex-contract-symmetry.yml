@@ -1,0 +1,9 @@
+schema: 1
+story: '8.11'
+gate: PASS
+status_reason: 'Implementation meets updated acceptance criteria and new contract fields function as expected.'
+reviewer: 'Quinn'
+updated: '2025-10-13T15:21:03Z'
+top_issues: []
+waiver:
+  active: false

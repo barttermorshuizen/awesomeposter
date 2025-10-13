@@ -21,7 +21,20 @@ export const CONTENT_CAPABILITY: CapabilityRegistration = {
     strengths: ['variant_generation', 'platform_optimization'],
     limitations: ['Best for short-form LinkedIn posts with 1–5 variants.']
   },
-  defaultContract: {
+  inputContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        variantCount: { type: 'integer', minimum: 1, maximum: 5 },
+        tone: { type: 'string' },
+        audience: { type: 'string' },
+        contextBundles: { type: 'array' }
+      },
+      additionalProperties: true
+    }
+  },
+  outputContract: {
     mode: 'json_schema',
     schema: {
       type: 'object',
@@ -63,17 +76,7 @@ export const CONTENT_CAPABILITY: CapabilityRegistration = {
       'packages/flex-agents-server/src/services/flex-execution-engine.ts'
     ],
     runMode: 'orchestrated_llm',
-    scenarios: ['linkedin_post_variants'],
-    inputSchema: {
-      type: 'object',
-      properties: {
-        variantCount: { type: 'integer', minimum: 1, maximum: 5 },
-        tone: { type: 'string' },
-        audience: { type: 'string' },
-        contextBundles: { type: 'array' }
-      },
-      additionalProperties: true
-    }
+    scenarios: ['linkedin_post_variants']
   }
 }
 

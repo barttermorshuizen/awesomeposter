@@ -155,7 +155,7 @@ function createCoordinator(persistence: MemoryFlexPersistence) {
     version: '1.0.0',
     displayName: 'LinkedIn Variants',
     summary: 'Generates LinkedIn post variants from envelope context.',
-    defaultContract: {
+    outputContract: {
       mode: 'json_schema' as const,
       schema: {
         type: 'object',

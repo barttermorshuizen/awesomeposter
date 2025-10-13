@@ -9,7 +9,8 @@ import type {
   HitlRunState,
   HitlRequestRecord,
   HitlRequestPayload,
-  CapabilityRecord
+  CapabilityRecord,
+  CapabilityContract
 } from '@awesomeposter/shared'
 import { FlexRunPersistence } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -270,9 +271,10 @@ export class FlexExecutionEngine {
         correlationId: opts.correlationId
       })
     } catch {}
-    if (capability.defaultContract) {
+    const contract = capability.outputContract ?? capability.defaultContract
+    if (contract) {
       await this.ensureOutputMatchesContract(
-        capability.defaultContract,
+        contract,
         result.output,
         { scope: 'capability_output', runId, nodeId: node.id },
         opts
@@ -302,15 +304,21 @@ export class FlexExecutionEngine {
     opts: FlexExecutionOptions
   ) {
     const metadata = (capability.metadata ?? {}) as Record<string, unknown>
-    const schema = metadata.inputSchema
-    if (schema && typeof schema === 'object') {
-      await this.validateSchema(
-        schema as Record<string, unknown>,
-        node.bundle.inputs ?? {},
-        { scope: 'capability_input', runId, nodeId: node.id },
-        opts
-      )
-    }
+    const legacySchema = metadata.inputSchema
+    const contract: CapabilityContract | undefined =
+      capability.inputContract ??
+      (legacySchema && typeof legacySchema === 'object'
+        ? ({ mode: 'json_schema', schema: legacySchema } as CapabilityContract)
+        : undefined)
+
+    if (contract?.mode !== 'json_schema') return
+
+    await this.validateSchema(
+      contract.schema as Record<string, unknown>,
+      node.bundle.inputs ?? {},
+      { scope: 'capability_input', runId, nodeId: node.id },
+      opts
+    )
   }
 
   private async dispatchCapability(

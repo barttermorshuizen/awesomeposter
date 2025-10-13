@@ -23,7 +23,8 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
       displayName: payload.displayName,
       summary: payload.summary,
       inputTraits: (payload.inputTraits ?? null) as any,
-      defaultContract: (payload.defaultContract ?? null) as any,
+      inputContract: (payload.inputContract ?? null) as any,
+      outputContract: (payload.outputContract ?? null) as any,
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,
@@ -67,7 +68,18 @@ describe('FlexCapabilityRegistryService', () => {
     displayName: 'English Writer',
     summary: 'Writes marketing copy in English.',
     inputTraits: { languages: ['en'] },
-    defaultContract: {
+    inputContract: {
+      mode: 'json_schema',
+      schema: {
+        type: 'object',
+        properties: {
+          writerBrief: { type: 'object' },
+          payload: { type: 'object' }
+        },
+        additionalProperties: true
+      }
+    },
+    outputContract: {
       schema: {
         type: 'object',
         properties: {

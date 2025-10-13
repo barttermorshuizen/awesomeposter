@@ -20,7 +20,18 @@ export const QA_CAPABILITY: CapabilityRegistration = {
     strengths: ['qa_scoring', 'policy_compliance'],
     limitations: ['Requires prior content draft to review.']
   },
-  defaultContract: {
+  inputContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        draft: { type: 'string' },
+        writerBrief: { type: 'object' }
+      },
+      additionalProperties: true
+    }
+  },
+  outputContract: {
     mode: 'json_schema',
     schema: {
       type: 'object',
@@ -56,15 +67,7 @@ export const QA_CAPABILITY: CapabilityRegistration = {
       'packages/flex-agents-server/src/tools/qa.ts'
     ],
     runMode: 'agent',
-    scenarios: ['qa_review'],
-    inputSchema: {
-      type: 'object',
-      properties: {
-        draft: { type: 'string' },
-        writerBrief: { type: 'object' }
-      },
-      additionalProperties: true
-    }
+    scenarios: ['qa_review']
   }
 }
 

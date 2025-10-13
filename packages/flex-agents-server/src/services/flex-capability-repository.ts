@@ -1,6 +1,6 @@
 import { type CapabilityRegistration } from '@awesomeposter/shared'
 import { getDb, flexCapabilities } from '@awesomeposter/db'
-import { eq, inArray } from 'drizzle-orm'
+import { inArray } from 'drizzle-orm'
 
 export type FlexCapabilityRow = {
   capabilityId: string
@@ -8,7 +8,8 @@ export type FlexCapabilityRow = {
   displayName: string
   summary: string
   inputTraits: Record<string, unknown> | null
-  defaultContract: Record<string, unknown> | null
+  inputContract: Record<string, unknown> | null
+  outputContract: Record<string, unknown> | null
   cost: Record<string, unknown> | null
   preferredModels: string[] | null
   heartbeat: Record<string, unknown> | null
@@ -36,7 +37,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       displayName: payload.displayName,
       summary: payload.summary,
       inputTraitsJson: (payload.inputTraits ?? null) as any,
-      defaultContractJson: (payload.defaultContract ?? null) as any,
+      inputContractJson: (payload.inputContract ?? null) as any,
+      outputContractJson: (payload.outputContract ?? null) as any,
       costJson: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeatJson: (payload.heartbeat ?? null) as any,
@@ -57,7 +59,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           displayName: payload.displayName,
           summary: payload.summary,
           inputTraitsJson: (payload.inputTraits ?? null) as any,
-          defaultContractJson: (payload.defaultContract ?? null) as any,
+          inputContractJson: (payload.inputContract ?? null) as any,
+          outputContractJson: (payload.outputContract ?? null) as any,
           costJson: (payload.cost ?? null) as any,
           preferredModels: payload.preferredModels ?? [],
           heartbeatJson: (payload.heartbeat ?? null) as any,
@@ -77,7 +80,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       displayName: row.displayName,
       summary: row.summary,
       inputTraits: (row.inputTraitsJson ?? null) as any,
-      defaultContract: (row.defaultContractJson ?? null) as any,
+      inputContract: (row.inputContractJson ?? null) as any,
+      outputContract: (row.outputContractJson ?? null) as any,
       cost: (row.costJson ?? null) as any,
       preferredModels: row.preferredModels ?? null,
       heartbeat: (row.heartbeatJson ?? null) as any,

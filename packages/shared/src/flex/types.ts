@@ -61,6 +61,13 @@ export const OutputContractSchema = z.union([JsonSchemaContractSchema, FreeformC
 export type OutputContract = z.infer<typeof OutputContractSchema>
 
 /**
+ * Capability-level contracts are symmetric for inputs and outputs.
+ * Currently, they mirror the output contract union.
+ */
+export const CapabilityContractSchema = OutputContractSchema
+export type CapabilityContract = OutputContract
+
+/**
  * Shared loose record schema used for envelope metadata and agent artifacts.
  */
 export const LooseRecordSchema = z.record(z.unknown())
@@ -189,29 +196,66 @@ const HeartbeatSchema = z
   })
   .optional()
 
-/**
- * Payload agents submit during registration to advertise their capabilities.
- */
-export const CapabilityRegistrationSchema = z.object({
+type ContractCarrier = {
+  inputContract?: CapabilityContract | null
+  outputContract?: CapabilityContract | null
+  defaultContract?: CapabilityContract | null
+}
+
+function normalizeCapabilityContracts<T extends ContractCarrier>(value: T) {
+  const outputContract = value.outputContract ?? value.defaultContract ?? null
+  const defaultContract = value.defaultContract ?? value.outputContract ?? null
+  const inputContract = value.inputContract ?? null
+  return {
+    ...value,
+    inputContract: inputContract ?? undefined,
+    outputContract: outputContract ?? undefined,
+    defaultContract: defaultContract ?? undefined
+  }
+}
+
+function ensureCapabilityContracts(value: ContractCarrier, ctx: z.RefinementCtx) {
+  if (!value.outputContract && !value.defaultContract) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['outputContract'],
+      message: 'Capability registrations must include `outputContract` (or legacy `defaultContract`).'
+    })
+  }
+}
+
+const CapabilityRegistrationCoreSchema = z.object({
   capabilityId: z.string().min(1),
   version: z.string().min(1),
   displayName: z.string().min(1),
   summary: z.string().min(1),
   inputTraits: InputTraitsSchema,
-  defaultContract: OutputContractSchema.optional(),
+  inputContract: CapabilityContractSchema.optional(),
+  outputContract: CapabilityContractSchema.optional(),
+  defaultContract: CapabilityContractSchema.optional(),
   cost: CostInfoSchema,
   preferredModels: z.array(z.string()).optional(),
   heartbeat: HeartbeatSchema,
   metadata: LooseRecordSchema.optional()
 })
+
+/**
+ * Payload agents submit during registration to advertise their capabilities.
+ */
+export const CapabilityRegistrationSchema = CapabilityRegistrationCoreSchema.superRefine(ensureCapabilityContracts).transform(
+  (value) => normalizeCapabilityContracts(value)
+)
 export type CapabilityRegistration = z.infer<typeof CapabilityRegistrationSchema>
 
 /**
  * Persisted capability entry augmented by orchestrator health tracking.
  */
-export const CapabilityRecordSchema = CapabilityRegistrationSchema.extend({
+const CapabilityRecordCoreSchema = CapabilityRegistrationCoreSchema.extend({
   status: z.enum(['active', 'inactive']).default('active'),
   lastSeenAt: z.string().optional(),
   registeredAt: z.string().optional()
 })
+export const CapabilityRecordSchema = CapabilityRecordCoreSchema.superRefine(ensureCapabilityContracts).transform(
+  (value) => normalizeCapabilityContracts(value)
+)
 export type CapabilityRecord = z.infer<typeof CapabilityRecordSchema>

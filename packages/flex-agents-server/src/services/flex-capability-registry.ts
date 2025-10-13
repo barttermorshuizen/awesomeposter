@@ -131,13 +131,17 @@ export class FlexCapabilityRegistryService {
     const registeredAt = row.registeredAt ? row.registeredAt.toISOString() : undefined
     const heartbeat = (row.heartbeat ?? undefined) as CapabilityRecord['heartbeat']
     const preferredModels = row.preferredModels && row.preferredModels.length ? row.preferredModels : undefined
+    const inputContract = (row.inputContract ?? undefined) as CapabilityRecord['inputContract']
+    const outputContract = (row.outputContract ?? undefined) as CapabilityRecord['outputContract']
     return {
       capabilityId: row.capabilityId,
       version: row.version,
       displayName: row.displayName,
       summary: row.summary,
       inputTraits: (row.inputTraits ?? undefined) as CapabilityRecord['inputTraits'],
-      defaultContract: (row.defaultContract ?? undefined) as CapabilityRecord['defaultContract'],
+      inputContract,
+      outputContract,
+      defaultContract: (outputContract ?? undefined) as CapabilityRecord['defaultContract'],
       cost: (row.cost ?? undefined) as CapabilityRecord['cost'],
       preferredModels,
       heartbeat,

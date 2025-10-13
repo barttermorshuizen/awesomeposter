@@ -27,7 +27,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       displayName: payload.displayName,
       summary: payload.summary,
       inputTraits: (payload.inputTraits ?? null) as any,
-      defaultContract: (payload.defaultContract ?? null) as any,
+      inputContract: (payload.inputContract ?? null) as any,
+      outputContract: (payload.outputContract ?? null) as any,
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,
@@ -101,8 +102,19 @@ describe('POST /api/v1/flex/capabilities/register', () => {
       version: '0.0.1',
       displayName: 'Planner Core',
       summary: 'Plans tasks dynamically.',
+      inputContract: {
+        mode: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: {
+            objective: { type: 'string' },
+            constraints: { type: 'object' }
+          },
+          additionalProperties: true
+        }
+      },
       heartbeat: { intervalSeconds: 5 },
-      defaultContract: {
+      outputContract: {
         schema: {
           type: 'object',
           properties: { plan: { type: 'array' } }

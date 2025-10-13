@@ -20,7 +20,19 @@ export const STRATEGY_CAPABILITY: CapabilityRegistration = {
     strengths: ['brief_planning', 'knob_configuration', 'asset_analysis'],
     limitations: ['Requires objective and audience details from the client brief before proceeding.']
   },
-  defaultContract: {
+  inputContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        clientProfile: { type: 'object' },
+        brief: { type: 'object' },
+        assets: { type: 'array' }
+      },
+      additionalProperties: true
+    }
+  },
+  outputContract: {
     mode: 'json_schema',
     schema: {
       type: 'object',
@@ -169,16 +181,7 @@ export const STRATEGY_CAPABILITY: CapabilityRegistration = {
       'packages/flex-agents-server/src/tools/strategy.ts'
     ],
     runMode: 'agent',
-    scenarios: ['briefing', 'knob_planning'],
-    inputSchema: {
-      type: 'object',
-      properties: {
-        clientProfile: { type: 'object' },
-        brief: { type: 'object' },
-        assets: { type: 'array' }
-      },
-      additionalProperties: true
-    }
+    scenarios: ['briefing', 'knob_planning']
   }
 }
 

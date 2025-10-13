@@ -58,7 +58,7 @@ Payload compiled for each agent invocation that includes the relevant slice of t
 Registry entries advertising an agent’s competencies, IO expectations, cost profile, and preferred models. The planner matches plan nodes to capabilities at runtime.
 
 ### 5.6.1 Capability Registration
-Agents self-register with the orchestrator during startup (or when hot-loaded). Each agent posts a `CapabilityRegistration` payload describing its identifiers, strengths, supported locales, preferred models, input expectations, and default return contracts. The orchestrator persists the record, tracks health/heartbeat metadata, and updates the `CapabilityRegistry` so planners always operate on live data. Multiple instances of the same capability can register with distinct scopes (for example `writer.en`, `writer.fr`), enabling runtime selection and graceful degradation when one instance is unavailable.
+Agents self-register with the orchestrator during startup (or when hot-loaded). Each agent posts a `CapabilityRegistration` payload describing its identifiers, strengths, supported locales, preferred models, input expectations, and symmetric input/output contracts. The orchestrator persists the record, tracks health/heartbeat metadata, and updates the `CapabilityRegistry` so planners always operate on live data. Multiple instances of the same capability can register with distinct scopes (for example `writer.en`, `writer.fr`), enabling runtime selection and graceful degradation when one instance is unavailable.
 
 ### 5.6.2 Registration Payload
 Registration payloads share a stable contract so the orchestrator can validate and cache metadata.
@@ -75,7 +75,19 @@ Registration payloads share a stable contract so the orchestrator can validate a
     "strengths": ["brand_voice_alignment", "cta_generation"],
     "limitations": ["no_paid_ads_claims"]
   },
-  "defaultContract": {
+  "inputContract": {
+    "mode": "json_schema",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "objective": { "type": "string" },
+      "toneOfVoice": { "type": "array", "items": { "type": "string" } }
+    },
+    "additionalProperties": true
+  },
+  "outputContract": {
+    "mode": "json_schema",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
       "variants": {
@@ -98,26 +110,6 @@ Registration payloads share a stable contract so the orchestrator can validate a
   },
   "cost": { "tier": "standard", "estimatedTokens": 6000 },
   "preferredModels": ["gpt-5.1"],
-  "inputSchema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "objective": { "type": "string" },
-      "toneOfVoice": { "type": "array", "items": { "type": "string" } }
-    },
-    "additionalProperties": true
-  },
-  "outputSchema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "variants": {
-        "type": "array",
-        "items": { "$ref": "#/definitions/writerVariant" }
-      }
-    },
-    "required": ["variants"]
-  },
   "heartbeat": { "intervalSeconds": 60 },
   "metadata": {
     "owner": "marketing-ai",
@@ -132,8 +124,9 @@ Registration payloads share a stable contract so the orchestrator can validate a
 - `displayName` (string, required): human-readable name shown in tooling and logs.
 - `summary` (string, required): concise capability description.
 - `inputTraits` (object, optional): declared coverage such as supported languages, formats, strengths, and limitations.
-- `defaultContract` (object or string, optional): baseline output contract (JSON Schema or free-form instructions) the planner can reference if the caller omits a more specific schema.
-- `inputSchema` / `outputSchema` (object, optional): JSON Schema definitions allowing strict validation of the bundle supplied to the capability and the artifact it returns; use when contracts must remain immutable across runs.
+- `inputContract` (object, optional): JSON Schema or freeform contract describing the inputs an agent expects by default.
+- `outputContract` (object, optional): JSON Schema or freeform contract describing the artifact the agent returns by default.
+- `defaultContract` (object, optional, deprecated): legacy alias retained for backwards compatibility; mirrors `outputContract`.
 - `cost` (object, optional): estimates around token usage or pricing tier for planner budgeting.
 - `preferredModels` (array, optional): ranked list of model IDs the agent is tuned for.
 - `heartbeat` (object, optional): heartbeat expectations (intervals/timeout) so the orchestrator can mark stale registrations.

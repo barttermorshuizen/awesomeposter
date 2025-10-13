@@ -11,7 +11,7 @@ const linkedInCapability: CapabilityRecord = {
   displayName: 'Copywriter – LinkedIn Variants',
   summary: 'Generates LinkedIn post variants.',
   inputTraits: { formats: ['linkedin_post'] },
-  defaultContract: {
+  outputContract: {
     mode: 'json_schema',
     schema: {
       type: 'object',
