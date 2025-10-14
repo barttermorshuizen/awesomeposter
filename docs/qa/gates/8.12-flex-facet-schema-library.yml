@@ -1,0 +1,37 @@
+schema: 1
+story: '8.12'
+story_title: 'Flex Facet Schema Library & Contract Compiler'
+gate: PASS
+status_reason: 'Facet catalog/compiler meet all acceptance criteria with passing tests and updated documentation.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-14T12:50:51Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 100
+expires: '2025-10-28T12:50:51Z'
+evidence:
+  tests_reviewed: 7
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No security-impacting surface changes.'
+  performance:
+    status: PASS
+    notes: 'Schema compilation uses shared Ajv instance with no regressions observed.'
+  reliability:
+    status: PASS
+    notes: 'Validation helpers return deterministic provenance metadata.'
+  maintainability:
+    status: PASS
+    notes: 'Library centralises facet definitions with documentation updates.'
+recommendations:
+  immediate: []
+  future:
+    - action: 'Follow up on Vitest config `deps.inline` deprecation warning during next tooling sweep.'
+      refs:
+        - 'vitest.config.ts'

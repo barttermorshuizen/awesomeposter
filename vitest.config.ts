@@ -8,7 +8,8 @@ export default mergeConfig(
     resolve: {
       alias: {
         '@upstash/redis': fileURLToPath(new URL('./tests/stubs/upstash-redis.ts', import.meta.url)),
-      },
+        '@awesomeposter/shared': fileURLToPath(new URL('./packages/shared/src/index.ts', import.meta.url))
+      }
     },
     test: {
       environment: 'jsdom',

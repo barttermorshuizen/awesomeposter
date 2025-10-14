@@ -59,12 +59,13 @@ Registry entries advertising an agent’s competencies, IO expectations, cost pr
 
 #### Facet Definition
 - `Facet` objects are the semantic primitives the planner uses when composing contracts. Each facet defines a reusable slice of meaning – tone, brief, compliance rubric – that can be merged into node contracts.
+- Author and register facets in `packages/shared/src/flex/facets/catalog.ts` using the shared `FacetCatalog` utilities. The catalog is loaded everywhere via `getFacetCatalog()` so the planner, execution layer, and tests read the same source of truth.
 - Core fields:
   - `name` (machine key) and `title` (human label) keep facet identities stable.
   - `description` documents what the facet constrains.
-  - `schema` contains the JSON Schema fragment representing the facet’s structure.
+  - `schema` contains the JSON Schema fragment representing the facet’s structure (stored in `FacetDefinition.schema`).
   - `semantics` or `instruction` describes how downstream agents should interpret the facet.
-  - `metadata` carries versioning, dependencies, and directionality (`input`, `output`, or both).
+  - `metadata` carries versioning, dependencies, and directionality (`input`, `output`, or bidirectional). Optional `propertyKey` lets multiple facets merge into the same JSON path when required.
 
 Example:
 
@@ -147,9 +148,9 @@ Facet-driven contracts let the planner assemble dynamic graphs without hard-codi
    - For declared capabilities, choose a subset of the published `inputContract`/`outputContract` facets.
    - For derived capabilities, pick the facet mix that best covers the requested outcome.
 3. **Merge schemas into contracts.**
-   - `inputSchema = mergeSchemas(selectedInputFacets)`
-   - `outputSchema = mergeSchemas(selectedOutputFacets)`
-   - Preserve facet provenance so validators and telemetry can explain where each schema fragment originated.
+   - `inputSchema = FacetContractCompiler.compileContracts(selectedInputFacets)`
+   - `outputSchema = FacetContractCompiler.compileContracts(selectedOutputFacets)`
+   - Preserve facet provenance so validators and telemetry can explain where each schema fragment originated. The compiler already returns provenance metadata and Ajv validators via `CompiledFacetSchema`.
 4. **Compose the system instruction.**
    - Concatenate guidance from the selected facets’ `semantics`.
    - Example: “Use toneOfVoice to adjust diction; apply writerBrief context; emit copyVariants output.”
@@ -459,6 +460,8 @@ Sample envelope payload (`envelope.json`):
 
 ### Facet Catalog
 
+Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts`. The exported `FacetCatalog` supplies typed lookups (`get`, `list`, `resolveMany`) while enforcing directionality (`input`, `output`, `bidirectional`) and uniqueness. Extend this module whenever new facets are introduced—planner helpers automatically start serving the new schema fragments without additional wiring.
+
 | Facet | Direction | Description | Schema Sketch |
 | --- | --- | --- | --- |
 | `objectiveBrief` | input | Structured summary of the client’s stated objective, constraints, and success criteria. | Object with `objective` (string), optional `successCriteria[]` (string). |
@@ -483,6 +486,13 @@ Sample envelope payload (`envelope.json`):
 
 > Capability metadata, facet coverage, costs, and heartbeat settings are the source of truth—update the tables above and the corresponding agent module together during future agent work. Add new facets to the catalog before referencing them in capabilities.
 
+#### Contract Compiler & Validation Helpers
+
+- `packages/shared/src/flex/facets/contract-compiler.ts` exposes `FacetContractCompiler`, which composes deterministic `inputSchema` / `outputSchema` payloads, tracks provenance, and hands back Ajv validators for the execution engine.
+- Planner-facing helpers live in `packages/flex-agents-server/src/utils/facet-contracts.ts`; use `buildFacetAwareNodeContracts` to attach compiled facet contracts to plan nodes and derive human-readable instructions.
+- Fixtures under `packages/flex-agents-server/src/utils/__fixtures__/facet-node.fixture.ts` illustrate how nodes carry compiled schemas for testing and planner prototyping.
+- Validation helpers (`validateFacetInputs`/`validateFacetOutputs`) surface `FacetValidationError` objects that include the originating facet, JSON pointer, and Ajv keyword—ExecutionEngine and OutputValidator can adopt them without additional plumbing.
+
 ### Supporting Utilities
 
 - Strategy analysis tools (`packages/flex-agents-server/src/tools/strategy.ts`) expose `strategy_analyze_assets` and `strategy_plan_knobs` for achievable-format detection and knob planning.
@@ -494,7 +504,7 @@ Sample envelope payload (`envelope.json`):
 
 1. Update the capability payload inside the relevant agent module when prompts, facet coverage, or preferred models change.
 2. Mirror those edits in the facet catalog and capability inventory tables so downstream teams know where source lives and what constraints apply.
-3. Run `npm run test:unit -- packages/flex-agents-server/__tests__/capability-registration.spec.ts packages/flex-agents-server/__tests__/flex-planner.spec.ts` to confirm registration resilience and ensure planner discovery.
+3. Run `npm run test:unit -- packages/shared/__tests__/flex/facet-contract-compiler.spec.ts packages/flex-agents-server/__tests__/facets/facet-contracts.spec.ts` (plus the capability registry suite) to confirm catalog integrity and planner integration before hand-off.
 4. If heartbeat expectations change, adjust `FLEX_CAPABILITY_REFRESH_INTERVAL_MS` or the per-capability heartbeat fields so registry status stays accurate.
 
 ## 12. UI & Client Integration
