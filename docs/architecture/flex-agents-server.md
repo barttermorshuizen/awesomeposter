@@ -454,6 +454,7 @@ Sample envelope payload (`envelope.json`):
 - `ContextBuilder` translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
 - Agents continue to rely on natural-language prompts but receive machine-readable facet contracts and validation hints alongside human context.
 - The registry service (`packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
+- Facet declarations are validated against the shared catalog at registration time; the registry compiles merged JSON Schemas, persists `input_facets` / `output_facets` coverage hints, and rejects unknown facets or direction mismatches before capabilities become available.
 - The database layer persists metadata to the shared `flex_capabilities` table (Drizzle schema + migration), keyed by `capability_id` with timestamps for `registered_at`, `last_seen_at`, and rolling `status` (`active`/`inactive`).
 - Each agent module schedules a self-registration with the capability registry during bootstrap so the flex server advertises its capabilities without relying on a separate startup plugin.
 - Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
@@ -470,7 +471,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 | `assetBundle` | input | Links or embedded assets (docs, images) to ground planning. | Array of `{ type, payload }` objects with typed payload per asset. |
 | `writerBrief` | input/output | Narrative direction, key points, blockers for writers; produced by strategy, consumed by execution. | Object with `angle`, `keyPoints[]`, `constraints[]`. |
 | `planKnobs` | input/output | Normalised levers the orchestrator can tweak (variant counts, CTA emphasis, length). | Object with numeric/string knobs (`variantCount`, `ctaFocus`, `length`). |
-| `rationaleSummary` | output | Strategy justification and high-level narrative reasoning. | Object with `northStar`, `whyItWorks`, optional `risks`. |
+| `strategicRationale` | output | Strategy justification and high-level narrative reasoning. | Object with `northStar`, `whyItWorks`, optional `risks`. |
 | `copyVariants` | input/output | Structured set of draft variants for distribution downstream. | Array of `{ headline, body, callToAction }` objects. |
 | `qaRubric` | input | Policy and quality rubric settings QA should enforce. | Object with `checks[]` (enum), `thresholds` (object). |
 | `qaFindings` | output | QA results with scores and compliance flags. | Object with `scores`, `issues[]`, `overallStatus`. |
@@ -480,7 +481,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 | Capability ID | Display Name | Responsibilities | Input Facets | Output Facets | Source |
 | --- | --- | --- | --- | --- | --- |
-| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `assetBundle` | `writerBrief`, `planKnobs`, `rationaleSummary` | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
+| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `assetBundle` | `writerBrief`, `planKnobs`, `strategicRationale` | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
 | `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | `writerBrief`, `planKnobs`, `toneOfVoice`, `audienceProfile` | `copyVariants` | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
 | `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | `copyVariants`, `writerBrief`, `qaRubric` | `qaFindings`, `recommendationSet` | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
 
@@ -504,7 +505,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 1. Update the capability payload inside the relevant agent module when prompts, facet coverage, or preferred models change.
 2. Mirror those edits in the facet catalog and capability inventory tables so downstream teams know where source lives and what constraints apply.
-3. Run `npm run test:unit -- packages/shared/__tests__/flex/facet-contract-compiler.spec.ts packages/flex-agents-server/__tests__/facets/facet-contracts.spec.ts` (plus the capability registry suite) to confirm catalog integrity and planner integration before hand-off.
+3. Run `npm run test:unit -- packages/shared/__tests__/flex/facet-contract-compiler.spec.ts packages/flex-agents-server/__tests__/facets/facet-contracts.spec.ts packages/flex-agents-server/__tests__/capability-registry-facets.spec.ts packages/flex-agents-server/__tests__/docs/facet-inventory.spec.ts` (plus the capability registry suite) to confirm catalog integrity, registry validation, and documentation alignment before hand-off.
 4. If heartbeat expectations change, adjust `FLEX_CAPABILITY_REFRESH_INTERVAL_MS` or the per-capability heartbeat fields so registry status stays accurate.
 
 ## 12. UI & Client Integration

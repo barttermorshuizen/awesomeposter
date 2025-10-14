@@ -1,0 +1,49 @@
+schema: 1
+story: '8.13'
+story_title: 'Flex Capability Metadata Facet Migration'
+gate: PASS
+status_reason: 'Facet-backed contracts validated end-to-end; documentation and catalog remain in sync.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-14T17:26:10Z'
+
+top_issues:
+  - severity: low
+    summary: 'Consider extending parity suite as new capabilities join the catalog.'
+    evidence:
+      - packages/flex-agents-server/__tests__/capability-registry-facets.spec.ts
+      - packages/flex-agents-server/__tests__/docs/facet-inventory.spec.ts
+    suggested_owner: dev
+waiver:
+  active: false
+quality_score: 95
+expires: '2025-10-28T17:26:10Z'
+
+evidence:
+  tests_reviewed: 13
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No security-impacting changes observed.'
+  performance:
+    status: PASS
+    notes: 'No performance-sensitive paths modified.'
+  reliability:
+    status: PASS
+    notes: 'Facet compiler validates canonical payloads; registry parity suite passes.'
+  maintainability:
+    status: PASS
+    notes: 'Catalog, docs, and agent exports aligned; automated checks enforce consistency.'
+
+recommendations:
+  immediate:
+    - action: 'None – work meets definition of done.'
+      refs: []
+  future:
+    - action: 'Add integration coverage exercising capability registration with compiled facet contracts end-to-end.'
+      refs:
+        - packages/flex-agents-server/__tests__/capability-registry-facets.spec.ts

@@ -24,7 +24,7 @@ describe('FacetContractCompiler', () => {
     expect(compiled.output?.provenance).toHaveLength(1)
 
     const validation = compiled.input?.validator({
-      toneOfVoice: 'friendly',
+      toneOfVoice: 'Warm & Friendly',
       writerBrief: {
         angle: 'Celebrate developer productivity',
         keyPoints: ['Highlight automation impact']

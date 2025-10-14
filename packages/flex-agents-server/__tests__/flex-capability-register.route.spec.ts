@@ -17,7 +17,11 @@ import type { CapabilityRegistration } from '@awesomeposter/shared'
 class InMemoryRepository implements FlexCapabilityRepository {
   private store = new Map<string, FlexCapabilityRow>()
 
-  async upsert(payload: CapabilityRegistration, { now }: { now: Date }): Promise<void> {
+  async upsert(
+    payload: CapabilityRegistration,
+    { now }: { now: Date },
+    facets: { input: string[]; output: string[] }
+  ): Promise<void> {
     const existing = this.store.get(payload.capabilityId)
     const registeredAt = existing?.registeredAt ?? now
     const createdAt = existing?.createdAt ?? now
@@ -29,6 +33,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,
       outputContract: (payload.outputContract ?? null) as any,
+      inputFacets: facets.input,
+      outputFacets: facets.output,
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,

@@ -10,6 +10,8 @@ export type FlexCapabilityRow = {
   inputTraits: Record<string, unknown> | null
   inputContract: Record<string, unknown> | null
   outputContract: Record<string, unknown> | null
+  inputFacets: string[] | null
+  outputFacets: string[] | null
   cost: Record<string, unknown> | null
   preferredModels: string[] | null
   heartbeat: Record<string, unknown> | null
@@ -22,7 +24,7 @@ export type FlexCapabilityRow = {
 }
 
 export interface FlexCapabilityRepository {
-  upsert(payload: CapabilityRegistration, timestamps: { now: Date }): Promise<void>
+  upsert(payload: CapabilityRegistration, timestamps: { now: Date }, facets: { input: string[]; output: string[] }): Promise<void>
   list(): Promise<FlexCapabilityRow[]>
   markInactive(ids: string[], timestamp: Date): Promise<void>
 }
@@ -30,7 +32,11 @@ export interface FlexCapabilityRepository {
 export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepository {
   constructor(private readonly db = getDb()) {}
 
-  async upsert(payload: CapabilityRegistration, { now }: { now: Date }): Promise<void> {
+  async upsert(
+    payload: CapabilityRegistration,
+    { now }: { now: Date },
+    facets: { input: string[]; output: string[] }
+  ): Promise<void> {
     const base = {
       capabilityId: payload.capabilityId,
       version: payload.version,
@@ -39,6 +45,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       inputTraitsJson: (payload.inputTraits ?? null) as any,
       inputContractJson: (payload.inputContract ?? null) as any,
       outputContractJson: (payload.outputContract ?? null) as any,
+      inputFacets: facets.input,
+      outputFacets: facets.output,
       costJson: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeatJson: (payload.heartbeat ?? null) as any,
@@ -61,6 +69,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           inputTraitsJson: (payload.inputTraits ?? null) as any,
           inputContractJson: (payload.inputContract ?? null) as any,
           outputContractJson: (payload.outputContract ?? null) as any,
+          inputFacets: facets.input,
+          outputFacets: facets.output,
           costJson: (payload.cost ?? null) as any,
           preferredModels: payload.preferredModels ?? [],
           heartbeatJson: (payload.heartbeat ?? null) as any,
@@ -82,6 +92,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       inputTraits: (row.inputTraitsJson ?? null) as any,
       inputContract: (row.inputContractJson ?? null) as any,
       outputContract: (row.outputContractJson ?? null) as any,
+      inputFacets: row.inputFacets ?? null,
+      outputFacets: row.outputFacets ?? null,
       cost: (row.costJson ?? null) as any,
       preferredModels: row.preferredModels ?? null,
       heartbeat: (row.heartbeatJson ?? null) as any,

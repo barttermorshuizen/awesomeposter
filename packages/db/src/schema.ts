@@ -400,6 +400,8 @@ export const flexCapabilities = pgTable('flex_capabilities', {
   inputTraitsJson: jsonb('input_traits_json').$type<Record<string, unknown> | null>().default(null),
   inputContractJson: jsonb('input_contract_json').$type<Record<string, unknown> | null>().default(null),
   outputContractJson: jsonb('output_contract_json').$type<Record<string, unknown> | null>().default(null),
+  inputFacets: text('input_facets').array().default(sql`ARRAY[]::text[]`),
+  outputFacets: text('output_facets').array().default(sql`ARRAY[]::text[]`),
   costJson: jsonb('cost_json').$type<Record<string, unknown> | null>().default(null),
   preferredModels: text('preferred_models').array().default(sql`ARRAY[]::text[]`),
   heartbeatJson: jsonb('heartbeat_json').$type<Record<string, unknown> | null>().default(null),

@@ -1,7 +1,7 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
-import type { CapabilityRegistration } from '@awesomeposter/shared'
+import { getFacetCatalog, type CapabilityRegistration } from '@awesomeposter/shared'
 import { DEFAULT_MODEL_FALLBACK } from '../utils/model'
 
 export class ContentGeneratorAgent {
@@ -9,6 +9,12 @@ export class ContentGeneratorAgent {
 }
 
 export const CONTENT_CAPABILITY_ID = `${ContentGeneratorAgent.name}.linkedinVariants` as const
+
+const contentFacetCatalog = getFacetCatalog()
+const CONTENT_INPUT_FACETS = ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'] as const
+const CONTENT_OUTPUT_FACETS = ['copyVariants'] as const
+contentFacetCatalog.resolveMany([...CONTENT_INPUT_FACETS], 'input')
+contentFacetCatalog.resolveMany([...CONTENT_OUTPUT_FACETS], 'output')
 
 export const CONTENT_CAPABILITY: CapabilityRegistration = {
   capabilityId: CONTENT_CAPABILITY_ID,
@@ -22,42 +28,12 @@ export const CONTENT_CAPABILITY: CapabilityRegistration = {
     limitations: ['Best for short-form LinkedIn posts with 1–5 variants.']
   },
   inputContract: {
-    mode: 'json_schema',
-    schema: {
-      type: 'object',
-      properties: {
-        variantCount: { type: 'integer', minimum: 1, maximum: 5 },
-        tone: { type: 'string' },
-        audience: { type: 'string' },
-        contextBundles: { type: 'array' }
-      },
-      additionalProperties: true
-    }
+    mode: 'facets',
+    facets: [...CONTENT_INPUT_FACETS]
   },
   outputContract: {
-    mode: 'json_schema',
-    schema: {
-      type: 'object',
-      required: ['variants'],
-      properties: {
-        variants: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 5,
-          items: {
-            type: 'object',
-            required: ['headline', 'body', 'callToAction'],
-            properties: {
-              headline: { type: 'string', minLength: 5 },
-              body: { type: 'string', minLength: 20 },
-              callToAction: { type: 'string', minLength: 2 }
-            },
-            additionalProperties: true
-          }
-        }
-      },
-      additionalProperties: false
-    }
+    mode: 'facets',
+    facets: [...CONTENT_OUTPUT_FACETS]
   },
   cost: {
     tier: 'standard',

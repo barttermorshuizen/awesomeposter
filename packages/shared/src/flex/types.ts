@@ -54,10 +54,33 @@ export const FreeformContractSchema = z.object({
 })
 export type FreeformContract = z.infer<typeof FreeformContractSchema>
 
+const UniqueFacetArraySchema = z
+  .array(z.string().min(1))
+  .nonempty()
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>()
+    for (const facet of value) {
+      if (seen.has(facet)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Facet "${facet}" is declared multiple times`
+        })
+        break
+      }
+      seen.add(facet)
+    }
+  })
+
+export const FacetContractSchema = z.object({
+  mode: z.literal('facets'),
+  facets: UniqueFacetArraySchema
+})
+export type FacetContract = z.infer<typeof FacetContractSchema>
+
 /**
  * Union of supported output contract strategies.
  */
-export const OutputContractSchema = z.union([JsonSchemaContractSchema, FreeformContractSchema])
+export const OutputContractSchema = z.union([JsonSchemaContractSchema, FreeformContractSchema, FacetContractSchema])
 export type OutputContract = z.infer<typeof OutputContractSchema>
 
 /**
@@ -254,6 +277,9 @@ const CapabilityRecordCoreSchema = CapabilityRegistrationCoreSchema.extend({
   status: z.enum(['active', 'inactive']).default('active'),
   lastSeenAt: z.string().optional(),
   registeredAt: z.string().optional()
+}).extend({
+  inputFacets: z.array(z.string().min(1)).optional(),
+  outputFacets: z.array(z.string().min(1)).optional()
 })
 export const CapabilityRecordSchema = CapabilityRecordCoreSchema.superRefine(ensureCapabilityContracts).transform(
   (value) => normalizeCapabilityContracts(value)

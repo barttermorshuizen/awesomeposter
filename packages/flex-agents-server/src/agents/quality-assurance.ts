@@ -1,7 +1,7 @@
 import { AgentRuntime } from '../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../tools/hitl'
-import type { CapabilityRegistration } from '@awesomeposter/shared'
+import { getFacetCatalog, type CapabilityRegistration } from '@awesomeposter/shared'
 import { DEFAULT_MODEL_FALLBACK } from '../utils/model'
 
 export class QualityAssuranceAgent {
@@ -9,6 +9,12 @@ export class QualityAssuranceAgent {
 }
 
 export const QA_CAPABILITY_ID = `${QualityAssuranceAgent.name}.contentReview` as const
+
+const qaFacetCatalog = getFacetCatalog()
+const QA_INPUT_FACETS = ['copyVariants', 'writerBrief', 'qaRubric'] as const
+const QA_OUTPUT_FACETS = ['qaFindings', 'recommendationSet'] as const
+qaFacetCatalog.resolveMany([...QA_INPUT_FACETS], 'input')
+qaFacetCatalog.resolveMany([...QA_OUTPUT_FACETS], 'output')
 
 export const QA_CAPABILITY: CapabilityRegistration = {
   capabilityId: QA_CAPABILITY_ID,
@@ -21,34 +27,12 @@ export const QA_CAPABILITY: CapabilityRegistration = {
     limitations: ['Requires prior content draft to review.']
   },
   inputContract: {
-    mode: 'json_schema',
-    schema: {
-      type: 'object',
-      properties: {
-        draft: { type: 'string' },
-        writerBrief: { type: 'object' }
-      },
-      additionalProperties: true
-    }
+    mode: 'facets',
+    facets: [...QA_INPUT_FACETS]
   },
   outputContract: {
-    mode: 'json_schema',
-    schema: {
-      type: 'object',
-      properties: {
-        composite: { type: 'number', minimum: 0, maximum: 1 },
-        compliance: { type: 'boolean' },
-        readability: { type: 'number', minimum: 0, maximum: 1 },
-        clarity: { type: 'number', minimum: 0, maximum: 1 },
-        objectiveFit: { type: 'number', minimum: 0, maximum: 1 },
-        brandRisk: { type: 'number', minimum: 0, maximum: 1 },
-        contentRecommendations: {
-          type: 'array',
-          items: { type: 'string' }
-        }
-      },
-      additionalProperties: true
-    }
+    mode: 'facets',
+    facets: [...QA_OUTPUT_FACETS]
   },
   cost: {
     tier: 'standard',
