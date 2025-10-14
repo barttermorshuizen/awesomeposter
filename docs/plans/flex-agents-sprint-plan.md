@@ -36,44 +36,51 @@
 ## Sprint 2 Focus (In Progress)
 
 ### Objectives
-- Finalize capability inventory and ensure live registration data powers planner decisions (Story 8.7).
-- Enable dynamic plan assembly from registry metadata so flex runs adapt beyond the stubbed happy path (Story 8.8).
+- Stand up the shared facet catalog/contract compiler and migrate capability metadata to facet arrays so planner/execution share deterministic contracts (Stories 8.12, 8.13).
+- Enable dynamic plan assembly from facet-aware registry metadata and wire the hybrid planner ↔ orchestrator handshake (Stories 8.8, 8.14).
 - Land persistence and telemetry foundations needed for policy-driven replanning (Stories 8.4, 8.6) ahead of policy enforcement (Story 8.9).
-- Maintain readiness for Story 8.5 resume/debug work once persistence versioning is available.
+- Maintain readiness for Story 8.5 resume/debug work once persistence versioning is available and planner lifecycle events are streaming.
 
 ### Completed This Sprint
 - **8.10 Flex Planner Phase 2** (extension of 8.3) — dynamic execution path now exercises live capability hooks prepared in Sprint 1.
 
 ### Planned Stories
-- **Capability Inventory & Registration**: 8.7 Flex Capability Inventory & Registration Coverage.
-- **Dynamic Plan Assembly**: 8.8 Flex Dynamic Plan Assembly.
-- **Persistence**: 8.4 Flex Run Output & Snapshot Persistence (immediately after 8.8).
+- **Facet Catalog & Contract Compiler**: 8.12 Flex Facet Schema Library & Contract Compiler.
+- **Capability Metadata Migration**: 8.13 Flex Capability Metadata Facet Migration.
+- **Dynamic Plan Assembly**: 8.8 Flex Dynamic Plan Assembly (consuming 8.12/8.13 outputs).
+- **Hybrid Planner Loop Enablement**: 8.14 LLM Planner & Orchestrator Hybrid Loop.
+- **Persistence**: 8.4 Flex Run Output & Snapshot Persistence (immediately after 8.8/8.14).
+- **Interfaces**: 8.5 Flex Run Resume & Debug Interfaces (follows once 8.4 delivers plan/version storage).
 - **Telemetry**: 8.6 Flex Telemetry & Logging Parity.
 - **Policy Engine**: 8.9 Flex Planner Signals & Policy Overrides (after persistence + telemetry).
-- **Interfaces**: 8.5 Flex Run Resume & Debug Interfaces (follows once 8.4 delivers plan/version storage).
 
 ### Sequencing & Owners
-1. Capability inventory + registration coverage (8.7) — Platform/shared owner; pairs with documentation lead.
-2. Dynamic plan assembly (8.8) — Planner/platform owner; coordinates with shared contracts team.
-3. Persistence foundations (8.4) — Backend owner; collaborates with planner owner for snapshot hooks.
-4. Telemetry/logging parity (8.6) — Platform/SRE owner after persistence wiring is in-place.
-5. Policy engine + signals (8.9) — Planner/platform owner once persistence and telemetry stories land.
-6. Resume/debug interfaces (8.5) — Backend owner immediately after 8.4 delivers persisted plan versions.
+1. Facet catalog & contract compiler (8.12) — Shared types/platform owner; pairs with planner lead for API design.
+2. Capability metadata facet migration (8.13) — Platform/backend owner; coordinates with documentation lead to keep inventory in sync.
+3. Dynamic plan assembly (8.8) — Planner/platform owner; consumes facet compiler outputs and updated capability metadata.
+4. Hybrid planner loop enablement (8.14) — Planner/platform owner; integrates LLM planner handshake and SSE lifecycle events.
+5. Persistence foundations (8.4) — Backend owner; collaborates with planner owner for plan version/snapshot hooks.
+6. Resume/debug interfaces (8.5) — Backend owner once 8.4 persists plan versions and outputs.
+7. Telemetry/logging parity (8.6) — Platform/SRE owner after plan versioning is available.
+8. Policy engine + signals (8.9) — Planner/platform owner once persistence and telemetry stories land.
 
 ### Capacity Assumptions
-- ~4.5 engineer-weeks (platform/planner 2.2w, backend 1.5w, SRE/observability 0.8w) + 0.5 QA week for integration/policy tests.
-- Hold 0.3 engineer-week buffer for registry inventory churn or scoring adjustments discovered during 8.8.
+- ~5.5 engineer-weeks (platform/planner 2.7w, backend 1.8w, shared types 0.6w, SRE/observability 0.8w) + 0.5 QA week for integration/policy tests.
+- Hold 0.5 engineer-week buffer for facet migration fallout or planner prompt tuning discovered during 8.14.
 
 ### Quality & Readiness Work
-- Validate capability metadata via unit tests consuming registry payloads (8.7) and plan assembly snapshots for multiple envelopes (8.8).
+- Validate facet catalog + contract compiler via shared/unit tests and ensure capability registrations pull definitions from the catalog (8.12, 8.13).
+- Re-run capability registry inventory validation after migration to ensure documentation and exports stay in sync (8.13).
+- Capture planner assembly snapshots for multiple envelopes asserting facet arrays, compiled schemas, and plan versions (8.8, 8.14).
 - Ensure persistence migrations and write paths pass integration tests with resume/replay harnesses (8.4) before enabling policy engine.
 - Telemetry story to deliver log/metric snapshot tests plus dashboard update checklist (8.6) ahead of policy triggers.
-- Policy engine tests simulate policy triggers across quality, cost, latency, and HITL scenarios (8.9) leveraging persisted plan versions.
-- Smoke `npm run dev:flex` after each major milestone to ensure registry, planner, and persistence wiring work end-to-end.
+- Policy engine tests simulate policy triggers across quality, cost, latency, and HITL scenarios (8.9) leveraging persisted plan versions and telemetry hooks.
+- Smoke `npm run dev:flex` after each major milestone to ensure facet catalog, planner handshake, and persistence wiring work end-to-end.
 
 ### Risks & Mitigations
-- **Inventory drift delaying dynamic planning**: lock inventory doc updates into review checklist; include validation tests.
-- **Dynamic plan gaps without persistence**: sequence 8.4 immediately after 8.8 to avoid rework; gate policy features behind flag until persistence lands.
+- **Facet catalog adoption delays dynamic planning**: deliver 8.12 early and block merge on planner tests consuming the shared compiler.
+- **Capability metadata drift**: include docs sync and facet-validation scripts in 8.13; fail CI if mismatched facets are detected.
+- **Dynamic plan gaps without persistence**: sequence 8.4 immediately after 8.14 to avoid rework; gate policy features behind flag until persistence lands.
 - **Telemetry lagging policy engine**: require 8.6 completion before enabling 8.9 SSE policy events; add logging fallbacks if metrics ingestion misses deadline.
 - **Policy loops once enabled**: enforce guardrails and monitoring during 8.9 delivery; coordinate with QA on scenario coverage.
 

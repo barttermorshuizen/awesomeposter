@@ -57,8 +57,42 @@ Payload compiled for each agent invocation that includes the relevant slice of t
 ### 5.6 AgentCapability
 Registry entries advertising an agent’s competencies, IO expectations, cost profile, and preferred models. The planner matches plan nodes to capabilities at runtime.
 
+#### Facet Definition
+- `Facet` objects are the semantic primitives the planner uses when composing contracts. Each facet defines a reusable slice of meaning – tone, brief, compliance rubric – that can be merged into node contracts.
+- Core fields:
+  - `name` (machine key) and `title` (human label) keep facet identities stable.
+  - `description` documents what the facet constrains.
+  - `schema` contains the JSON Schema fragment representing the facet’s structure.
+  - `semantics` or `instruction` describes how downstream agents should interpret the facet.
+  - `metadata` carries versioning, dependencies, and directionality (`input`, `output`, or both).
+
+Example:
+
+```json
+{
+  "name": "toneOfVoice",
+  "title": "Tone of Voice",
+  "description": "Adjusts emotional style and diction of the generated text.",
+  "schema": {
+    "type": "string",
+    "enum": ["friendly", "professional", "inspiring"]
+  },
+  "semantics": "Agent should skew language, phrasing, word choice to reflect the tone value.",
+  "metadata": {
+    "version": "v1",
+    "directionality": "input"
+  }
+}
+```
+
+#### Facet-Aligned Capabilities
+- Each capability declares the facets it consumes via its `inputContract` (array of facet names) and the facets it produces via its `outputContract`.
+- Declared facets must remain a subset of what the owning agent can support; this keeps planner reasoning consistent even if the agent serves many roles.
+- During planning, the orchestrator can **derive** a capability by checking whether an agent’s supported facets can satisfy the requested facet mix, even if that exact capability was not explicitly registered. Derived capabilities are flagged on the plan node for auditing.
+- Contracts are assembled dynamically by merging the schema of all selected facets, so new facets can be introduced without editing planner code.
+
 ### 5.6.1 Capability Registration
-Agents self-register with the orchestrator during startup (or when hot-loaded). Each agent posts a `CapabilityRegistration` payload describing its identifiers, strengths, supported locales, preferred models, input expectations, and symmetric input/output contracts. The orchestrator persists the record, tracks health/heartbeat metadata, and updates the `CapabilityRegistry` so planners always operate on live data. Multiple instances of the same capability can register with distinct scopes (for example `writer.en`, `writer.fr`), enabling runtime selection and graceful degradation when one instance is unavailable.
+Agents self-register with the orchestrator during startup (or when hot-loaded). Each agent posts a `CapabilityRegistration` payload describing its identifiers, strengths, supported locales, preferred models, facet coverage (`inputContract`/`outputContract` arrays), and heartbeat metadata. The orchestrator persists the record, tracks health/heartbeat metadata, and updates the `CapabilityRegistry` so planners always operate on live data. Multiple instances of the same capability can register with distinct scopes (for example `writer.en`, `writer.fr`), enabling runtime selection and graceful degradation when one instance is unavailable.
 
 ### 5.6.2 Registration Payload
 Registration payloads share a stable contract so the orchestrator can validate and cache metadata.
@@ -75,39 +109,8 @@ Registration payloads share a stable contract so the orchestrator can validate a
     "strengths": ["brand_voice_alignment", "cta_generation"],
     "limitations": ["no_paid_ads_claims"]
   },
-  "inputContract": {
-    "mode": "json_schema",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "objective": { "type": "string" },
-      "toneOfVoice": { "type": "array", "items": { "type": "string" } }
-    },
-    "additionalProperties": true
-  },
-  "outputContract": {
-    "mode": "json_schema",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "variants": {
-        "type": "array",
-        "items": { "$ref": "#/definitions/writerVariant" }
-      }
-    },
-    "required": ["variants"],
-    "definitions": {
-      "writerVariant": {
-        "type": "object",
-        "properties": {
-          "headline": { "type": "string" },
-          "body": { "type": "string" },
-          "callToAction": { "type": "string" }
-        },
-        "required": ["headline", "body"]
-      }
-    }
-  },
+  "inputContract": ["toneOfVoice", "writerBrief", "audienceProfile"],
+  "outputContract": ["copyVariants", "rationaleSummary"],
   "cost": { "tier": "standard", "estimatedTokens": 6000 },
   "preferredModels": ["gpt-5.1"],
   "heartbeat": { "intervalSeconds": 60 },
@@ -124,16 +127,153 @@ Registration payloads share a stable contract so the orchestrator can validate a
 - `displayName` (string, required): human-readable name shown in tooling and logs.
 - `summary` (string, required): concise capability description.
 - `inputTraits` (object, optional): declared coverage such as supported languages, formats, strengths, and limitations.
-- `inputContract` (object, optional): JSON Schema or freeform contract describing the inputs an agent expects by default.
-- `outputContract` (object, optional): JSON Schema or freeform contract describing the artifact the agent returns by default.
-- `defaultContract` (object, optional, deprecated): legacy alias retained for backwards compatibility; mirrors `outputContract`.
+- `inputContract` (array of strings, required): facet names this capability consumes when invoked.
+- `outputContract` (array of strings, required): facet names this capability produces; planner merges them into downstream contracts.
 - `cost` (object, optional): estimates around token usage or pricing tier for planner budgeting.
 - `preferredModels` (array, optional): ranked list of model IDs the agent is tuned for.
 - `heartbeat` (object, optional): heartbeat expectations (intervals/timeout) so the orchestrator can mark stale registrations.
 - `metadata` (object, optional): free-form key/value pairs (owner, documentation URLs, rollout flags).
+- Legacy JSON Schema contracts are deprecated in favor of facet arrays; remove any freeform payloads during migration.
 
-### 5.7 Intermediate Artifacts
-Not every node maps directly onto the client’s output contract. The orchestrator can define internal contracts—structured schemas or free-form directives (for example writer briefs with hook/CTA guidance)—that downstream agents consume. These artifacts are validated or post-processed as needed, persisted, and referenced when assembling the final response. When post-processing is required, the planner inserts follow-up nodes (often prompt-driven structuring passes) so conversions stay inside the orchestration flow rather than bespoke code.
+### 5.7 Facet-Based Plan Assembly
+Facet-driven contracts let the planner assemble dynamic graphs without hard-coding role sequences. Every node’s contract is stitched together at runtime by selecting the right facets, merging their schemas, and attaching the semantics needed for downstream agents (or humans) to act predictably.
+
+#### Planning Steps
+1. **Select agent and capability.**
+   - Prefer an agent that already publishes a matching capability.
+   - If none exist, derive a capability by confirming the agent supports the required facets; mark the node as derived for traceability.
+2. **Activate the facets to use.**
+   - Examine envelope objective, policies, constraints, and prior outputs.
+   - For declared capabilities, choose a subset of the published `inputContract`/`outputContract` facets.
+   - For derived capabilities, pick the facet mix that best covers the requested outcome.
+3. **Merge schemas into contracts.**
+   - `inputSchema = mergeSchemas(selectedInputFacets)`
+   - `outputSchema = mergeSchemas(selectedOutputFacets)`
+   - Preserve facet provenance so validators and telemetry can explain where each schema fragment originated.
+4. **Compose the system instruction.**
+   - Concatenate guidance from the selected facets’ `semantics`.
+   - Example: “Use toneOfVoice to adjust diction; apply writerBrief context; emit copyVariants output.”
+5. **Annotate the plan node.**
+   - Store `agentId`, `capabilityId` (or `derivedFrom`), the selected facet arrays, resolved schemas, merged system instruction, retry/fallback policy, and a rationale blob for debugging.
+
+#### Execution Runtime
+1. **Validate inputs.** Reject immediately if the payload fails the resolved `inputSchema`; do not call the agent.
+2. **Invoke the agent or human.** Provide the payload, merged instruction, and any facet-specific metadata.
+3. **Validate outputs.** Run contract checks against the resolved `outputSchema`; on failure, follow node retry strategy, then fallback (alternate capability or HITL) once retries exhaust.
+4. **Persist state.** Record inputs, outputs, validation errors, derived capability markers, and node status to support rehydration and audits.
+5. **Propagate downstream.** On success, hand the validated output to dependent nodes. For fallbacks, follow the alternate edges defined during planning.
+
+> Intermediate artifacts (writer briefs, rubric scores, normalization transforms) are represented as facet-driven contracts just like client deliverables. When transformation or post-processing is required, the planner injects dedicated nodes so conversions remain in-band and fully traceable.
+
+### 5.8 Planner vs Orchestrator: Hybrid Collaboration
+The flex stack pairs the LLM-backed `PlannerService` with the deterministic orchestration layer (`FlexRunController`, `PolicyNormalizer`, `CapabilityRegistry`, `ContextBuilder`, `ExecutionEngine`, `OutputValidator`, `PersistenceService`, `TelemetryService`). The planner excels at interpreting fuzzy objectives; the orchestration layer guarantees contracts, execution order, and safety. Planner proposes; orchestrator compiles, enforces, and executes.
+
+#### Roles & Responsibilities
+
+| Component | Role | Strengths / Why Use It | Boundaries / Constraints |
+| --- | --- | --- | --- |
+| `PlannerService` (LLM-backed) | Interpret objectives, decompose into subtasks, recommend agent + capability pairings, suggest facet activation, and draft system instructions. | Flexible reasoning, rapid adaptation to new objectives, can infer structure from context. | Must not commit irreversible state changes; every plan is validated before execution. |
+| Orchestration Layer (`FlexRunController` + `PolicyNormalizer` + `CapabilityRegistry` + `ContextBuilder` + `ExecutionEngine` + `OutputValidator`) | Validate the draft plan, compile explicit contracts, enforce constraints, route tasks, coordinate retries/fallbacks/HITL, and drive execution while persisting telemetry. | Predictable, auditable, reliable; maintains invariants and compliance. | Must not guess beyond deterministic rules; rejects invalid plans or sends them back for revision. |
+
+#### Interaction Sequence
+1. **Objective submission.** Client posts a `TaskEnvelope` containing the objective, context, and constraints.
+2. **Planning phase (`PlannerService`).**
+   - `PlannerService` inspects objective, context, facet registry, and capability metadata (via `CapabilityRegistry` read APIs).
+   - It assembles a draft plan graph: nodes include `agentId`, `capabilityId` (declared or derived), `inputContract`/`outputContract` facet arrays, and proposed system instructions.
+3. **Plan validation & compilation (orchestration layer).**
+   - `FlexRunController`, working with `CapabilityRegistry`, merges facets into explicit input/output schemas.
+   - `CapabilityRegistry` confirms the agent supports every referenced facet; derived capability safeguards are applied when needed.
+   - Contracts are compiled with Ajv/Zod; `PlannerService` receives rejection diagnostics if inconsistencies surface.
+4. **Execution (`ContextBuilder` + `ExecutionEngine` + `OutputValidator`).**
+   - `ContextBuilder` prepares inputs for each node; `ExecutionEngine` validates them before dispatch.
+   - `ExecutionEngine` invokes the agent (or human) with payload + compiled instruction.
+   - `OutputValidator` checks outputs, applies retry policy, and escalates to fallbacks or HITL through `ExecutionEngine` when retries exhaust.
+   - `PersistenceService` and `TelemetryService` capture status, inputs, outputs, and diagnostics.
+5. **Replanning (optional).**
+   - `ExecutionEngine` or `PolicyNormalizer` can request a revised plan when constraints shift or nodes fail.
+   - `PlannerService` returns deltas; orchestration components revalidate, patch the graph, and resume.
+6. **Completion.**
+   - `ExecutionEngine` confirms terminal nodes succeeded, `OutputValidator` verifies caller contracts, and `FlexRunController` emits the final response.
+
+#### Collaboration Patterns
+- **Plan-and-Solve:** Planner generates the full plan up front; orchestrator executes sequentially. High predictability, lower adaptability mid-run.
+- **Interleaved / ReAct style:** Planner and orchestrator alternate—plan a node, execute, reassess. Adapts quickly but requires stronger guardrails.
+- **Fallback proposals:** Planner may pre-encode alternates or fallbacks; orchestrator chooses the best candidate at runtime based on health, cost, or performance.
+
+#### Derived Capability Handling
+- Planner may target an agent for an unlisted capability by proposing facet arrays.
+- `CapabilityRegistry` verifies facet support, `ExecutionEngine` flags the node as derived, tightens retries/logging, and routes through HITL if needed.
+- Stable success across runs is a signal to formalize the pairing as a declared capability owned by the responsible agent team.
+
+#### Failure Modes & Recovery
+
+| Failure Mode | Detection Point | Recovery Strategy |
+| --- | --- | --- |
+| Invalid facet combination | `CapabilityRegistry` / `PlannerService` validation | Reject node, return diagnostics to `PlannerService` for regeneration. |
+| Schema compilation conflict | `FlexRunController` / contract compiler | Filter conflicting facets or request planner revisions. |
+| Input validation failure | `ExecutionEngine` pre-dispatch | Fail fast, surface to planner or caller; optionally replan upstream. |
+| Output validation failure | `OutputValidator` post-dispatch | Retry per policy, then fallback to alternate agent or HITL. |
+| Agent crash / runtime error | `ExecutionEngine` runtime | Retry, switch to fallback, or escalate to human operator. |
+| Mid-flow constraint drift | `ExecutionEngine` / `TelemetryService` monitoring | Trigger replanning to insert corrective nodes or adjust routing. |
+
+#### Why the Hybrid Model Matters
+- **Balanced flexibility and control:** Planner adapts to ambiguous objectives while orchestrator enforces invariants.
+- **Safety net for generative systems:** All planner proposals are validated before any side effects occur.
+- **Traceability:** Every node records provenance, instructions, and validation outcomes for auditing.
+- **Iterative evolution:** Responsibilities can shift over time—formalize successful patterns deterministically or give the planner more autonomy once guardrails prove effective.
+
+> The sequence below illustrates planner ↔ orchestrator loops, highlighting guardrails, validation gates, and replanning hooks.
+
+#### Planner ↔ Orchestrator Sequence (Mermaid)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Controller as FlexRunController
+    participant Policy as PolicyNormalizer
+    participant Planner as PlannerService
+    participant Registry as CapabilityRegistry
+    participant Builder as ContextBuilder
+    participant Engine as ExecutionEngine
+    participant Agent as Capability Agent
+    participant Validator as OutputValidator
+    participant HITL as HITL Operator
+
+    Client->>Controller: POST TaskEnvelope
+    Controller->>Policy: Normalize policies / constraints
+    Policy-->>Controller: Normalized runtime policies
+    Controller->>Planner: Request plan draft (objective, context, policies)
+    Planner->>Registry: Fetch capability + facet coverage
+    Registry-->>Planner: Capability metadata
+    Planner-->>Controller: Draft plan graph (nodes + facet contracts)
+
+    Controller->>Registry: Validate facets / derived capabilities
+    Controller->>Planner: Plan issues? (if invalid)
+    alt Plan valid
+        Controller->>Builder: Build context bundles per node
+        loop For each node
+            Builder-->>Engine: Context payload + contracts
+            Engine->>Registry: Confirm capability availability/heartbeat
+            Engine->>Agent: Invoke with payload + instruction
+            Agent-->>Engine: Candidate output
+            Engine->>Validator: Validate output
+            alt Output valid
+                Validator-->>Engine: OK (record provenance)
+                Engine->>Controller: Node complete telemetry
+            else Output invalid
+                Validator-->>Engine: Validation errors
+                Engine->>Agent: Retry (per policy)
+                Engine->>HITL: Escalate (after retries) / request correction
+                HITL-->>Engine: Human response
+            end
+        end
+        Engine-->>Controller: Plan complete
+        Controller-->>Client: Stream final output
+    else Plan invalid
+        Controller-->>Planner: Reject plan + diagnostics (replan)
+    end
+```
 
 ## 6. Component Responsibilities
 - `FlexRunController`: validates envelopes, seeds correlation IDs, and emits initial SSE frames.
@@ -151,7 +291,7 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 2. `PolicyNormalizer` validates caller-supplied policies (persona defaults, experiment toggles) and injects the result into the execution context.
 3. `PlannerService` generates a `PlanGraph`, selecting capabilities based on requested outcomes and producing agent-specific node definitions.
 4. `ExecutionEngine` walks the graph, building `ContextBundle`s per node, validating inputs against capability metadata, and dispatching them to agents via the shared runtime.
-5. Agents respond with payloads; `OutputValidator` enforces structured contracts (capability defaults and caller schema), emits scoped errors when expectations are not met, and prompts retries or HITL escalation before persisting results.
+5. Agents respond with payloads; `OutputValidator` enforces facet-derived capability contracts alongside the caller schema, emits scoped errors when expectations are not met, and prompts retries or HITL escalation before persisting results.
 6. HITL interrupts pause the run; operator responses trigger plan resumption. Rehydration rebuilds remaining graph state and context bundles.
 7. Once all terminal nodes succeed, the engine composes the final response by combining the validated or normalized artifacts that fulfill the envelope schema and ends the SSE stream.
 
@@ -163,12 +303,12 @@ Not every node maps directly onto the client’s output contract. The orchestrat
 ## 9. Data Model & Persistence
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`).
 - `flex_plan_nodes`: stores node-level state, selected capability IDs, context hashes, and validation status for auditing and resumption.
-- `flex_capabilities`: stores registered agent metadata, heartbeat timestamps, availability state, and default contract hints.
+- `flex_capabilities`: stores registered agent metadata, heartbeat timestamps, availability state, and facet coverage hints.
 - Reuse `agent_messages` and `hitl_requests` tables, adding `flex_run_id` foreign keys for joint reporting.
 - Persist final outputs in `flex_run_outputs` with the validated JSON blob plus a copy of the client schema for downstream verification.
 
 ## 9.1 Capability Registration Flow
-1. Agent instance boots and gathers its metadata (capability ID, name, summary, supported locales/tones/formats, preferred models, default return contract, cost tier, health status).
+1. Agent instance boots and gathers its metadata (capability ID, name, summary, supported locales/tones/formats, preferred models, facet coverage arrays, cost tier, health status).
 2. Agent calls `POST /api/v1/flex/capabilities/register` with that payload and an auth token issued for agent services.
 3. Orchestrator validates the payload, upserts the record in `flex_capabilities`, and emits an internal event so the in-memory `CapabilityRegistry` refreshes.
 4. Periodic heartbeats (either repeated registrations or lightweight `PATCH` calls) keep availability status current; stale capabilities are marked `inactive` so the planner can fall back automatically.
@@ -307,25 +447,41 @@ Sample envelope payload (`envelope.json`):
 ```
 
 ## 11. Capability Registry & Agent Contracts
-- Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/strategy-manager.ts`); the module exports the capability payload and keeps the JSON Schema contract co-located with prompts and tools.
+- Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/strategy-manager.ts`); the module exports the capability payload with facet-based `inputContract` / `outputContract` arrays alongside prompt assets.
 - A Nitro startup plugin consumes these exports and POSTs them to `/api/v1/flex/capabilities/register`, exercising the same validation/logging path as external registrants, and re-registers on an interval (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active.
-- Planner uses the registry to resolve capabilities by scenario tags declared in capability metadata (`metadata.scenarios`).
-- Context bundler translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
-- Agents continue to rely on natural-language prompts but receive machine-readable return schemas and validation hints alongside human context.
-- A dedicated registry service (`packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
+- `PlannerService` uses the registry to resolve capabilities by scenario tags declared in capability metadata (`metadata.scenarios`) and by matching facet coverage.
+- `ContextBuilder` translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
+- Agents continue to rely on natural-language prompts but receive machine-readable facet contracts and validation hints alongside human context.
+- The registry service (`packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
 - The database layer persists metadata to the shared `flex_capabilities` table (Drizzle schema + migration), keyed by `capability_id` with timestamps for `registered_at`, `last_seen_at`, and rolling `status` (`active`/`inactive`).
 - Each agent module schedules a self-registration with the capability registry during bootstrap so the flex server advertises its capabilities without relying on a separate startup plugin.
 - Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
 
+### Facet Catalog
+
+| Facet | Direction | Description | Schema Sketch |
+| --- | --- | --- | --- |
+| `objectiveBrief` | input | Structured summary of the client’s stated objective, constraints, and success criteria. | Object with `objective` (string), optional `successCriteria[]` (string). |
+| `audienceProfile` | input | Audience attributes (personas, segments, geography) that influence strategy and tone. | Object with `persona` (string), `segments[]` (string), optional `regions[]`. |
+| `toneOfVoice` | input | Desired emotional/style tone for downstream copy. | Enum string (`friendly`, `professional`, `inspiring`, etc.). |
+| `assetBundle` | input | Links or embedded assets (docs, images) to ground planning. | Array of `{ type, payload }` objects with typed payload per asset. |
+| `writerBrief` | input/output | Narrative direction, key points, blockers for writers; produced by strategy, consumed by execution. | Object with `angle`, `keyPoints[]`, `constraints[]`. |
+| `planKnobs` | input/output | Normalised levers the orchestrator can tweak (variant counts, CTA emphasis, length). | Object with numeric/string knobs (`variantCount`, `ctaFocus`, `length`). |
+| `rationaleSummary` | output | Strategy justification and high-level narrative reasoning. | Object with `northStar`, `whyItWorks`, optional `risks`. |
+| `copyVariants` | input/output | Structured set of draft variants for distribution downstream. | Array of `{ headline, body, callToAction }` objects. |
+| `qaRubric` | input | Policy and quality rubric settings QA should enforce. | Object with `checks[]` (enum), `thresholds` (object). |
+| `qaFindings` | output | QA results with scores and compliance flags. | Object with `scores`, `issues[]`, `overallStatus`. |
+| `recommendationSet` | output | Normalised follow-up actions for editors or writers. | Array of `{ severity, recommendation, rationale }`. |
+
 ### Current Inventory
 
-| Capability ID | Display Name | Responsibilities | Input Expectations | Output Contract | Source |
+| Capability ID | Display Name | Responsibilities | Input Facets | Output Facets | Source |
 | --- | --- | --- | --- | --- | --- |
-| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | Requires objective + audience in the client brief; optional asset bundles for deeper feasibility checks. | JSON object containing `rationale`, `writerBrief`, and `knobs` defined within the agent module. | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
-| `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | Needs brief context, tone, company profile bundles, and desired variant count. | JSON schema enforcing a `variants[]` collection with `headline`, `body`, and `callToAction`. | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
-| `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | Expects a prior draft plus optional writer brief metadata. | JSON QA report (`composite`, `compliance`, `contentRecommendations`, etc.). | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
+| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `assetBundle` | `writerBrief`, `planKnobs`, `rationaleSummary` | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
+| `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | `writerBrief`, `planKnobs`, `toneOfVoice`, `audienceProfile` | `copyVariants` | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
+| `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | `copyVariants`, `writerBrief`, `qaRubric` | `qaFindings`, `recommendationSet` | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
 
-> Capability metadata, costs, and heartbeat settings are the source of truth—update the table and the corresponding agent module together during future agent work.
+> Capability metadata, facet coverage, costs, and heartbeat settings are the source of truth—update the tables above and the corresponding agent module together during future agent work. Add new facets to the catalog before referencing them in capabilities.
 
 ### Supporting Utilities
 
@@ -336,8 +492,8 @@ Sample envelope payload (`envelope.json`):
 
 ### Maintenance Checklist
 
-1. Update the capability payload inside the relevant agent module when prompts, IO contracts, or preferred models change.
-2. Mirror those edits in the table above so downstream teams know where source lives and what constraints apply.
+1. Update the capability payload inside the relevant agent module when prompts, facet coverage, or preferred models change.
+2. Mirror those edits in the facet catalog and capability inventory tables so downstream teams know where source lives and what constraints apply.
 3. Run `npm run test:unit -- packages/flex-agents-server/__tests__/capability-registration.spec.ts packages/flex-agents-server/__tests__/flex-planner.spec.ts` to confirm registration resilience and ensure planner discovery.
 4. If heartbeat expectations change, adjust `FLEX_CAPABILITY_REFRESH_INTERVAL_MS` or the per-capability heartbeat fields so registry status stays accurate.
 
@@ -358,14 +514,3 @@ Sample envelope payload (`envelope.json`):
 - Policy conflicts: inconsistent caller-supplied directives (for example variant counts versus schema `minItems`) can break runs; conflict resolution rules must be explicit.
 - Validation cost: Ajv on large schemas may slow runs; consider caching compiled schemas and streaming partial validation errors.
 - Capability drift: registry metadata must stay synchronized with actual agent prompts to avoid mismatched expectations.
-
-## 15. Next Steps
-- Define TypeScript interfaces for `TaskEnvelope`, `OutputContract`, `PlanGraph`, and `FlexEvent` in `packages/shared`.
-- Sketch planner heuristics and policy normalization order; document conflict handling rules.
-- Inventory existing specialist agents, author capability metadata, and identify gaps that block dynamic planning.
-- Align with product/UX on “Create Post (Flex)” popup requirements so the envelope mapping is deterministic.
-
-## 16. Local Development Commands
-- `npm run dev:flex` launches the flex agents server on `FLEX_SERVER_PORT` (default `3003`) without disturbing the legacy agents runtime.
-- `npm run dev:all` now runs SPA, API, legacy agents server, flex agents server, and shared package watchers concurrently.
-- `npm run build:flex` produces the standalone Nitro build artifact for deployment or integration testing.
