@@ -346,7 +346,7 @@ export class FlexExecutionEngine {
         correlationId: opts.correlationId
       })
     } catch {}
-    const preferredContract = node.contracts.output ?? capability.outputContract ?? capability.defaultContract
+    const preferredContract = node.contracts.output ?? capability.outputContract
     const contract = preferredContract ?? null
     if (contract) {
       await this.ensureOutputMatchesContract(

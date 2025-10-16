@@ -155,7 +155,7 @@ function coerceNodeKind(kind?: string | null): FlexPlanNodeKind {
 function extractFacetUnion(capability: CapabilityRecord, direction: 'input' | 'output'): string[] {
   const explicit = direction === 'input' ? capability.inputFacets ?? [] : capability.outputFacets ?? []
   if (explicit.length) return unique(explicit)
-  const contract = direction === 'input' ? capability.inputContract : capability.outputContract ?? capability.defaultContract
+  const contract = direction === 'input' ? capability.inputContract : capability.outputContract
   if (!contract) return []
   if (contract.mode === 'facets') return unique(contract.facets ?? [])
   return []
@@ -490,7 +490,6 @@ export class FlexPlanner {
   ): OutputContract {
     if (kind === 'execution' || kind === 'validation') {
       if (capability?.outputContract) return capability.outputContract
-      if (capability?.defaultContract) return capability.defaultContract
       if (compiledOutput) return compiledOutput
     }
 

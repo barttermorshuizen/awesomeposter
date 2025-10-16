@@ -34,7 +34,6 @@ export const STRATEGY_CAPABILITY = {
     mode: 'facets',
     facets: [...STRATEGY_OUTPUT_FACETS]
   },
-  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 1800,

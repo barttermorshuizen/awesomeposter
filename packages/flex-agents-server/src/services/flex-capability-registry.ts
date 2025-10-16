@@ -156,7 +156,6 @@ export class FlexCapabilityRegistryService {
       inputTraits: (row.inputTraits ?? undefined) as CapabilityRecord['inputTraits'],
       inputContract,
       outputContract,
-      defaultContract: (outputContract ?? undefined) as CapabilityRecord['defaultContract'],
       cost: (row.cost ?? undefined) as CapabilityRecord['cost'],
       preferredModels,
       heartbeat,
@@ -171,7 +170,7 @@ export class FlexCapabilityRegistryService {
 
   private prepareRegistration(payload: CapabilityRegistration) {
     const inputFacetNames = this.extractFacetNames(payload.inputContract)
-    const outputSourceContract = payload.outputContract ?? payload.defaultContract
+    const outputSourceContract = payload.outputContract
     const outputFacetNames = this.extractFacetNames(outputSourceContract)
 
     let compiledInput: JsonSchemaContract | undefined
@@ -215,8 +214,13 @@ export class FlexCapabilityRegistryService {
       ...payload,
       inputContract: this.resolveContract(payload.inputContract, compiledInput),
       outputContract: this.resolveOutputContract(payload, compiledOutput),
-      defaultContract: this.resolveDefaultContract(payload, compiledOutput),
       ...(metadata !== undefined ? { metadata } : {})
+    }
+
+    if (!registration.outputContract) {
+      throw new Error(
+        `Capability ${payload.capabilityId} registration is missing an output contract after facet compilation.`
+      )
     }
 
     return {
@@ -255,20 +259,6 @@ export class FlexCapabilityRegistryService {
       return compiledOutput
     }
     return originalOutput
-  }
-
-  private resolveDefaultContract(
-    payload: CapabilityRegistration,
-    compiledOutput?: JsonSchemaContract
-  ): CapabilityContract | undefined {
-    const originalDefault = payload.defaultContract
-    if (originalDefault?.mode === 'facets') {
-      return compiledOutput
-    }
-    if (!originalDefault && compiledOutput && (payload.outputContract?.mode === 'facets' || !payload.outputContract)) {
-      return compiledOutput
-    }
-    return originalDefault ?? (compiledOutput ?? undefined)
   }
 
   private buildJsonSchemaContract(compiled: CompiledFacetSchema): JsonSchemaContract {

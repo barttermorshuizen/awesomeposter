@@ -421,6 +421,13 @@ describe('FlexRunCoordinator', () => {
     expect(events.map((e) => e.type)).toContain('node_start')
     expect(events.map((e) => e.type)).toContain('node_complete')
     expect(events.map((e) => e.type)).toContain('complete')
+
+    const planEvent = events.find((evt) => evt.type === 'plan_generated')
+    const planNodes = (planEvent?.payload as any)?.plan?.nodes ?? []
+    const executionSummary = planNodes.find((node: any) => node.capabilityId === CONTENT_CAPABILITY_ID)
+    expect(executionSummary?.contracts?.outputMode).toBe('json_schema')
+    expect(executionSummary?.facets?.output).toEqual(expect.arrayContaining(['copyVariants']))
+
     expect(persistence.statuses.get(result.runId)).toBe('completed')
     expect(persistence.results.get(result.runId)?.variants).toHaveLength(2)
   })
@@ -522,6 +529,12 @@ describe('FlexRunCoordinator', () => {
     expect(resumeResult.status).toBe('completed')
     expect(resumeResult.output?.variants).toHaveLength(2)
     expect(resumeEvents.map((evt) => evt.type)).toContain('plan_generated')
+    const resumePlanEvent = resumeEvents.find((evt) => evt.type === 'plan_generated')
+    const resumeNodes = (resumePlanEvent?.payload as any)?.plan?.nodes ?? []
+    const resumeExecutionSummary = resumeNodes.find((node: any) => node.capabilityId === CONTENT_CAPABILITY_ID)
+    if (resumeExecutionSummary?.contracts) {
+      expect(resumeExecutionSummary.contracts.outputMode).toBe('json_schema')
+    }
     expect(resumeEvents.some((evt) => evt.type === 'complete')).toBe(true)
     expect(persistence.statuses.get(resumeResult.runId)).toBe('completed')
   })

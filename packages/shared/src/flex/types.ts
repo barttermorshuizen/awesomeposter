@@ -222,27 +222,24 @@ const HeartbeatSchema = z
 type ContractCarrier = {
   inputContract?: CapabilityContract | null
   outputContract?: CapabilityContract | null
-  defaultContract?: CapabilityContract | null
 }
 
 function normalizeCapabilityContracts<T extends ContractCarrier>(value: T) {
-  const outputContract = value.outputContract ?? value.defaultContract ?? null
-  const defaultContract = value.defaultContract ?? value.outputContract ?? null
   const inputContract = value.inputContract ?? null
+  const outputContract = value.outputContract ?? null
   return {
     ...value,
     inputContract: inputContract ?? undefined,
-    outputContract: outputContract ?? undefined,
-    defaultContract: defaultContract ?? undefined
+    outputContract: outputContract ?? undefined
   }
 }
 
 function ensureCapabilityContracts(value: ContractCarrier, ctx: z.RefinementCtx) {
-  if (!value.outputContract && !value.defaultContract) {
+  if (!value.outputContract) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['outputContract'],
-      message: 'Capability registrations must include `outputContract` (or legacy `defaultContract`).'
+      message: 'Capability registrations must include an `outputContract`.'
     })
   }
 }
@@ -255,7 +252,6 @@ const CapabilityRegistrationCoreSchema = z.object({
   inputTraits: InputTraitsSchema,
   inputContract: CapabilityContractSchema.optional(),
   outputContract: CapabilityContractSchema.optional(),
-  defaultContract: CapabilityContractSchema.optional(),
   cost: CostInfoSchema,
   preferredModels: z.array(z.string()).optional(),
   heartbeat: HeartbeatSchema,

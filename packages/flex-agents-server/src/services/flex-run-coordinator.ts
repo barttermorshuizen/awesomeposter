@@ -148,11 +148,28 @@ export class FlexRunCoordinator {
           plan: {
             runId: plan.runId,
             version: plan.version,
-            nodes: plan.nodes.map((node) => ({
-              id: node.id,
-              capabilityId: node.capabilityId,
-              label: node.label
-            })),
+            nodes: plan.nodes.map((node) => {
+              const contractSource = node.contracts
+              const contracts =
+                contractSource && (contractSource.input || contractSource.output)
+                  ? {
+                      ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                      ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                    }
+                  : undefined
+              const facetSource = node.facets
+              const facets =
+                (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                  ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                  : undefined
+              return {
+                id: node.id,
+                capabilityId: node.capabilityId,
+                label: node.label,
+                ...(contracts ? { contracts } : {}),
+                ...(facets ? { facets } : {})
+              }
+            }),
             metadata: { resumed: true }
           }
         }
@@ -195,11 +212,28 @@ export class FlexRunCoordinator {
           plan: {
             runId: plan.runId,
             version: plan.version,
-            nodes: plan.nodes.map((node) => ({
-              id: node.id,
-              capabilityId: node.capabilityId,
-              label: node.label
-            })),
+            nodes: plan.nodes.map((node) => {
+              const contractSource = node.contracts
+              const contracts =
+                contractSource && (contractSource.input || contractSource.output)
+                  ? {
+                      ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                      ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                    }
+                  : undefined
+              const facetSource = node.facets
+              const facets =
+                (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                  ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                  : undefined
+              return {
+                id: node.id,
+                capabilityId: node.capabilityId,
+                label: node.label,
+                ...(contracts ? { contracts } : {}),
+                ...(facets ? { facets } : {})
+              }
+            }),
             metadata: plan.metadata
           }
         }

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { STRATEGY_CAPABILITY } from '../../src/agents/strategy-manager'
 import { CONTENT_CAPABILITY } from '../../src/agents/content-generator'
 import { QA_CAPABILITY } from '../../src/agents/quality-assurance'
-import type { CapabilityContract, CapabilityRegistration } from '@awesomeposter/shared'
+import type { CapabilityContract } from '@awesomeposter/shared'
 
 type FacetCoverage = {
   input: string[]
@@ -28,7 +28,7 @@ function loadCodeCoverage() {
       capability.capabilityId,
       {
         input: getFacetList(capability.inputContract),
-        output: getFacetList(capability.outputContract ?? capability.defaultContract)
+        output: getFacetList(capability.outputContract)
       }
     ])
   )

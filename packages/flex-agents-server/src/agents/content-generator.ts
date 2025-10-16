@@ -35,7 +35,6 @@ export const CONTENT_CAPABILITY = {
     mode: 'facets',
     facets: [...CONTENT_OUTPUT_FACETS]
   },
-  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 1200,

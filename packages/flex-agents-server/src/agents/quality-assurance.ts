@@ -34,7 +34,6 @@ export const QA_CAPABILITY = {
     mode: 'facets',
     facets: [...QA_OUTPUT_FACETS]
   },
-  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 900,

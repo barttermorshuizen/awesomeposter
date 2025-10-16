@@ -115,4 +115,16 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
 
     await expect(service.register(payload)).rejects.toThrow(/qaFindings/i)
   })
+
+  it('rejects registrations that omit output contracts', async () => {
+    const payload: CapabilityRegistration = {
+      ...STRATEGY_CAPABILITY,
+      capabilityId: 'StrategyManagerAgent.missingOutput'
+    }
+    // Simulate a legacy caller failing to provide output contracts
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (payload as any).outputContract
+
+    await expect(service.register(payload)).rejects.toThrow(/missing an output contract/i)
+  })
 })

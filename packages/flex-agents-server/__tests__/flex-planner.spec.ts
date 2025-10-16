@@ -19,7 +19,6 @@ function makeCapabilityRecord(data: Partial<CapabilityRecord> & { capabilityId: 
     inputTraits: data.inputTraits ?? {},
     inputContract: data.inputContract ?? { mode: 'facets', facets: [] },
     outputContract: data.outputContract ?? { mode: 'facets', facets: [] },
-    defaultContract: data.defaultContract,
     cost: data.cost,
     preferredModels: data.preferredModels,
     heartbeat: data.heartbeat,
@@ -38,7 +37,19 @@ const STRATEGY_CAPABILITY = makeCapabilityRecord({
   summary: 'Plans rationale and writer brief.',
   inputTraits: { languages: ['en'], strengths: ['planning'] },
   inputContract: { mode: 'facets', facets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'] },
-  outputContract: { mode: 'facets', facets: ['writerBrief', 'planKnobs', 'strategicRationale'] },
+  outputContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      required: ['writerBrief', 'planKnobs', 'strategicRationale'],
+      properties: {
+        writerBrief: { type: 'object' },
+        planKnobs: { type: 'object' },
+        strategicRationale: { type: 'string' }
+      },
+      additionalProperties: true
+    }
+  },
   inputFacets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'],
   outputFacets: ['writerBrief', 'planKnobs', 'strategicRationale'],
   metadata: { scenarios: ['briefing', 'plan_structuring'] }
@@ -50,7 +61,7 @@ const CONTENT_CAPABILITY = makeCapabilityRecord({
   summary: 'Generates content variants.',
   inputTraits: { languages: ['en'], formats: ['linkedin_post', 'blog_post'] },
   inputContract: { mode: 'facets', facets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'] },
-  outputContract: { mode: 'facets', facets: ['copyVariants'] },
+  outputContract: buildOutputContract(),
   inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
   outputFacets: ['copyVariants'],
   metadata: { scenarios: ['linkedin_post_variants'] }
@@ -62,7 +73,18 @@ const QA_CAPABILITY = makeCapabilityRecord({
   summary: 'Evaluates drafts for policy and quality.',
   inputTraits: { languages: ['en'], strengths: ['qa_scoring'] },
   inputContract: { mode: 'facets', facets: ['copyVariants', 'writerBrief', 'qaRubric'] },
-  outputContract: { mode: 'facets', facets: ['qaFindings', 'recommendationSet'] },
+  outputContract: {
+    mode: 'json_schema',
+    schema: {
+      type: 'object',
+      required: ['qaFindings', 'recommendationSet'],
+      properties: {
+        qaFindings: { type: 'array', items: { type: 'string' } },
+        recommendationSet: { type: 'array', items: { type: 'string' } }
+      },
+      additionalProperties: true
+    }
+  },
   inputFacets: ['copyVariants', 'writerBrief', 'qaRubric'],
   outputFacets: ['qaFindings', 'recommendationSet'],
   metadata: { scenarios: ['qa_review'] }
