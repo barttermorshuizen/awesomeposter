@@ -6,6 +6,9 @@ import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
 import { FlexPlanner } from '../src/services/flex-planner'
 import { getHitlContext } from '../src/services/hitl-context'
 import { CONTENT_CAPABILITY_ID } from '../src/agents/content-generator'
+import { STRATEGY_CAPABILITY_ID } from '../src/agents/strategy-manager'
+import { QA_CAPABILITY_ID } from '../src/agents/quality-assurance'
+import type { PlannerServiceInterface } from '../src/services/planner-service'
 
 class MemoryFlexPersistence {
   runs = new Map<string, any>()
@@ -148,13 +151,71 @@ class StubHitlService {
   }
 }
 
+function createPlannerServiceStub(): PlannerServiceInterface {
+  return {
+    async proposePlan({ scenario }) {
+      const nodes = [
+        {
+          stage: 'strategy',
+          kind: 'structuring',
+          capabilityId: STRATEGY_CAPABILITY_ID,
+          inputFacets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'],
+          outputFacets: ['writerBrief', 'planKnobs', 'strategicRationale'],
+          derived: false,
+          rationale: ['planner_recommendation']
+        },
+        {
+          stage: 'generation',
+          kind: 'execution',
+          capabilityId: CONTENT_CAPABILITY_ID,
+          inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
+          outputFacets: ['copyVariants'],
+          derived: scenario !== 'linkedin_post_variants',
+          rationale: ['planner_recommendation'],
+          instructions: ['Generate platform-appropriate copy variants']
+        },
+        {
+          stage: 'qa',
+          kind: 'validation',
+          capabilityId: QA_CAPABILITY_ID,
+          inputFacets: ['copyVariants', 'writerBrief', 'qaRubric'],
+          outputFacets: ['qaFindings', 'recommendationSet'],
+          derived: true,
+          rationale: ['planner_recommendation']
+        }
+      ]
+      return {
+        nodes,
+        metadata: {
+          provider: 'planner-stub',
+          model: 'stub-1.0'
+        }
+      }
+    }
+  }
+}
+
 function createCoordinator(persistence: MemoryFlexPersistence) {
-  const capabilityRecord = {
+  const strategyCapability = {
+    capabilityId: STRATEGY_CAPABILITY_ID,
+    status: 'active' as const,
+    version: '1.0.0',
+    displayName: 'Strategy Manager',
+    summary: 'Plans rationale and writer brief.',
+    inputContract: { mode: 'facets' as const, facets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'] },
+    outputContract: { mode: 'facets' as const, facets: ['writerBrief', 'planKnobs', 'strategicRationale'] },
+    inputFacets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'],
+    outputFacets: ['writerBrief', 'planKnobs', 'strategicRationale'],
+    metadata: { scenarios: ['briefing', 'plan_structuring'] }
+  }
+
+  const contentCapability = {
     capabilityId: CONTENT_CAPABILITY_ID,
     status: 'active' as const,
     version: '1.0.0',
     displayName: 'LinkedIn Variants',
     summary: 'Generates LinkedIn post variants from envelope context.',
+    inputContract: { mode: 'facets' as const, facets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'] },
     outputContract: {
       mode: 'json_schema' as const,
       schema: {
@@ -177,22 +238,47 @@ function createCoordinator(persistence: MemoryFlexPersistence) {
         }
       }
     },
+    inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
+    outputFacets: ['copyVariants'],
     metadata: { scenarios: ['linkedin_post_variants'] }
+  }
+
+  const qaCapability = {
+    capabilityId: QA_CAPABILITY_ID,
+    status: 'active' as const,
+    version: '1.0.0',
+    displayName: 'Quality Assurance',
+    summary: 'Evaluates drafts for policy and quality.',
+    inputContract: { mode: 'facets' as const, facets: ['copyVariants', 'writerBrief', 'qaRubric'] },
+    outputContract: { mode: 'facets' as const, facets: ['qaFindings', 'recommendationSet'] },
+    inputFacets: ['copyVariants', 'writerBrief', 'qaRubric'],
+    outputFacets: ['qaFindings', 'recommendationSet'],
+    metadata: { scenarios: ['qa_review'] }
   }
 
   const registry = {
     async listActive() {
-      return [capabilityRecord]
+      return [strategyCapability, contentCapability, qaCapability]
     },
     async getCapabilityById(id: string) {
-      if (id === capabilityRecord.capabilityId) {
-        return capabilityRecord
-      }
+      if (id === strategyCapability.capabilityId) return strategyCapability
+      if (id === contentCapability.capabilityId) return contentCapability
+      if (id === qaCapability.capabilityId) return qaCapability
       return undefined
+    },
+    async getSnapshot() {
+      const active = [strategyCapability, contentCapability, qaCapability]
+      return { active, all: active }
     }
   }
 
-  const planner = new FlexPlanner(registry as any, { now: () => new Date('2025-04-01T12:00:00.000Z') })
+  const planner = new FlexPlanner(
+    {
+      capabilityRegistry: registry as any,
+      plannerService: createPlannerServiceStub()
+    },
+    { now: () => new Date('2025-04-01T12:00:00.000Z') }
+  )
 
   const runtime = {
     runStructured: vi.fn(async () => ({
@@ -221,7 +307,7 @@ function createCoordinator(persistence: MemoryFlexPersistence) {
     coordinator: new FlexRunCoordinator(persistence as any, planner, engine, hitlService as any),
     hitlService,
     runtime,
-    capability: capabilityRecord
+    capability: contentCapability
   }
 }
 
@@ -237,6 +323,34 @@ function buildEnvelope(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
       theme: 'company_outing',
       goal: 'attract_new_employees',
       variantCount: 2,
+      audienceProfile: {
+        persona: 'Developer Experience',
+        segments: ['platform_engineers'],
+        regions: ['US'],
+        painPoints: ['integration complexity']
+      },
+      toneOfVoice: 'Inspiring & Visionary',
+      writerBrief: {
+        angle: 'Celebrate the retreat culture',
+        keyPoints: ['Team cohesion', 'Developer empowerment'],
+        knobs: {
+          formatType: 'text',
+          hookIntensity: 0.6,
+          expertiseDepth: 0.4,
+          structure: { lengthLevel: 0.5, scanDensity: 0.4 }
+        }
+      },
+      planKnobs: {
+        formatType: 'text',
+        variantCount: 2,
+        hookIntensity: 0.6,
+        expertiseDepth: 0.4,
+        structure: { lengthLevel: 0.5, scanDensity: 0.4 }
+      },
+      qaRubric: {
+        checks: ['policy', 'tone', 'objective_fit'],
+        thresholds: { readability: 0.6 }
+      },
       contextBundles: [
         {
           type: 'company_profile',

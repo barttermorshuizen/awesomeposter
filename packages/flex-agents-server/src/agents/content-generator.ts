@@ -16,7 +16,7 @@ const CONTENT_OUTPUT_FACETS = ['copyVariants'] as const
 contentFacetCatalog.resolveMany([...CONTENT_INPUT_FACETS], 'input')
 contentFacetCatalog.resolveMany([...CONTENT_OUTPUT_FACETS], 'output')
 
-export const CONTENT_CAPABILITY: CapabilityRegistration = {
+export const CONTENT_CAPABILITY = {
   capabilityId: CONTENT_CAPABILITY_ID,
   version: '1.0.0',
   displayName: 'Copywriter – LinkedIn Variants',
@@ -35,6 +35,7 @@ export const CONTENT_CAPABILITY: CapabilityRegistration = {
     mode: 'facets',
     facets: [...CONTENT_OUTPUT_FACETS]
   },
+  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 1200,
@@ -54,7 +55,7 @@ export const CONTENT_CAPABILITY: CapabilityRegistration = {
     runMode: 'orchestrated_llm',
     scenarios: ['linkedin_post_variants']
   }
-}
+} as CapabilityRegistration
 
 export const CONTENT_TOOLS = [
   'apply_format_rendering',

@@ -79,10 +79,81 @@ export class FlexExecutionEngine {
     this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
   }
 
+  private async handleVirtualNode(runId: string, node: FlexPlanNode, opts: FlexExecutionOptions) {
+    const startedAt = new Date()
+    await this.persistence.markNode(runId, node.id, {
+      status: 'running',
+      capabilityId: node.capabilityId,
+      label: node.label,
+      context: node.bundle,
+      startedAt
+    })
+
+    try {
+      getLogger().info('flex_virtual_node_start', {
+        runId,
+        nodeId: node.id,
+        capabilityId: node.capabilityId,
+        kind: node.kind,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+
+    await opts.onEvent(
+      this.buildEvent(
+        'node_start',
+        {
+          capabilityId: node.capabilityId,
+          label: node.label,
+          kind: node.kind,
+          virtual: true,
+          startedAt: startedAt.toISOString()
+        },
+        { runId, nodeId: node.id }
+      )
+    )
+
+    const completedAt = new Date()
+    await this.persistence.markNode(runId, node.id, {
+      status: 'completed',
+      completedAt,
+      output: null
+    })
+
+    try {
+      getLogger().info('flex_virtual_node_complete', {
+        runId,
+        nodeId: node.id,
+        capabilityId: node.capabilityId,
+        kind: node.kind,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+
+    await opts.onEvent(
+      this.buildEvent(
+        'node_complete',
+        {
+          capabilityId: node.capabilityId,
+          label: node.label,
+          kind: node.kind,
+          virtual: true,
+          completedAt: completedAt.toISOString()
+        },
+        { runId, nodeId: node.id }
+      )
+    )
+  }
+
   async execute(runId: string, envelope: TaskEnvelope, plan: FlexPlan, opts: FlexExecutionOptions) {
     const nodeOutputs = new Map<string, Record<string, unknown>>()
 
     for (const node of plan.nodes) {
+      if (node.kind && node.kind !== 'execution') {
+        await this.handleVirtualNode(runId, node, opts)
+        continue
+      }
+
       const startedAt = new Date()
       await this.persistence.markNode(runId, node.id, {
         status: 'running',
@@ -180,7 +251,7 @@ export class FlexExecutionEngine {
       if (!hitl) {
         throw new Error('HITL context unavailable for flex run')
       }
-      const terminalNode = plan.nodes[plan.nodes.length - 1]
+      const terminalNode = this.getTerminalExecutionNode(plan)
       if (!terminalNode) {
         throw new Error('No terminal node available for HITL approval')
       }
@@ -252,6 +323,10 @@ export class FlexExecutionEngine {
     envelope: TaskEnvelope,
     opts: FlexExecutionOptions
   ): Promise<CapabilityResult> {
+    if (!node.capabilityId) {
+      throw new Error(`Execution node ${node.id} is missing capabilityId`)
+    }
+
     const capability = await this.resolveCapability(node.capabilityId)
     await this.validateCapabilityInputs(capability, node, runId, opts)
     try {
@@ -271,7 +346,8 @@ export class FlexExecutionEngine {
         correlationId: opts.correlationId
       })
     } catch {}
-    const contract = capability.outputContract ?? capability.defaultContract
+    const preferredContract = node.contracts.output ?? capability.outputContract ?? capability.defaultContract
+    const contract = preferredContract ?? null
     if (contract) {
       await this.ensureOutputMatchesContract(
         contract,
@@ -303,18 +379,22 @@ export class FlexExecutionEngine {
     runId: string,
     opts: FlexExecutionOptions
   ) {
-    const metadata = (capability.metadata ?? {}) as Record<string, unknown>
-    const legacySchema = metadata.inputSchema
-    const contract: CapabilityContract | undefined =
+    const candidateContract =
+      node.contracts.input ??
       capability.inputContract ??
-      (legacySchema && typeof legacySchema === 'object'
-        ? ({ mode: 'json_schema', schema: legacySchema } as CapabilityContract)
-        : undefined)
+      (() => {
+        const metadata = (capability.metadata ?? {}) as Record<string, unknown>
+        const legacySchema = metadata.inputSchema
+        if (legacySchema && typeof legacySchema === 'object') {
+          return { mode: 'json_schema', schema: legacySchema } as CapabilityContract
+        }
+        return undefined
+      })()
 
-    if (contract?.mode !== 'json_schema') return
+    if (candidateContract?.mode !== 'json_schema') return
 
     await this.validateSchema(
-      contract.schema as Record<string, unknown>,
+      candidateContract.schema as Record<string, unknown>,
       node.bundle.inputs ?? {},
       { scope: 'capability_input', runId, nodeId: node.id },
       opts
@@ -492,8 +572,22 @@ export class FlexExecutionEngine {
 
   private composeFinalOutput(plan: FlexPlan, nodeOutputs: Map<string, Record<string, unknown>>) {
     if (!plan.nodes.length) return {}
-    const lastNode = plan.nodes[plan.nodes.length - 1]
-    return nodeOutputs.get(lastNode.id) ?? {}
+    for (let i = plan.nodes.length - 1; i >= 0; i -= 1) {
+      const node = plan.nodes[i]
+      const output = nodeOutputs.get(node.id)
+      if (output) return output
+    }
+    return {}
+  }
+
+  private getTerminalExecutionNode(plan: FlexPlan): FlexPlanNode | undefined {
+    for (let i = plan.nodes.length - 1; i >= 0; i -= 1) {
+      const node = plan.nodes[i]
+      if (node.kind === 'execution') {
+        return node
+      }
+    }
+    return plan.nodes[plan.nodes.length - 1]
   }
 
   private buildHitlPayload(envelope: TaskEnvelope, finalOutput: Record<string, unknown>): HitlRequestPayload {

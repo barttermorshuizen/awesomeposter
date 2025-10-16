@@ -16,7 +16,7 @@ const STRATEGY_OUTPUT_FACETS = ['writerBrief', 'planKnobs', 'strategicRationale'
 facetCatalog.resolveMany([...STRATEGY_INPUT_FACETS], 'input')
 facetCatalog.resolveMany([...STRATEGY_OUTPUT_FACETS], 'output')
 
-export const STRATEGY_CAPABILITY: CapabilityRegistration = {
+export const STRATEGY_CAPABILITY = {
   capabilityId: STRATEGY_CAPABILITY_ID,
   version: '1.0.0',
   displayName: 'Strategy Manager',
@@ -34,6 +34,7 @@ export const STRATEGY_CAPABILITY: CapabilityRegistration = {
     mode: 'facets',
     facets: [...STRATEGY_OUTPUT_FACETS]
   },
+  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 1800,
@@ -53,7 +54,7 @@ export const STRATEGY_CAPABILITY: CapabilityRegistration = {
     runMode: 'agent',
     scenarios: ['briefing', 'knob_planning']
   }
-}
+} as CapabilityRegistration
 
 // Agents SDK configuration for the Strategy specialist
 export const STRATEGY_TOOLS = [

@@ -16,7 +16,7 @@ const QA_OUTPUT_FACETS = ['qaFindings', 'recommendationSet'] as const
 qaFacetCatalog.resolveMany([...QA_INPUT_FACETS], 'input')
 qaFacetCatalog.resolveMany([...QA_OUTPUT_FACETS], 'output')
 
-export const QA_CAPABILITY: CapabilityRegistration = {
+export const QA_CAPABILITY = {
   capabilityId: QA_CAPABILITY_ID,
   version: '1.0.0',
   displayName: 'Quality Assurance',
@@ -34,6 +34,7 @@ export const QA_CAPABILITY: CapabilityRegistration = {
     mode: 'facets',
     facets: [...QA_OUTPUT_FACETS]
   },
+  defaultContract: undefined,
   cost: {
     tier: 'standard',
     estimatedTokens: 900,
@@ -53,7 +54,7 @@ export const QA_CAPABILITY: CapabilityRegistration = {
     runMode: 'agent',
     scenarios: ['qa_review']
   }
-}
+} as CapabilityRegistration
 
 export const QA_TOOLS = [
   'qa_evaluate_content',

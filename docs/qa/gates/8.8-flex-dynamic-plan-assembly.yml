@@ -1,0 +1,10 @@
+schema: 1
+story: '8.8'
+story_title: 'Flex Dynamic Plan Assembly'
+gate: PASS
+status_reason: 'Flex planner builds annotated dynamic graphs with branch, normalization, and fallback nodes validated by scenario tests.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-16T12:23:07Z'
+top_issues: []
+waiver:
+  active: false
