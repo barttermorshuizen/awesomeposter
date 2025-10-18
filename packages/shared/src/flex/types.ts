@@ -165,6 +165,8 @@ export type ContextBundle = z.infer<typeof ContextBundleSchema>
  */
 export const FlexEventTypeSchema = z.enum([
   'start',
+  'plan_requested',
+  'plan_rejected',
   'plan_generated',
   'plan_updated',
   'node_start',
@@ -173,6 +175,7 @@ export const FlexEventTypeSchema = z.enum([
   'hitl_request',
   'hitl_resolved',
   'validation_error',
+  'policy_triggered',
   'policy_update',
   'log',
   'complete'

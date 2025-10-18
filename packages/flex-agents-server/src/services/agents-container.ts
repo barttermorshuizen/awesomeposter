@@ -1,7 +1,7 @@
 import { AgentRuntime } from './agent-runtime'
-import { StrategyManagerAgent } from '../agents/strategy-manager'
-import { ContentGeneratorAgent } from '../agents/content-generator'
-import { QualityAssuranceAgent } from '../agents/quality-assurance'
+import { StrategyManagerAgent, STRATEGY_CAPABILITY_ID, STRATEGY_INSTRUCTIONS_APP, STRATEGY_TOOLS } from '../agents/strategy-manager'
+import { ContentGeneratorAgent, CONTENT_CAPABILITY_ID, CONTENT_INSTRUCTIONS_APP, CONTENT_TOOLS } from '../agents/content-generator'
+import { QualityAssuranceAgent, QA_CAPABILITY_ID, QA_INSTRUCTIONS, QA_TOOLS } from '../agents/quality-assurance'
 import { registerIOTools } from '../tools/io'
 import { registerStrategyTools } from '../tools/strategy'
 import { registerContentTools } from '../tools/content'
@@ -68,4 +68,28 @@ export function getCapabilityRegistry(): CapabilityEntry[] {
       create: createQaAgent
     }
   ]
+}
+
+type CapabilityPromptContext = {
+  instructions: string
+  toolsAllowlist: string[]
+}
+
+const capabilityPromptMap: Record<string, CapabilityPromptContext> = {
+  [STRATEGY_CAPABILITY_ID]: {
+    instructions: STRATEGY_INSTRUCTIONS_APP,
+    toolsAllowlist: [...STRATEGY_TOOLS]
+  },
+  [CONTENT_CAPABILITY_ID]: {
+    instructions: CONTENT_INSTRUCTIONS_APP,
+    toolsAllowlist: [...CONTENT_TOOLS]
+  },
+  [QA_CAPABILITY_ID]: {
+    instructions: QA_INSTRUCTIONS,
+    toolsAllowlist: [...QA_TOOLS]
+  }
+}
+
+export function resolveCapabilityPrompt(capabilityId: string): CapabilityPromptContext | null {
+  return capabilityPromptMap[capabilityId] ?? null
 }

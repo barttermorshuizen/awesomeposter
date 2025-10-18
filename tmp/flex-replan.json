@@ -1,0 +1,95 @@
+{
+  "objective": "Deliver one LinkedIn variant fast, then funnel it through QA on the follow-up pass.",
+  "inputs": {
+    "channel": "linkedin",
+    "variantCount": 1,
+    "toneOfVoice": "Inspiring & Visionary",
+    "audienceProfile": {
+      "persona": "Operations leaders",
+      "companySize": "500-2000",
+      "industry": "Professional services"
+    },
+    "writerBrief": {
+      "language": "en",
+      "angle": "Show how our adaptive diagnostics closes the strategy-to-execution gap.",
+      "keyPoints": [
+        "Teams lose momentum between planning decks and shipped outcomes",
+        "Our diagnostics connect objectives to execution sprints",
+        "Leaders get weekly clarity on blockers and results"
+      ],
+      "constraints": [
+        "Keep it under 180 words",
+        "No hashtags in the first three lines"
+      ],
+      "mustInclude": [
+        "Call to action inviting comments with PLAYBOOK"
+      ],
+      "knobs": {
+        "formatType": "text",
+        "hookIntensity": 0.6,
+        "expertiseDepth": 0.5,
+        "structure": {
+          "lengthLevel": 0.4,
+          "scanDensity": 0.5
+        }
+      }
+    },
+    "planKnobs": {
+      "formatType": "text",
+      "variantCount": 1,
+      "hookIntensity": 0.6,
+      "expertiseDepth": 0.5,
+      "structure": {
+        "lengthLevel": 0.4,
+        "scanDensity": 0.5
+      }
+    }
+  },
+  "policies": {
+    "variantCount": 1,
+    "qa": { "required": true },
+    "replanAfter": [
+      {
+        "stage": "generation",
+        "reason": "qa_required_after_generation"
+      }
+    ],
+    "plannerDirectives": {
+      "preferredCapabilities": [
+        "ContentGeneratorAgent.linkedinVariants",
+        "QualityAssuranceAgent.contentReview"
+      ],
+      "disallowStages": ["strategy"]
+    }
+  },
+  "specialInstructions": [
+    "For the first draft plan, ship only the execution node so we can see copyVariants quickly.",
+    "When replan context includes completed nodes or facet values for copyVariants, append a validation stage using QualityAssuranceAgent.contentReview before returning the plan.",
+    "Do not add strategy nodes at any point."
+  ],
+  "metadata": {
+    "runLabel": "replan-qa-required"
+  },
+  "outputContract": {
+    "mode": "json_schema",
+    "schema": {
+      "type": "object",
+      "required": ["copyVariants"],
+      "properties": {
+        "copyVariants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["headline", "body", "callToAction"],
+            "properties": {
+              "headline": { "type": "string" },
+              "body": { "type": "string" },
+              "callToAction": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -27,6 +27,14 @@ _Last updated: 2025-03-02_
 The flex server keeps the familiar Nitro deployment but swaps the orchestration core for task envelopes, runtime planning, and dynamic context packaging.
 
 ```
+
+#### Planner Lifecycle Events
+
+1. **`plan_requested`** – After policies are normalized the controller emits this frame, capturing the active capability snapshot, normalized policy keys, and the planner attempt number so clients can render a pending state.
+2. **`plan_rejected`** – `PlannerValidationService` validates facet coverage, capability availability, and schema compilation. Failures surface as diagnostics inside `plan_rejected`; the controller immediately requests a revised draft while the run remains paused.
+3. **`plan_generated`** – On acceptance the finalized `PlanGraph` (version, node summaries, derived metadata) is emitted and execution begins.
+4. **`policy_triggered` + `plan_updated`** – Runtime policy breaches (variant limits, operator feedback, enforcement results) emit `policy_triggered`, request a planner delta, persist a new plan version, and stream `plan_updated` so clients reconcile the new graph before dispatch resumes.
+
 +-----------+      +--------------------+      +--------------------+      +------------------+
 | Client UI | ---> | Flex Agents API    | ---> | Planner & Policies | ---> | Execution Engine |
 +-----------+      +--------------------+      +--------------------+      +------------------+
@@ -291,19 +299,21 @@ sequenceDiagram
 - `PolicyNormalizer`: validates and normalizes caller-supplied policies (personas, variant counts, compliance rules) before the planner consumes them.
 - `CapabilityRegistry`: accepts registration payloads from agents, persists capability metadata, performs similarity search, and resolves fallbacks when the ideal agent is unavailable.
 - `PlannerService`: synthesizes `PlanGraph` nodes from the objective, policies, and capabilities, and updates the plan if policies change mid-run.
+  - The planner prompt now provides **capability contract schemas** (input/output JSON Schema or facet lists) so the planner can reason about required fields and enumerations before emitting nodes.
+  - Normalisation nodes (`kind: transformation`) are injected only when the planner detects a contract mismatch; if the capability already satisfies the caller schema the plan omits the extra node and execution proceeds directly.
 - `ContextBuilder`: assembles `ContextBundle` instances, redacting sensitive inputs when necessary, and attaches return schemas.
 - `ExecutionEngine`: resolves capabilities via the registry, sequences node execution, streams `flex_capability_dispatch_*` telemetry, handles retries, and coordinates with the HITL gateway for approval-required tasks.
 - `OutputValidator`: runs Ajv against caller contracts and capability defaults, emits structured `validation_error` frames with scope/context, and prompts rewrites when agents fail validation.
 - `PersistenceService`: stores run metadata, plan graphs, and variant outputs to support rehydration, analytics, and audit trails.
-- `TelemetryService`: streams normalized `FlexEvent` frames (start, plan, node_start, hitl_request, validation_error, complete) for UI consumption.
+- `TelemetryService`: streams normalized `FlexEvent` frames (`plan_requested`, `plan_rejected`, `plan_generated`, `plan_updated`, `policy_triggered`, `node_*`, `hitl_request`, `validation_error`, `complete`) for UI consumption.
 
 ## 7. Execution Flow
 1. Client submits `TaskEnvelope` to `run.stream`; controller authenticates, normalizes, and persists an initial `flex_runs` record.
 2. `PolicyNormalizer` validates caller-supplied policies (persona defaults, experiment toggles) and injects the result into the execution context.
-3. `PlannerService` generates a `PlanGraph`, selecting capabilities based on requested outcomes and producing agent-specific node definitions.
+3. `PlannerService` generates a `PlanGraph` after the controller emits a `plan_requested` frame. The prompt includes capability facets and JSON Schema snippets so the planner only chooses capabilities whose contracts it can satisfy (adding upstream structuring nodes if required). `PlannerValidationService` compiles facet contracts and either allows the draft to proceed (emitting `plan_generated`) or returns diagnostics that surface as `plan_rejected` over SSE before any execution begins.
 4. `ExecutionEngine` walks the graph, building `ContextBundle`s per node, validating inputs against capability metadata, and dispatching them to agents via the shared runtime.
 5. Agents respond with payloads; `OutputValidator` enforces facet-derived capability contracts alongside the caller schema, emits scoped errors when expectations are not met, and prompts retries or HITL escalation before persisting results.
-6. HITL interrupts pause the run; operator responses trigger plan resumption. Rehydration rebuilds remaining graph state and context bundles.
+6. HITL interrupts pause the run; operator responses trigger plan resumption. Policy deltas or operator feedback can emit `policy_triggered`, request a revised planner draft, and stream `plan_updated` once a new version is persisted. Rehydration rebuilds remaining graph state and context bundles.
 7. Once all terminal nodes succeed, the engine composes the final response by combining the validated or normalized artifacts that fulfill the envelope schema and ends the SSE stream.
 
 ## 8. HITL and Rehydration Strategy
@@ -336,8 +346,12 @@ sequenceDiagram
 The `/api/v1/flex/run.stream` controller validates the incoming envelope, persists an initial `flex_runs` row, and streams `FlexEvent` frames for planner lifecycle updates. Frames conform to `{ type, id?, timestamp, payload?, message?, runId?, nodeId? }`. Supported event types in this release:
 
 - `start`: emitted after persistence with `payload.runId` and optional `threadId`.
+- `plan_requested`: planner handshake has started; payload includes attempt number, normalized policy keys, and capability snapshot metadata.
+- `plan_rejected`: validation failed; payload surfaces structured diagnostics aligned with planner feedback loops.
 - `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
+- `plan_updated`: new plan version persisted after replanning; payload includes `previousVersion`, `version`, and summary node statuses.
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
+- `policy_triggered`: emitted when runtime policies force a replan; payload describes the triggering directive.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
 - `complete`: final frame containing `payload.output` that satisfies the caller schema.
@@ -390,9 +404,9 @@ Sample envelope payload (`envelope.json`):
     "mode": "json_schema",
     "schema": {
       "type": "object",
-      "required": ["variants"],
+      "required": ["copyVariants"],
       "properties": {
-        "variants": {
+        "copyVariants": {
           "type": "array",
           "minItems": 2,
           "maxItems": 2,
@@ -437,7 +451,7 @@ Sample envelope payload (`envelope.json`):
     "schema": {
       "type": "object",
       "properties": {
-        "variants": {
+        "copyVariants": {
           "type": "array",
           "minItems": 2,
           "items": {
@@ -451,7 +465,7 @@ Sample envelope payload (`envelope.json`):
           }
         }
       },
-      "required": ["variants"]
+      "required": ["copyVariants"]
     }
   }
 }

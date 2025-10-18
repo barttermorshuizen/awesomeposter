@@ -8,7 +8,7 @@ import { getHitlContext } from '../src/services/hitl-context'
 import { CONTENT_CAPABILITY_ID } from '../src/agents/content-generator'
 import { STRATEGY_CAPABILITY_ID } from '../src/agents/strategy-manager'
 import { QA_CAPABILITY_ID } from '../src/agents/quality-assurance'
-import type { PlannerServiceInterface } from '../src/services/planner-service'
+import type { PlannerServiceInterface, PlannerServiceInput } from '../src/services/planner-service'
 
 class MemoryFlexPersistence {
   runs = new Map<string, any>()
@@ -17,9 +17,13 @@ class MemoryFlexPersistence {
   results = new Map<string, Record<string, unknown>>()
   planVersions = new Map<string, number>()
   pendingResults = new Map<string, Record<string, unknown>>()
+  contexts = new Map<string, Record<string, unknown>>()
 
   async createOrUpdateRun(record: any) {
     this.runs.set(record.runId, { ...record })
+    if (record.contextSnapshot) {
+      this.contexts.set(record.runId, { ...record.contextSnapshot })
+    }
     this.statuses.set(record.runId, record.status)
   }
 
@@ -29,13 +33,24 @@ class MemoryFlexPersistence {
     if (run) run.status = status
   }
 
-  async savePlanSnapshot(runId: string, version: number, nodes: any[]) {
+  async savePlanSnapshot(runId: string, version: number, nodes: any[], options: { facets?: Record<string, unknown> } = {}) {
     this.planVersions.set(runId, version)
-    for (const node of nodes) {
-      this.nodes.set(`${runId}:${node.nodeId}`, { ...node })
+    const existingKeys = new Set<string>()
+    nodes.forEach((node) => {
+      const key = `${runId}:${node.nodeId}`
+      this.nodes.set(key, { ...node })
+      existingKeys.add(key)
+    })
+    for (const key of Array.from(this.nodes.keys())) {
+      if (key.startsWith(`${runId}:`) && !existingKeys.has(key)) {
+        this.nodes.delete(key)
+      }
     }
     const run = this.runs.get(runId)
     if (run) run.planVersion = version
+    if (options.facets) {
+      this.contexts.set(runId, { ...options.facets })
+    }
   }
 
   async markNode(runId: string, nodeId: string, updates: any) {
@@ -58,6 +73,10 @@ class MemoryFlexPersistence {
     this.pendingResults.set(runId, result)
     const run = this.runs.get(runId)
     if (run) run.result = result
+  }
+
+  async saveRunContext(runId: string, snapshot: Record<string, unknown>) {
+    this.contexts.set(runId, { ...snapshot })
   }
 
   async loadFlexRun(runId: string) {
@@ -86,7 +105,8 @@ class MemoryFlexPersistence {
         schemaHash: run.schemaHash ?? null,
         metadata: run.metadata ?? null,
         result: this.results.get(runId) ?? this.pendingResults.get(runId) ?? null,
-        planVersion: run.planVersion ?? 1
+        planVersion: run.planVersion ?? 1,
+        contextSnapshot: this.contexts.get(runId) ?? undefined
       },
       nodes
     }
@@ -151,9 +171,25 @@ class StubHitlService {
   }
 }
 
-function createPlannerServiceStub(): PlannerServiceInterface {
+function createPlannerServiceStub(options: { firstPlanInvalid?: boolean } = {}): PlannerServiceInterface {
+  let callCount = 0
   return {
     async proposePlan({ scenario }) {
+      callCount += 1
+      if (options.firstPlanInvalid && callCount === 1) {
+        return {
+          nodes: [
+            {
+              stage: 'strategy',
+              kind: 'structuring',
+              capabilityId: 'missing_capability',
+              inputFacets: ['objectiveBrief'],
+              outputFacets: ['writerBrief']
+            }
+          ]
+        }
+      }
+
       const nodes = [
         {
           stage: 'strategy',
@@ -195,7 +231,10 @@ function createPlannerServiceStub(): PlannerServiceInterface {
   }
 }
 
-function createCoordinator(persistence: MemoryFlexPersistence) {
+function createCoordinator(
+  persistence: MemoryFlexPersistence,
+  options: { plannerService?: PlannerServiceInterface } = {}
+) {
   const strategyCapability = {
     capabilityId: STRATEGY_CAPABILITY_ID,
     status: 'active' as const,
@@ -220,9 +259,9 @@ function createCoordinator(persistence: MemoryFlexPersistence) {
       mode: 'json_schema' as const,
       schema: {
         type: 'object',
-        required: ['variants'],
+        required: ['copyVariants'],
         properties: {
-          variants: {
+          copyVariants: {
             type: 'array',
             minItems: 2,
             items: {
@@ -272,29 +311,55 @@ function createCoordinator(persistence: MemoryFlexPersistence) {
     }
   }
 
+  const plannerService = options.plannerService ?? createPlannerServiceStub()
+
   const planner = new FlexPlanner(
     {
       capabilityRegistry: registry as any,
-      plannerService: createPlannerServiceStub()
+      plannerService: plannerService
     },
     { now: () => new Date('2025-04-01T12:00:00.000Z') }
   )
 
   const runtime = {
-    runStructured: vi.fn(async () => ({
-      variants: [
-        {
-          headline: 'Team Retreat Spotlight',
-          body: 'AwesomePoster just wrapped an unforgettable retreat and is searching for creators who love building tooling for developers.',
-          callToAction: 'Join the team'
-        },
-        {
-          headline: 'Build The Future With AwesomePoster',
-          body: 'We are expanding our developer experience crew and want teammates who thrive on human-first automation to shape the roadmap.',
-          callToAction: 'Apply today'
+    runStructured: vi.fn(async (_schema, _messages, options) => {
+      const schemaName = (options?.schemaName ?? '').toLowerCase()
+      if (schemaName.includes('strategy')) {
+        return {
+          writerBrief: {
+            objective: 'Increase awareness of AwesomePoster retreat culture.',
+            audience: 'developer_experience',
+            hooks: ['Celebrate the team retreat', 'Highlight developer empowerment']
+          },
+          planKnobs: {
+            formatType: 'text',
+            variantCount: 2,
+            structure: { lengthLevel: 0.5, scanDensity: 0.4 }
+          },
+          strategicRationale: 'Use retreat storytelling to humanise the employer brand.'
         }
-      ]
-    }))
+      }
+      if (schemaName.includes('qa') || schemaName.includes('quality')) {
+        return {
+          qaFindings: ['No policy violations detected', 'Tone matches inspiring intent'],
+          recommendationSet: ['Consider adding a CTA variation referencing upcoming roles']
+        }
+      }
+      return {
+        copyVariants: [
+          {
+            headline: 'Team Retreat Spotlight',
+            body: 'AwesomePoster just wrapped an unforgettable retreat and is searching for creators who love building tooling for developers.',
+            callToAction: 'Join the team'
+          },
+          {
+            headline: 'Build The Future With AwesomePoster',
+            body: 'We are expanding our developer experience crew and want teammates who thrive on human-first automation to shape the roadmap.',
+            callToAction: 'Apply today'
+          }
+        ]
+      }
+    })
   }
 
   const engine = new FlexExecutionEngine(persistence as any, {
@@ -380,9 +445,9 @@ function buildEnvelope(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
       mode: 'json_schema',
       schema: {
         type: 'object',
-        required: ['variants'],
+        required: ['copyVariants'],
         properties: {
-          variants: {
+          copyVariants: {
             type: 'array',
             minItems: 2,
             items: {
@@ -404,7 +469,7 @@ function buildEnvelope(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
 describe('FlexRunCoordinator', () => {
   it('streams happy-path events and records final output', async () => {
     const persistence = new MemoryFlexPersistence()
-    const { coordinator } = createCoordinator(persistence)
+    const { coordinator, runtime } = createCoordinator(persistence)
     const events: FlexEvent[] = []
 
     const result = await coordinator.run(buildEnvelope(), {
@@ -416,7 +481,19 @@ describe('FlexRunCoordinator', () => {
 
     expect(result.runId).toMatch(/^flex_/)
     expect(result.status).toBe('completed')
-    expect(result.output?.variants).toHaveLength(2)
+    expect(result.output?.copyVariants).toHaveLength(2)
+    const firstInvocation = runtime.runStructured.mock.calls[0]
+    expect(firstInvocation).toBeDefined()
+    const firstUserPrompt =
+      firstInvocation?.[1]?.find((entry: { role: string; content: string }) => entry.role === 'user')?.content ?? ''
+    expect(firstUserPrompt).toContain('Capability input contract')
+    expect(firstUserPrompt).toContain('Capability output contract')
+    expect(firstUserPrompt).toContain('Planner stage')
+    expect(firstInvocation?.[1]?.find((entry: { role: string; content: string }) => entry.role === 'system')?.content ?? '')
+      .toContain('Strategy Manager agent')
+    const firstOptions = firstInvocation?.[2] ?? {}
+    expect(firstOptions.toolsAllowlist).toEqual(expect.arrayContaining(['strategy_analyze_assets', 'strategy_plan_knobs']))
+    expect(events.map((e) => e.type)).toContain('plan_requested')
     expect(events.map((e) => e.type)).toContain('plan_generated')
     expect(events.map((e) => e.type)).toContain('node_start')
     expect(events.map((e) => e.type)).toContain('node_complete')
@@ -429,7 +506,215 @@ describe('FlexRunCoordinator', () => {
     expect(executionSummary?.facets?.output).toEqual(expect.arrayContaining(['copyVariants']))
 
     expect(persistence.statuses.get(result.runId)).toBe('completed')
-    expect(persistence.results.get(result.runId)?.variants).toHaveLength(2)
+    expect(persistence.results.get(result.runId)?.copyVariants).toHaveLength(2)
+  })
+
+  it('retries planner when the first draft is rejected and emits plan_rejected', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const plannerService = createPlannerServiceStub({ firstPlanInvalid: true })
+    const { coordinator } = createCoordinator(persistence, { plannerService })
+    const events: FlexEvent[] = []
+
+    const result = await coordinator.run(buildEnvelope(), {
+      correlationId: 'cid_replan',
+      onEvent: async (evt) => {
+        events.push(evt)
+      }
+    })
+
+    expect(result.status).toBe('completed')
+    const eventTypes = events.map((evt) => evt.type)
+    const firstPlanRequestedIndex = eventTypes.indexOf('plan_requested')
+    const planRejectedIndex = eventTypes.indexOf('plan_rejected')
+    const secondPlanRequestedIndex = eventTypes.lastIndexOf('plan_requested')
+    const planGeneratedIndex = eventTypes.indexOf('plan_generated')
+
+    expect(firstPlanRequestedIndex).toBeGreaterThanOrEqual(0)
+    expect(planRejectedIndex).toBeGreaterThan(firstPlanRequestedIndex)
+    expect(secondPlanRequestedIndex).toBeGreaterThan(planRejectedIndex)
+    expect(planGeneratedIndex).toBeGreaterThan(secondPlanRequestedIndex)
+
+    const rejectedEvent = events[planRejectedIndex]
+    expect((rejectedEvent.payload as any)?.diagnostics?.[0]?.code).toBe('CAPABILITY_NOT_REGISTERED')
+
+    expect(persistence.statuses.get(result.runId)).toBe('completed')
+  })
+
+  it('emits policy_triggered and plan_updated when mid-run policies demand replanning', async () => {
+    const persistence = new MemoryFlexPersistence()
+    let callCount = 0
+    const graphContexts: Array<PlannerServiceInput['graphContext'] | undefined> = []
+    const plannerService: PlannerServiceInterface = {
+      async proposePlan({ scenario, graphContext }) {
+        graphContexts.push(graphContext)
+        callCount += 1
+        const baseNodes = [
+          {
+            stage: 'strategy',
+            kind: 'structuring',
+            capabilityId: STRATEGY_CAPABILITY_ID,
+            inputFacets: ['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle'],
+            outputFacets: ['writerBrief', 'planKnobs', 'strategicRationale'],
+            derived: false
+          },
+          {
+            stage: 'generation',
+            kind: 'execution',
+            capabilityId: CONTENT_CAPABILITY_ID,
+            inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
+            outputFacets: ['copyVariants'],
+            derived: scenario !== 'linkedin_post_variants'
+          },
+          {
+            stage: 'qa',
+            kind: 'validation',
+            capabilityId: QA_CAPABILITY_ID,
+            inputFacets: ['copyVariants', 'writerBrief', 'qaRubric'],
+            outputFacets: ['qaFindings', 'recommendationSet'],
+            derived: true
+          }
+        ]
+
+        if (callCount >= 2) {
+          baseNodes.splice(2, 0, {
+            stage: 'normalization',
+            kind: 'transformation',
+            capabilityId: CONTENT_CAPABILITY_ID,
+            inputFacets: ['copyVariants'],
+            outputFacets: ['copyVariants'],
+            rationale: ['policy_adjustment']
+          } as any)
+        }
+
+        return {
+          nodes: baseNodes,
+          metadata: {
+            provider: 'planner-stub',
+            model: 'stub-1.0',
+            attempt: callCount
+          }
+        }
+      }
+    }
+
+    const { coordinator } = createCoordinator(persistence, { plannerService })
+    const events: FlexEvent[] = []
+
+    const envelope = buildEnvelope({
+      policies: {
+        replanAfter: [{ stage: 'generation', reason: 'policy_delta' }]
+      }
+    })
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_policy_trigger',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(result.status).toBe('completed')
+    const eventTypes = events.map((evt) => evt.type)
+    expect(eventTypes).toContain('policy_triggered')
+    expect(eventTypes).toContain('plan_updated')
+    const policyIndex = eventTypes.indexOf('policy_triggered')
+    const updateIndex = eventTypes.indexOf('plan_updated')
+    expect(updateIndex).toBeGreaterThan(policyIndex)
+
+    const planUpdatedEvent = events[updateIndex]
+    const payload = planUpdatedEvent.payload as any
+    expect(payload?.trigger?.reason).toBe('policy_directive')
+    expect(Array.isArray(payload?.nodes)).toBe(true)
+    expect(payload?.metadata?.plannerPhase).toBe('replan')
+    expect(persistence.planVersions.get(result.runId)).toBeGreaterThanOrEqual(2)
+
+    expect(graphContexts.length).toBeGreaterThanOrEqual(2)
+    const replanContext = graphContexts[1]
+    expect(replanContext).toBeDefined()
+    expect(replanContext?.completedNodes?.some((node) => node.capabilityId === CONTENT_CAPABILITY_ID)).toBe(true)
+    const copyFacet = replanContext?.facetValues?.find((entry) => entry.facet === 'copyVariants')
+    expect(copyFacet).toBeDefined()
+    expect(Array.isArray(copyFacet?.value)).toBe(true)
+    const firstVariant = Array.isArray(copyFacet?.value) ? (copyFacet?.value as any[])[0] : null
+    expect(firstVariant?.headline).toContain('Team Retreat')
+  })
+  it('resumes awaiting_hitl run using stored run context facets', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+    const runId = 'flex_resume_test'
+    const facetSnapshot = {
+      copyVariants: {
+        value: [
+          {
+            headline: 'Resume Success',
+            body: 'Stored facet payload revived after HITL pause to complete the run.',
+            callToAction: 'Let us know'
+          },
+          {
+            headline: 'Variant B Returns',
+            body: 'Second output variant ensures schema validation passes during the resume flow.',
+            callToAction: 'Share feedback'
+          }
+        ],
+        updatedAt: '2025-04-01T12:00:00.000Z',
+        provenance: [
+          {
+            nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
+            capabilityId: CONTENT_CAPABILITY_ID,
+            timestamp: '2025-04-01T12:00:00.000Z'
+          }
+        ]
+      }
+    }
+
+    persistence.runs.set(runId, {
+      runId,
+      status: 'awaiting_hitl',
+      envelope: buildEnvelope(),
+      schemaHash: null,
+      metadata: null,
+      result: null,
+      planVersion: 1,
+      contextSnapshot: facetSnapshot
+    })
+    persistence.statuses.set(runId, 'awaiting_hitl')
+    persistence.contexts.set(runId, { ...facetSnapshot })
+    persistence.nodes.set(`${runId}:ContentGeneratorAgent_linkedinVariants_1`, {
+      nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
+      capabilityId: CONTENT_CAPABILITY_ID,
+      label: 'Copywriter – LinkedIn Variants',
+      status: 'completed',
+      context: null,
+      output: facetSnapshot.copyVariants.value,
+      startedAt: new Date(),
+      completedAt: new Date()
+    })
+    persistence.nodes.set(`${runId}:fallback_2`, {
+      nodeId: 'fallback_2',
+      capabilityId: null,
+      label: 'HITL fallback path',
+      status: 'awaiting_hitl',
+      context: null,
+      output: null,
+      startedAt: new Date(),
+      completedAt: null
+    })
+
+    const resumeEnvelope = buildEnvelope({
+      constraints: {
+        resumeRunId: runId
+      }
+    })
+
+    const result = await coordinator.run(resumeEnvelope, {
+      correlationId: 'cid_resume_hitl',
+      onEvent: vi.fn()
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBeTruthy()
+    expect(Array.isArray(result.output?.copyVariants)).toBe(true)
+    expect(result.output?.copyVariants?.[0]?.headline).toBe('Resume Success')
+    expect(persistence.contexts.get(runId)).toBeDefined()
+    expect(persistence.results.get(runId)).toEqual(result.output)
   })
 
   it('emits validation_error and fails when output schema is stricter than stub', async () => {
@@ -437,15 +722,19 @@ describe('FlexRunCoordinator', () => {
     const { coordinator, runtime } = createCoordinator(persistence)
     const events: FlexEvent[] = []
 
-    runtime.runStructured.mockResolvedValueOnce({
-      variants: [
+    const defaultImpl = runtime.runStructured.getMockImplementation()
+    runtime.runStructured.mockImplementationOnce(async (schema, messages, options) => {
+      return defaultImpl?.(schema, messages, options)
+    })
+    runtime.runStructured.mockImplementationOnce(async () => ({
+      copyVariants: [
         {
           headline: 'Only Variant',
           body: 'Single variant body content that exceeds the minimum length requirement for validation.',
           callToAction: 'Learn more'
         }
       ]
-    })
+    }))
 
     const envelope = buildEnvelope({
       inputs: {
@@ -527,7 +816,7 @@ describe('FlexRunCoordinator', () => {
     })
 
     expect(resumeResult.status).toBe('completed')
-    expect(resumeResult.output?.variants).toHaveLength(2)
+    expect(resumeResult.output?.copyVariants).toHaveLength(2)
     expect(resumeEvents.map((evt) => evt.type)).toContain('plan_generated')
     const resumePlanEvent = resumeEvents.find((evt) => evt.type === 'plan_generated')
     const resumeNodes = (resumePlanEvent?.payload as any)?.plan?.nodes ?? []

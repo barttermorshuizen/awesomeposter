@@ -1,7 +1,6 @@
 import Ajv, { type ErrorObject } from 'ajv'
-import { z } from 'zod'
+import { z, type ZodTypeAny } from 'zod'
 import type { FlexPlan, FlexPlanNode } from './flex-planner'
-import { CONTENT_CAPABILITY_ID } from '../agents/content-generator'
 import type {
   TaskEnvelope,
   FlexEvent,
@@ -10,15 +9,18 @@ import type {
   HitlRequestRecord,
   HitlRequestPayload,
   CapabilityRecord,
-  CapabilityContract
+  CapabilityContract,
+  JsonSchemaShape
 } from '@awesomeposter/shared'
 import { FlexRunPersistence } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
 import type { HitlService } from './hitl-service'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
-import { getAgents } from './agents-container'
+import { getAgents, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
+import { RunContext, type FacetEntry } from './run-context'
+import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
 type AjvInstance = ReturnType<typeof Ajv>
@@ -35,6 +37,132 @@ class FlexValidationError extends Error {
   }
 }
 
+function stringifyForPrompt(value: unknown, maxLength = 4000): string {
+  let text: string
+  try {
+    text = JSON.stringify(value, null, 2)
+  } catch {
+    text = typeof value === 'string' ? value : String(value)
+  }
+  if (!text) return ''
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}\n... (truncated)`
+}
+
+function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
+  if (!schema || typeof schema !== 'object') {
+    return z.unknown()
+  }
+
+  if (Object.prototype.hasOwnProperty.call(schema, 'const')) {
+    return z.literal((schema as any).const)
+  }
+
+  if (Array.isArray((schema as any).enum) && (schema as any).enum.length) {
+    const literals = (schema as any).enum.map((value: unknown) => z.literal(value as any))
+    if (literals.length === 1) return literals[0]
+    return z.union(literals as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+  }
+
+  const combinators = (schema as any).anyOf || (schema as any).oneOf
+  if (Array.isArray(combinators) && combinators.length) {
+    const variants = combinators.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+    if (variants.length === 1) return variants[0]
+    return z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+  }
+
+  if (Array.isArray((schema as any).allOf) && (schema as any).allOf.length) {
+    const variants = (schema as any).allOf.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+    const [first, ...rest] = variants
+    if (!first) return z.unknown()
+    return rest.reduce((acc, current) => z.intersection(acc, current), first)
+  }
+
+  const rawType = (schema as any).type
+  const typeList = Array.isArray(rawType) ? rawType : rawType ? [rawType] : []
+  if (typeList.length > 1) {
+    const variants = typeList.map((entry: string) =>
+      jsonSchemaToZod({ ...(schema as any), type: entry } as JsonSchemaShape)
+    )
+    return z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+  }
+
+  const type = typeList[0]
+  switch (type) {
+    case 'string': {
+      let str = z.string()
+      if (typeof (schema as any).minLength === 'number') str = str.min((schema as any).minLength)
+      if (typeof (schema as any).maxLength === 'number') str = str.max((schema as any).maxLength)
+      if (Array.isArray((schema as any).pattern)) {
+        str = str.regex(new RegExp((schema as any).pattern))
+      } else if (typeof (schema as any).pattern === 'string') {
+        str = str.regex(new RegExp((schema as any).pattern))
+      }
+      return str
+    }
+    case 'number':
+    case 'integer': {
+      let num = z.number()
+      if (type === 'integer') num = num.int()
+      if (typeof (schema as any).minimum === 'number') num = num.min((schema as any).minimum)
+      if (typeof (schema as any).maximum === 'number') num = num.max((schema as any).maximum)
+      return num
+    }
+    case 'boolean':
+      return z.boolean()
+    case 'null':
+      return z.null()
+    case 'array': {
+      const items = (schema as any).items
+      let elementSchema: ZodTypeAny
+      if (Array.isArray(items) && items.length) {
+        const variants = items.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+        elementSchema =
+          variants.length === 1 ? variants[0] : z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+      } else if (items && typeof items === 'object') {
+        elementSchema = jsonSchemaToZod(items as JsonSchemaShape)
+      } else {
+        elementSchema = z.unknown()
+      }
+      let arr = z.array(elementSchema)
+      if (typeof (schema as any).minItems === 'number') arr = arr.min((schema as any).minItems)
+      if (typeof (schema as any).maxItems === 'number') arr = arr.max((schema as any).maxItems)
+      if ((schema as any).uniqueItems) arr = arr.superRefine((list, ctx) => {
+        const seen = new Set<string>()
+        for (const item of list) {
+          const key = JSON.stringify(item)
+          if (seen.has(key)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Items must be unique' })
+            break
+          }
+          seen.add(key)
+        }
+      })
+      return arr
+    }
+    case 'object':
+    default: {
+      const properties = ((schema as any).properties ?? {}) as Record<string, JsonSchemaShape>
+      const required = new Set<string>(Array.isArray((schema as any).required) ? (schema as any).required : [])
+      const shape: Record<string, ZodTypeAny> = {}
+      for (const [key, definition] of Object.entries(properties)) {
+        const childSchema = jsonSchemaToZod(definition)
+        shape[key] = required.has(key) ? childSchema : childSchema.optional()
+      }
+      let obj = z.object(shape)
+      const additional = (schema as any).additionalProperties
+      if (additional === false) {
+        obj = obj.strict()
+      } else if (additional && typeof additional === 'object') {
+        obj = obj.catchall(jsonSchemaToZod(additional as JsonSchemaShape))
+      } else {
+        obj = obj.passthrough()
+      }
+      return obj
+    }
+  }
+}
+
 export type FlexExecutionOptions = {
   onEvent: (event: FlexEvent) => Promise<void>
   correlationId?: string
@@ -47,6 +175,18 @@ export type FlexExecutionOptions = {
     onDenied?: (reason: string, state: HitlRunState) => void | Promise<void>
     updateState?: (state: HitlRunState) => void
   }
+  onNodeComplete?: (context: {
+    node: FlexPlanNode
+    output: Record<string, unknown>
+    runId: string
+    plan: FlexPlan
+  }) => Promise<ReplanTrigger | null | void> | ReplanTrigger | null | void
+  initialState?: {
+    completedNodeIds?: string[]
+    nodeOutputs?: Record<string, Record<string, unknown>>
+    facets?: Record<string, FacetEntry>
+  }
+  runContext?: RunContext
 }
 
 type CapabilityResult = {
@@ -60,11 +200,31 @@ export class HitlPauseError extends Error {
   }
 }
 
+export type ReplanTrigger = {
+  reason: string
+  details?: Record<string, unknown>
+}
+
+export class ReplanRequestedError extends Error {
+  constructor(
+    public readonly trigger: ReplanTrigger,
+    public readonly state: {
+      completedNodeIds: string[]
+      nodeOutputs: Record<string, Record<string, unknown>>
+      facets: Record<string, FacetEntry>
+    }
+  ) {
+    super('Replan requested')
+    this.name = 'ReplanRequestedError'
+  }
+}
+
 export class FlexExecutionEngine {
   private readonly ajv: AjvInstance
   private readonly validatorCache = new Map<string, AjvValidateFn>()
   private readonly runtime: StructuredRuntime
   private readonly capabilityRegistry: FlexCapabilityRegistryService
+  private readonly facetCompiler: FacetContractCompiler
 
   constructor(
     private readonly persistence = new FlexRunPersistence(),
@@ -77,6 +237,7 @@ export class FlexExecutionEngine {
     this.ajv = options?.ajv ?? new Ajv({ allErrors: true })
     this.runtime = options?.runtime ?? getAgents().runtime
     this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
+    this.facetCompiler = new FacetContractCompiler({ catalog: getFacetCatalog() })
   }
 
   private async handleVirtualNode(runId: string, node: FlexPlanNode, opts: FlexExecutionOptions) {
@@ -146,11 +307,21 @@ export class FlexExecutionEngine {
   }
 
   async execute(runId: string, envelope: TaskEnvelope, plan: FlexPlan, opts: FlexExecutionOptions) {
-    const nodeOutputs = new Map<string, Record<string, unknown>>()
+    const initialNodeOutputs = opts.initialState?.nodeOutputs ?? {}
+    const nodeOutputs = new Map<string, Record<string, unknown>>(Object.entries(initialNodeOutputs))
+    const completedNodeIds = new Set<string>(opts.initialState?.completedNodeIds ?? Object.keys(initialNodeOutputs))
+    const runContext =
+      opts.runContext ??
+      RunContext.fromSnapshot((opts.initialState?.facets as Record<string, FacetEntry> | undefined) ?? undefined)
 
     for (const node of plan.nodes) {
-      if (node.kind && node.kind !== 'execution') {
+      if (completedNodeIds.has(node.id)) {
+        continue
+      }
+      const isVirtual = !node.capabilityId
+      if (isVirtual) {
         await this.handleVirtualNode(runId, node, opts)
+        completedNodeIds.add(node.id)
         continue
       }
 
@@ -183,8 +354,10 @@ export class FlexExecutionEngine {
       )
 
       try {
-        const result = await this.invokeCapability(runId, node, envelope, opts)
+        const result = await this.invokeCapability(runId, node, envelope, opts, plan, runContext, nodeOutputs)
         nodeOutputs.set(node.id, result.output)
+        runContext.updateFromNode(node, result.output)
+        completedNodeIds.add(node.id)
 
         const completedAt = new Date()
         await this.persistence.markNode(runId, node.id, {
@@ -212,7 +385,24 @@ export class FlexExecutionEngine {
             { runId, nodeId: node.id }
           )
         )
+
+        const trigger = await opts.onNodeComplete?.({
+          node,
+          output: result.output,
+          runId,
+          plan
+        })
+        if (trigger) {
+          throw new ReplanRequestedError(trigger, {
+            completedNodeIds: Array.from(completedNodeIds),
+            nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+            facets: runContext.snapshot()
+          })
+        }
       } catch (error) {
+        if (error instanceof ReplanRequestedError) {
+          throw error
+        }
         const errorAt = new Date()
         const serialized = this.serializeError(error)
         await this.persistence.markNode(runId, node.id, {
@@ -220,6 +410,8 @@ export class FlexExecutionEngine {
           error: serialized,
           completedAt: errorAt
         })
+        nodeOutputs.delete(node.id)
+        completedNodeIds.delete(node.id)
         try {
           getLogger().error('flex_node_error', {
             runId,
@@ -244,7 +436,9 @@ export class FlexExecutionEngine {
       }
     }
 
-    const finalOutput = this.composeFinalOutput(plan, nodeOutputs)
+    const composedOutput = runContext.composeFinalOutput(envelope.outputContract, plan)
+    const finalOutput =
+      Object.keys(composedOutput).length > 0 ? composedOutput : this.composeFinalOutput(plan, nodeOutputs)
 
     if (this.requiresHitlApproval(envelope)) {
       const hitl = opts.hitl
@@ -321,7 +515,10 @@ export class FlexExecutionEngine {
     runId: string,
     node: FlexPlanNode,
     envelope: TaskEnvelope,
-    opts: FlexExecutionOptions
+    opts: FlexExecutionOptions,
+    plan: FlexPlan,
+    runContext: RunContext,
+    nodeOutputs: Map<string, Record<string, unknown>>
   ): Promise<CapabilityResult> {
     if (!node.capabilityId) {
       throw new Error(`Execution node ${node.id} is missing capabilityId`)
@@ -337,7 +534,7 @@ export class FlexExecutionEngine {
         correlationId: opts.correlationId
       })
     } catch {}
-    const result = await this.dispatchCapability(capability, node, envelope)
+    const result = await this.dispatchCapability(capability, node, envelope, plan, runContext, nodeOutputs)
     try {
       getLogger().info('flex_capability_dispatch_complete', {
         runId,
@@ -348,7 +545,8 @@ export class FlexExecutionEngine {
     } catch {}
     const preferredContract = node.contracts.output ?? capability.outputContract
     const contract = preferredContract ?? null
-    if (contract) {
+    const shouldValidateOutput = (node.kind ?? 'execution') === 'execution'
+    if (contract && shouldValidateOutput) {
       await this.ensureOutputMatchesContract(
         contract,
         result.output,
@@ -364,12 +562,6 @@ export class FlexExecutionEngine {
     if (capability && capability.status === 'active') {
       return capability
     }
-    if (capabilityId === 'mock.copywriter.linkedinVariants') {
-      const fallback = await this.capabilityRegistry.getCapabilityById(CONTENT_CAPABILITY_ID)
-      if (fallback && fallback.status === 'active') {
-        return fallback
-      }
-    }
     throw new Error(`Capability ${capabilityId} not registered or inactive`)
   }
 
@@ -379,6 +571,9 @@ export class FlexExecutionEngine {
     runId: string,
     opts: FlexExecutionOptions
   ) {
+    if ((node.kind ?? 'execution') !== 'execution') {
+      return
+    }
     const candidateContract =
       node.contracts.input ??
       capability.inputContract ??
@@ -404,170 +599,185 @@ export class FlexExecutionEngine {
   private async dispatchCapability(
     capability: CapabilityRecord,
     node: FlexPlanNode,
-    envelope: TaskEnvelope
+    envelope: TaskEnvelope,
+    plan: FlexPlan,
+    runContext: RunContext,
+    nodeOutputs: Map<string, Record<string, unknown>>
   ): Promise<CapabilityResult> {
-    switch (capability.capabilityId) {
-      case CONTENT_CAPABILITY_ID:
-      case 'mock.copywriter.linkedinVariants':
-        return this.executeLinkedinVariants(capability, node, envelope)
-      default:
-        throw new Error(`Unsupported capability ${capability.capabilityId}`)
-    }
+    return this.executeCapability(capability, node, envelope, plan, runContext, nodeOutputs)
   }
 
-  private async executeLinkedinVariants(
+  private async executeCapability(
     capability: CapabilityRecord,
     node: FlexPlanNode,
-    envelope: TaskEnvelope
+    envelope: TaskEnvelope,
+    plan: FlexPlan,
+    runContext: RunContext,
+    nodeOutputs: Map<string, Record<string, unknown>>
   ): Promise<CapabilityResult> {
-    const inputs = (node.bundle.inputs ?? {}) as Record<string, unknown>
-    const requestedCount = inputs.variantCount ?? (envelope.inputs as Record<string, unknown> | undefined)?.variantCount
-    const variantCount = this.normalizeVariantCount(requestedCount)
-    const boundedCount = Math.max(1, Math.min(variantCount, 5))
-
-    const schema = z.object({
-      variants: z
-        .array(
-          z.object({
-            headline: z.string().min(5),
-            body: z.string().min(20),
-            callToAction: z.string().min(2)
-          })
-        )
-        .min(boundedCount)
-        .max(boundedCount)
-    })
-
-    const companyProfile = this.extractCompanyProfile(inputs)
-    const policies = (envelope.policies ?? {}) as Record<string, unknown>
-    const tone =
-      String(inputs.brandVoice ?? inputs.tone ?? policies.brandVoice ?? '')
-        .trim()
-        .toLowerCase() || 'professional'
-
-    const messages = this.buildLinkedinMessages({
+    const schemaShape = this.getOutputSchemaShape(node, capability)
+    const schema = this.buildOutputSchema(schemaShape)
+    const promptContext = resolveCapabilityPrompt(capability.capabilityId)
+    const messages = this.buildCapabilityMessages({
+      capability,
+      node,
       envelope,
-      variantCount: boundedCount,
-      tone,
-      companyProfile,
-      instructions: node.bundle.instructions ?? [],
-      inputs
+      plan,
+      runContext,
+      nodeOutputs,
+      schemaShape,
+      promptContext
     })
 
-    try {
-      const key = process.env.FLEX_OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
-      getLogger().info('flex_openai_key_preview', {
-        hasKey: Boolean(key),
-        prefix: key ? `${key.slice(0, 6)}***` : null
-      })
-    } catch {}
+    const runOptions: {
+      schemaName: string
+      toolsAllowlist?: string[]
+      toolPolicy?: 'auto' | 'required' | 'off'
+    } = {
+      schemaName:
+        (typeof (node.metadata as Record<string, unknown> | undefined)?.plannerStage === 'string'
+          ? (node.metadata as Record<string, unknown>).plannerStage
+          : undefined) ?? capability.capabilityId
+    }
 
-    const output = await this.runtime.runStructured(schema, messages, { schemaName: 'FlexLinkedInVariants' })
-    return { output: output as Record<string, unknown> }
+    if (promptContext?.toolsAllowlist?.length) {
+      runOptions.toolsAllowlist = promptContext.toolsAllowlist
+      runOptions.toolPolicy = 'auto'
+    }
+
+    const result = await this.runtime.runStructured<any>(schema, messages, runOptions)
+
+    return {
+      output: (result ?? {}) as Record<string, unknown>
+    }
   }
 
-  private buildLinkedinMessages(args: {
-    envelope: TaskEnvelope
-    variantCount: number
-    tone: string
-    companyProfile: Record<string, unknown>
-    instructions: string[]
-    inputs: Record<string, unknown>
-  }) {
-    const { envelope, variantCount, tone, companyProfile, instructions, inputs } = args
-    const sections: string[] = []
-
-    sections.push(`Objective: ${envelope.objective}`)
-
-    const goal =
-      inputs.goal ??
-      (typeof (envelope.inputs as Record<string, unknown> | undefined)?.goal !== 'undefined'
-        ? (envelope.inputs as Record<string, unknown> | undefined)?.goal
-        : undefined)
-    if (goal) sections.push(`Goal: ${String(goal)}`)
-    if (inputs.audience) sections.push(`Audience: ${String(inputs.audience)}`)
-    sections.push(`Tone: ${tone}`)
-
-    const profileSummary = this.describeCompanyProfile(companyProfile)
-    if (profileSummary) {
-      sections.push(profileSummary)
+  private getOutputSchemaShape(node: FlexPlanNode, capability: CapabilityRecord): JsonSchemaShape | null {
+    const contract = node.contracts?.output ?? capability.outputContract
+    if (!contract) return null
+    if (contract.mode === 'json_schema') {
+      return (contract.schema ?? null) as JsonSchemaShape | null
     }
-
-    const contextBundles = Array.isArray(inputs.contextBundles) ? inputs.contextBundles : []
-    const extraBundles = contextBundles
-      .filter((bundle: any) => bundle && bundle.type && bundle.type !== 'company_profile')
-      .map((bundle: any) => {
-        const descriptor = typeof bundle.type === 'string' ? bundle.type : 'context'
-        const payload = bundle.payload ?? bundle.value ?? bundle
-        return `Context bundle (${descriptor}): ${JSON.stringify(payload)}`
+    if (contract.mode === 'facets') {
+      const compiled = this.facetCompiler.compileContracts({
+        inputFacets: [],
+        outputFacets: contract.facets ?? []
       })
-    if (extraBundles.length) {
-      sections.push(extraBundles.join('\n'))
+      return compiled.output?.schema ?? null
     }
+    return null
+  }
 
+  private buildOutputSchema(shape: JsonSchemaShape | null): ZodTypeAny {
+    if (!shape) {
+      return z.record(z.string(), z.unknown())
+    }
+    return jsonSchemaToZod(shape)
+  }
+
+  private buildCapabilityMessages(args: {
+    capability: CapabilityRecord
+    node: FlexPlanNode
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    runContext: RunContext
+    nodeOutputs: Map<string, Record<string, unknown>>
+    schemaShape: JsonSchemaShape | null
+    promptContext: ReturnType<typeof resolveCapabilityPrompt> | null
+  }): Array<{ role: 'system' | 'user'; content: string }> {
+    const { capability, node, envelope, runContext, nodeOutputs, schemaShape, promptContext } = args
+    const instructions = Array.isArray(node.bundle.instructions) ? node.bundle.instructions : []
+    const metadata = (node.metadata ?? {}) as Record<string, unknown>
+    const plannerStage =
+      typeof metadata.plannerStage === 'string' ? metadata.plannerStage : node.label ?? node.kind ?? 'unspecified'
+    const rationale = Array.isArray(node.rationale) ? node.rationale : []
+    const inputs = (node.bundle.inputs ?? {}) as Record<string, unknown>
+    const policies = (node.bundle.policies ?? {}) as Record<string, unknown>
+    const facetSnapshot = runContext.getAllFacets()
+    const completedOutputs = Array.from(nodeOutputs.entries()).map(([nodeId, value]) => ({
+      nodeId,
+      sample: value
+    }))
+
+    const agentInstruction = promptContext?.instructions ?? null
+
+    const systemParts: string[] = []
+    if (agentInstruction) {
+      systemParts.push(agentInstruction)
+    }
+    systemParts.push(
+      `You are executing capability "${capability.displayName}" (ID: ${capability.capabilityId}).`,
+      capability.summary ? `Capability summary: ${capability.summary}` : 'Capability summary: (not provided).',
+      'Follow the planner-provided instructions precisely.',
+      'Respect the capability input contract when constructing the request payload and ensure outputs satisfy the declared output contract.'
+    )
     if (instructions.length) {
-      sections.push(
-        ['Special instructions:']
-          .concat(instructions.map((instruction) => `- ${instruction}`))
+      systemParts.push(
+        ['Planner instructions:']
+          .concat(instructions.map((line) => `- ${line}`))
           .join('\n')
       )
     }
 
-    sections.push(`Produce ${variantCount} LinkedIn post variant${variantCount === 1 ? '' : 's'} as JSON.`)
+    const userSections: string[] = []
+    userSections.push(`Planner stage: ${plannerStage}`)
+    userSections.push(`Objective:\n${node.bundle.objective}`)
 
-    const messages: Array<{ role: 'system' | 'user'; content: string }> = [
+    if (Object.keys(inputs).length) {
+      userSections.push(`Inputs:\n${stringifyForPrompt(inputs)}`)
+    }
+    if (Object.keys(policies).length) {
+      userSections.push(`Policies:\n${stringifyForPrompt(policies)}`)
+    }
+
+    if (completedOutputs.length) {
+      userSections.push(`Recently completed node outputs:\n${stringifyForPrompt(completedOutputs)}`)
+    }
+
+    if (facetSnapshot && Object.keys(facetSnapshot).length) {
+      userSections.push(`Facet snapshot:\n${stringifyForPrompt(facetSnapshot)}`)
+    }
+
+    if (rationale.length) {
+      userSections.push(
+        ['Planner rationale:']
+          .concat(rationale.map((entry) => `- ${entry}`))
+          .join('\n')
+      )
+    }
+
+    if (capability.inputContract) {
+      userSections.push(`Capability input contract:\n${stringifyForPrompt(capability.inputContract)}`)
+    }
+
+    if (capability.outputContract) {
+      userSections.push(`Capability output contract:\n${stringifyForPrompt(capability.outputContract)}`)
+    }
+
+    if (schemaShape) {
+      userSections.push(`Planner-resolved output schema:\n${stringifyForPrompt(schemaShape)}`)
+    } else {
+      userSections.push('Output contract: Produce a JSON object with the facets declared for this node.')
+    }
+
+    if (Array.isArray(envelope.specialInstructions) && envelope.specialInstructions.length) {
+      userSections.push(
+        ['Caller special instructions:']
+          .concat(envelope.specialInstructions.map((entry) => `- ${entry}`))
+          .join('\n')
+      )
+    }
+
+    return [
       {
-        role: 'system',
-        content: [
-          'You are a marketing copywriter generating LinkedIn post variants.',
-          `Return a JSON object with a "variants" array containing exactly ${variantCount} entries.`,
-          'Each variant must include "headline", "body", and "callToAction" fields with polished copy.',
-          'Do not include markdown fences or commentary—return JSON only.'
-        ].join('\n')
+        role: 'system' as const,
+        content: systemParts.join('\n\n')
       },
       {
-        role: 'user',
-        content: sections.join('\n\n')
+        role: 'user' as const,
+        content: userSections.join('\n\n')
       }
     ]
-
-    return messages
-  }
-
-  private describeCompanyProfile(profile: Record<string, unknown>): string | null {
-    const entries = Object.entries(profile).filter(
-      ([, value]) => typeof value === 'string' && value.trim().length > 0
-    )
-    if (!entries.length) return null
-    const humanize = (key: string) =>
-      key
-        .replace(/([A-Z])/g, ' $1')
-        .replace(/[_\s]+/g, ' ')
-        .trim()
-        .replace(/\b\w/g, (ch) => ch.toUpperCase())
-    const lines = entries.map(([key, value]) => `- ${humanize(key)}: ${String(value)}`)
-    return ['Company profile:', ...lines].join('\n')
-  }
-
-  private extractCompanyProfile(inputs: Record<string, unknown>): Record<string, unknown> {
-    const bundles = Array.isArray(inputs.contextBundles) ? inputs.contextBundles : []
-    const profileBundle = bundles.find((entry: any) => entry && entry.type === 'company_profile')
-    if (profileBundle && typeof profileBundle.payload === 'object' && profileBundle.payload) {
-      return profileBundle.payload as Record<string, unknown>
-    }
-    if (typeof inputs.companyProfile === 'object' && inputs.companyProfile) {
-      return inputs.companyProfile as Record<string, unknown>
-    }
-    return {}
-  }
-
-  private normalizeVariantCount(raw: unknown): number {
-    const num = Number(raw)
-    if (!Number.isFinite(num)) return 2
-    const clamped = Math.floor(num)
-    if (clamped < 1) return 1
-    if (clamped > 5) return 5
-    return clamped
   }
 
   private composeFinalOutput(plan: FlexPlan, nodeOutputs: Map<string, Record<string, unknown>>) {
@@ -591,7 +801,7 @@ export class FlexExecutionEngine {
   }
 
   private buildHitlPayload(envelope: TaskEnvelope, finalOutput: Record<string, unknown>): HitlRequestPayload {
-    const variants = Array.isArray((finalOutput as any)?.variants) ? (finalOutput as any).variants : []
+    const variants = Array.isArray((finalOutput as any)?.copyVariants) ? (finalOutput as any).copyVariants : []
     const objective = (envelope.objective || '').trim()
     const summaryLines = [
       objective ? `Objective: ${objective}` : null,
@@ -632,6 +842,15 @@ export class FlexExecutionEngine {
     opts: FlexExecutionOptions
   ) {
     if (contract.mode !== 'json_schema') return
+    try {
+      getLogger().debug('flex_contract_debug', {
+        runId: context.runId,
+        nodeId: context.nodeId,
+        scope: context.scope,
+        schema: contract.schema,
+        output
+      })
+    } catch {}
     await this.validateSchema(contract.schema as Record<string, unknown>, output, context, opts)
   }
 
@@ -674,6 +893,16 @@ export class FlexExecutionEngine {
     context: { scope: 'capability_input' | 'capability_output' | 'final_output'; runId: string; nodeId?: string },
     opts: FlexExecutionOptions
   ) {
+    if (context.scope === 'capability_output' && errors.length) {
+      try {
+        getLogger().debug('flex_validation_debug', {
+          runId: context.runId,
+          nodeId: context.nodeId,
+          errors,
+          scope: context.scope
+        })
+      } catch {}
+    }
     const normalized = this.mapAjvErrors(errors)
     try {
       getLogger().warn('flex_validation_failed', {
@@ -733,9 +962,30 @@ export class FlexExecutionEngine {
     runId: string,
     envelope: TaskEnvelope,
     plan: FlexPlan,
-    finalOutput: Record<string, unknown>,
+    finalOutputParam: Record<string, unknown> | null | undefined,
     opts: FlexExecutionOptions
   ) {
+    let finalOutput = finalOutputParam ?? {}
+    if (opts.runContext) {
+      const contextProjection = opts.runContext.composeFinalOutput(envelope.outputContract, plan)
+      if (!finalOutput || Object.keys(finalOutput).length === 0) {
+        finalOutput = contextProjection
+      } else if (Object.keys(contextProjection).length === 0) {
+        const terminal = plan.nodes[plan.nodes.length - 1]
+        for (const [facet, value] of Object.entries(finalOutput)) {
+          opts.runContext.updateFacet(facet, value, {
+            nodeId: terminal?.id ?? 'resume_final',
+            capabilityId: terminal?.capabilityId,
+            rationale: 'resume_final_output'
+          })
+        }
+      }
+    }
+
+    if (!finalOutput || Object.keys(finalOutput).length === 0) {
+      throw new Error('No stored output available for flex HITL resume')
+    }
+
     const terminalNode = plan.nodes[plan.nodes.length - 1]
     if (terminalNode) {
       const startAt = new Date()

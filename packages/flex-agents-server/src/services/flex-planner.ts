@@ -14,7 +14,10 @@ import {
 } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
-import { PlannerService, type PlannerServiceInterface, type PlannerDraft, type PlannerDraftNode } from './planner-service'
+import { PlannerService, type PlannerServiceInterface, type PlannerGraphContext } from './planner-service'
+import type { FacetSnapshot } from './run-context'
+import type { PlannerDraft, PlannerDraftNode, PlannerDiagnostics } from '../planner/planner-types'
+import { PlannerValidationService } from './planner-validation-service'
 
 export type FlexPlanNodeKind =
   | 'structuring'
@@ -70,10 +73,24 @@ export type FlexPlan = {
   metadata: Record<string, unknown>
 }
 
+export type PlannerGraphState = {
+  plan: FlexPlan
+  completedNodeIds: string[]
+  nodeOutputs: Record<string, Record<string, unknown>>
+  facets?: FacetSnapshot
+}
+
 export class UnsupportedObjectiveError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'UnsupportedObjectiveError'
+  }
+}
+
+export class PlannerDraftRejectedError extends Error {
+  constructor(public readonly diagnostics: PlannerDiagnostics) {
+    super('Planner draft failed validation')
+    this.name = 'PlannerDraftRejectedError'
   }
 }
 
@@ -88,6 +105,7 @@ type ScenarioDefinition = {
 type FlexPlannerDependencies = {
   capabilityRegistry?: FlexCapabilityRegistryService
   plannerService?: PlannerServiceInterface
+  validationService?: PlannerValidationService
 }
 
 type PlannerOptions = {
@@ -161,22 +179,111 @@ function extractFacetUnion(capability: CapabilityRecord, direction: 'input' | 'o
   return []
 }
 
+type PlanRequestContext = {
+  runId: string
+  scenario: ScenarioId
+  variantCount: number
+  policies: Record<string, unknown>
+  capabilities: CapabilityRecord[]
+}
+
+type BuildPlanOptions = {
+  onRequest?: (context: PlanRequestContext) => Promise<void> | void
+  normalizedPolicies?: Record<string, unknown>
+  graphState?: PlannerGraphState
+}
+
 export class FlexPlanner {
   private readonly now: () => Date
   private readonly capabilityRegistry: FlexCapabilityRegistryService
   private readonly plannerService: PlannerServiceInterface
+  private readonly validationService: PlannerValidationService
   private readonly facetCatalog: FacetCatalog
   private readonly compiler: FacetContractCompiler
 
   constructor(deps: FlexPlannerDependencies = {}, options?: PlannerOptions) {
     this.capabilityRegistry = deps.capabilityRegistry ?? getFlexCapabilityRegistryService()
     this.plannerService = deps.plannerService ?? new PlannerService()
+    this.validationService = deps.validationService ?? new PlannerValidationService()
     this.now = options?.now ?? (() => new Date())
     this.facetCatalog = getFacetCatalog()
     this.compiler = new FacetContractCompiler({ catalog: this.facetCatalog })
   }
 
-  async buildPlan(runId: string, envelope: TaskEnvelope): Promise<FlexPlan> {
+  private summarizeGraphState(state?: PlannerGraphState): PlannerGraphContext | undefined {
+    if (!state) return undefined
+    const { plan } = state
+    const completedSet = new Set(state.completedNodeIds)
+    if (!plan.nodes.length || !completedSet.size) return undefined
+
+    const completedNodes: PlannerGraphContext['completedNodes'] = []
+    const facetValues: PlannerGraphContext['facetValues'] = []
+
+    for (const node of plan.nodes) {
+      if (!completedSet.has(node.id)) continue
+      const outputFacets = node.facets?.output ?? []
+      completedNodes.push({
+        nodeId: node.id,
+        capabilityId: node.capabilityId ?? null,
+        label: node.label,
+        outputFacets
+      })
+    }
+
+    if (state.facets) {
+      const entries = Object.entries(state.facets)
+      const recent = entries.slice(-12)
+      recent.forEach(([facet, entry]) => {
+        const provenance = entry.provenance.at(-1)
+        facetValues.push({
+          facet,
+          sourceNodeId: provenance?.nodeId ?? 'unknown',
+          sourceCapabilityId: provenance?.capabilityId ?? null,
+          sourceLabel: provenance?.nodeId ?? 'Facet update',
+          value: entry.value
+        })
+      })
+    } else {
+      const nodeOutputs = state.nodeOutputs
+      for (const node of plan.nodes) {
+        if (!completedSet.has(node.id)) continue
+        const outputFacets = node.facets?.output ?? []
+        const outputPayload = nodeOutputs[node.id]
+        if (!outputPayload || !outputFacets.length) continue
+        for (const facet of outputFacets) {
+          const candidate = (outputPayload as Record<string, unknown>)[facet]
+          if (candidate === undefined || candidate === null) {
+            if (outputFacets.length === 1) {
+              facetValues.push({
+                facet,
+                sourceNodeId: node.id,
+                sourceCapabilityId: node.capabilityId ?? null,
+                sourceLabel: node.label,
+                value: outputPayload
+              })
+            }
+            continue
+          }
+          facetValues.push({
+            facet,
+            sourceNodeId: node.id,
+            sourceCapabilityId: node.capabilityId ?? null,
+            sourceLabel: node.label,
+            value: candidate
+          })
+        }
+      }
+    }
+
+    if (!completedNodes.length && !facetValues.length) return undefined
+
+    return {
+      completedNodes,
+      facetValues
+    }
+  }
+
+  async buildPlan(runId: string, envelope: TaskEnvelope, options?: BuildPlanOptions): Promise<FlexPlan> {
     const scenarioInfo = deriveScenario(envelope)
     const variantCount = normalizeVariantCount(
       (envelope.inputs as Record<string, unknown> | undefined)?.variantCount ??
@@ -185,12 +292,39 @@ export class FlexPlanner {
     )
 
     const capabilitySnapshot = await this.capabilityRegistry.getSnapshot()
+    const normalizedPolicies = options?.normalizedPolicies ?? this.normalizePolicies(envelope)
+    await options?.onRequest?.({
+      runId,
+      scenario: scenarioInfo.id,
+      variantCount,
+      policies: normalizedPolicies,
+      capabilities: capabilitySnapshot.active
+    })
+    const graphContext = this.summarizeGraphState(options?.graphState)
     const plannerDraft = await this.plannerService.proposePlan({
       envelope,
       scenario: scenarioInfo.id,
       variantCount,
-      capabilities: capabilitySnapshot.active
+      capabilities: capabilitySnapshot.active,
+      graphContext
     })
+    try {
+      const draftPretty = JSON.stringify(plannerDraft, null, 2)
+      getLogger().debug(`flex_planner_draft_received\n${draftPretty}`, {
+        runId,
+        scenario: scenarioInfo.id,
+        variantCount
+      })
+    } catch {}
+    const validation = this.validationService.validate({
+      draft: plannerDraft,
+      capabilities: capabilitySnapshot.active,
+      envelope
+    })
+    if (!validation.ok) {
+      throw new PlannerDraftRejectedError(validation.diagnostics)
+    }
+    const plannerDiagnostics = validation.diagnostics
 
     const capabilityMap = new Map<string, CapabilityRecord>()
     for (const capability of capabilitySnapshot.active) {
@@ -310,6 +444,8 @@ export class FlexPlanner {
         plannerRuntime: plannerDraft.metadata?.provider ?? 'llm',
         plannerModel: plannerDraft.metadata?.model ?? null,
         plannerDraftNodeCount: plannerDraft.nodes.length,
+        normalizedPolicyKeys: Object.keys(normalizedPolicies),
+        plannerDiagnostics: plannerDiagnostics.length ? plannerDiagnostics : undefined,
         planVersionTag: `v${planVersion}.0`,
         normalizationInjected: nodes.some((node) => node.kind === 'transformation'),
         emittedAt: this.now().toISOString()
@@ -356,6 +492,11 @@ export class FlexPlanner {
     })
 
     return facets
+  }
+
+  private normalizePolicies(envelope: TaskEnvelope): Record<string, unknown> {
+    const policies = (envelope.policies ?? {}) as Record<string, unknown>
+    return { ...policies }
   }
 
   private collectBranchRequests(plannerDraft: PlannerDraft, envelope: TaskEnvelope): BranchRequest[] {
@@ -578,8 +719,44 @@ export class FlexPlanner {
     const lastExecutionIndex = [...nodes].reverse().findIndex((node) => node.kind === 'execution')
     if (lastExecutionIndex === -1) return
 
+    const lastExecutionNode = nodes[nodes.length - 1 - lastExecutionIndex]
+    const lastOutputContract = lastExecutionNode.contracts?.output
+    const compiledFromFacets = this.compiler.compileContracts({
+      outputFacets: lastExecutionNode.facets?.output ?? []
+    }).output
+
+    const executionSchema =
+      lastOutputContract?.mode === 'json_schema'
+        ? lastOutputContract.schema
+        : compiledFromFacets?.schema
+
+    const finalSchema =
+      envelope.outputContract.mode === 'json_schema'
+        ? envelope.outputContract.schema
+        : undefined
+
+    const schemaCompatible =
+      Boolean(executionSchema && finalSchema) && this.isSchemaSubset(executionSchema, finalSchema)
+
+    if (schemaCompatible) {
+      return
+    }
+
     const insertionIndex = nodes.length - 1 - lastExecutionIndex + 1
     const transformationId = sanitizeNodeId('transformation', nodes.length)
+    const passthroughFacets = lastExecutionNode.facets?.output ?? []
+
+    try {
+      getLogger().debug('flex_normalization_injected', {
+        runId: nodes[0]?.bundle.runId,
+        reason: 'output_contract_mismatch',
+        lastExecutionNode: lastExecutionNode.id,
+        lastOutputMode: lastOutputContract?.mode,
+        lastOutputSchema: executionSchema,
+        finalSchema,
+        schemaCompatible
+      })
+    } catch {}
 
     const bundle: ContextBundle = {
       runId: nodes[0]?.bundle.runId ?? '',
@@ -610,8 +787,8 @@ export class FlexPlanner {
         output: safeJsonClone(envelope.outputContract)
       },
       facets: {
-        input: ['copyVariants'],
-        output: ['copyVariants']
+        input: passthroughFacets,
+        output: passthroughFacets
       },
       provenance: {},
       rationale: ['Ensure output matches caller contract.'],
@@ -621,6 +798,68 @@ export class FlexPlanner {
     }
 
     nodes.splice(insertionIndex, 0, node)
+  }
+
+  private isSchemaSubset(source: unknown, target: unknown): boolean {
+    if (target == null) return true
+    if (source == null) return false
+
+    if (Array.isArray(target)) {
+      if (!Array.isArray(source)) return false
+      for (let i = 0; i < target.length; i += 1) {
+        if (!this.isSchemaSubset(source[i], target[i])) return false
+      }
+      return true
+    }
+
+    if (typeof target !== 'object' || typeof source !== 'object') {
+      return true
+    }
+
+    const sourceObj = source as Record<string, unknown>
+    const targetObj = target as Record<string, unknown>
+
+    if (typeof targetObj.type === 'string' && typeof sourceObj.type === 'string') {
+      if (targetObj.type !== sourceObj.type) return false
+    }
+
+    if (Array.isArray(targetObj.required)) {
+      const sourceRequired = Array.isArray(sourceObj.required)
+        ? new Set(sourceObj.required as string[])
+        : new Set<string>()
+      for (const key of targetObj.required as string[]) {
+        if (!sourceRequired.has(key)) return false
+      }
+    }
+
+    if (targetObj.properties && typeof targetObj.properties === 'object') {
+      const targetProps = targetObj.properties as Record<string, unknown>
+      const sourceProps =
+        sourceObj.properties && typeof sourceObj.properties === 'object'
+          ? (sourceObj.properties as Record<string, unknown>)
+          : {}
+      for (const key of Object.keys(targetProps)) {
+        if (!(key in sourceProps)) return false
+        if (!this.isSchemaSubset(sourceProps[key], targetProps[key])) return false
+      }
+    }
+
+    if (targetObj.items) {
+      if (!sourceObj.items) return false
+      if (!this.isSchemaSubset(sourceObj.items, targetObj.items)) return false
+    }
+
+    if (typeof targetObj.minItems === 'number') {
+      const sourceMin = typeof sourceObj.minItems === 'number' ? (sourceObj.minItems as number) : undefined
+      if (sourceMin !== undefined && sourceMin < (targetObj.minItems as number)) return false
+    }
+
+    if (typeof targetObj.maxItems === 'number') {
+      const sourceMax = typeof sourceObj.maxItems === 'number' ? (sourceObj.maxItems as number) : undefined
+      if (sourceMax !== undefined && sourceMax > (targetObj.maxItems as number)) return false
+    }
+
+    return true
   }
 
   private ensureFallbackNode(nodes: FlexPlanNode[], variantCount: number) {

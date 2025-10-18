@@ -333,6 +333,7 @@ export const flexRuns = pgTable('flex_runs', {
   schemaHash: text('schema_hash'),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}),
   resultJson: jsonb('result_json').$type<Record<string, unknown> | null>().default(null),
+  contextSnapshotJson: jsonb('context_snapshot_json').$type<Record<string, unknown>>().default({}),
   planVersion: integer('plan_version').default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()

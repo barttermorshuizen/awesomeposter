@@ -1,0 +1,49 @@
+schema: 1
+story: '8.14'
+story_title: 'LLM Planner & Orchestrator Hybrid Loop'
+gate: PASS
+status_reason: 'Execution engine now injects capability-specific agent prompts and tool allowlists via registry, so Strategy/QA guardrails execute as required.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-18T06:03:44Z'
+
+top_issues:
+  - severity: low
+    summary: 'Consider extracting registry-driven prompts into configuration to simplify future capability additions.'
+    evidence:
+      - packages/flex-agents-server/src/services/agents-container.ts
+    suggested_owner: dev
+waiver:
+  active: false
+quality_score: 95
+expires: '2025-11-01T06:03:44Z'
+
+evidence:
+  tests_reviewed: 6
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No security-sensitive code paths modified.'
+  performance:
+    status: PASS
+    notes: 'Planner telemetry additions are metadata-only.'
+  reliability:
+    status: PASS
+    notes: 'Strategy/QA agents now execute with correct instructions and tooling; regression suite covers planner handshake.'
+  maintainability:
+    status: PASS
+    notes: 'Prompt registry centralizes capability metadata; follow-on refactors can further externalize configuration.'
+
+recommendations:
+  immediate:
+    - action: 'Monitor prompt registry as new capabilities are added to ensure instructions remain up to date.'
+      refs:
+        - packages/flex-agents-server/src/services/agents-container.ts
+  future:
+    - action: 'Expand integration coverage to cross-check tool allowlists for additional capabilities once introduced.'
+      refs:
+        - packages/flex-agents-server/__tests__/flex-run-coordinator.spec.ts

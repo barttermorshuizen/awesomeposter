@@ -4,62 +4,41 @@ import type { TaskEnvelope, CapabilityRecord, FacetDefinition } from '@awesomepo
 import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
+import { PlannerDraftNode, PlannerDraftSchema, type PlannerDraft } from '../planner/planner-types'
 
-const StringOrArraySchema = z
-  .union([z.array(z.string().min(1)), z.string().min(1)])
-  .transform((value) => (Array.isArray(value) ? value : [value]))
+export type PlannerGraphNodeSummary = {
+  nodeId: string
+  capabilityId: string | null
+  label: string
+  outputFacets: string[]
+}
 
-const FacetListSchema = z
-  .union([
-    z.array(z.string().min(1)),
-    z.string().min(1),
-    z.record(z.unknown())
-  ])
-  .transform((value) => {
-    if (Array.isArray(value)) return value
-    if (typeof value === 'string') return [value]
-    return Object.keys(value)
-  })
+export type PlannerGraphFacetValue = {
+  facet: string
+  sourceNodeId: string
+  sourceCapabilityId: string | null
+  sourceLabel: string
+  value: unknown
+}
 
-const PlannerDraftNodeSchema = z.object({
-  label: z.string().min(1).optional(),
-  stage: z.string().min(1),
-  capabilityId: z.string().min(1).optional(),
-  derived: z.boolean().optional(),
-  kind: z
-    .enum(['structuring', 'branch', 'execution', 'transformation', 'validation', 'fallback'])
-    .optional(),
-  inputFacets: FacetListSchema.optional(),
-  outputFacets: FacetListSchema.optional(),
-  rationale: StringOrArraySchema.optional(),
-  instructions: StringOrArraySchema.optional()
-})
+export type PlannerGraphContext = {
+  completedNodes: PlannerGraphNodeSummary[]
+  facetValues: PlannerGraphFacetValue[]
+}
 
-const PlannerDraftBranchSchema = z.object({
-  id: z.string().min(1).optional(),
-  label: z.string().min(1),
-  rationale: z.string().min(1).optional()
-})
+const MAX_FACET_VALUE_LENGTH = 800
 
-const PlannerDraftMetadataSchema = z.object({
-  provider: z.string().min(1).optional(),
-  model: z.string().min(1).optional()
-})
-
-const PlannerDraftSchema = z.object({
-  nodes: z.array(PlannerDraftNodeSchema).min(1),
-  branchRequests: z.array(PlannerDraftBranchSchema).optional(),
-  metadata: PlannerDraftMetadataSchema.optional()
-})
-
-export type PlannerDraftNode = z.infer<typeof PlannerDraftNodeSchema>
-export type PlannerDraftBranch = z.infer<typeof PlannerDraftBranchSchema>
-export type PlannerDraftMetadata = z.infer<typeof PlannerDraftMetadataSchema>
-
-export type PlannerDraft = {
-  nodes: PlannerDraftNode[]
-  branchRequests?: PlannerDraftBranch[]
-  metadata?: PlannerDraftMetadata
+function serializeFacetValue(value: unknown, maxLength = MAX_FACET_VALUE_LENGTH): string {
+  try {
+    const json = JSON.stringify(value, null, 2)
+    if (!json) return ''
+    if (json.length <= maxLength) return json
+    return `${json.slice(0, maxLength)}...`
+  } catch {
+    const fallback = String(value)
+    if (fallback.length <= maxLength) return fallback
+    return `${fallback.slice(0, maxLength)}...`
+  }
 }
 
 export type PlannerServiceInput = {
@@ -67,6 +46,7 @@ export type PlannerServiceInput = {
   scenario: string
   variantCount: number
   capabilities: CapabilityRecord[]
+  graphContext?: PlannerGraphContext
 }
 
 export interface PlannerServiceInterface {
@@ -171,6 +151,16 @@ export class PlannerService implements PlannerServiceInterface {
         '- Select the **minimal set of capabilities** needed to produce the required output facets',
         '- Route facets correctly between nodes, respecting capability I/O contracts',
         '- Include fallback nodes only when risks are high and policy allows automation',
+        'Example execution node:',
+        '{ "stage": "generation", "kind": "execution", "capabilityId": "ContentGeneratorAgent.linkedinVariants", "inputFacets": ["objectiveBrief"], "outputFacets": ["copyVariants"] }',
+        'Planner rules:',
+        '1. Every non-virtual node MUST set `capabilityId` to exactly one of the provided capability IDs.',
+        '2. Before selecting a capability, ensure every required input facet or schema field is available from the envelope or a prior node; if not, add the upstream node that produces it.',
+        '3. Never invent new capability IDs or placeholder names; reuse the registry values verbatim.',
+        '4. Use only facet names that appear in the capability definitions or facet catalog. Do not invent new facet keys.',
+        '5. Honor the input contract schema (including required properties and enums). Convert free-form values via structuring nodes when necessary (e.g., map tone to allowed enum values).',
+        '6. If no suitable capability exists, return diagnostics describing the gap rather than creating anonymous stages.',
+        '7. Do NOT add standalone "normalization" or other controller-managed nodes unless the special instructions explicitly demand it—the orchestrator already handles schema shaping.',
         'Reason from capability definitions. Include only the capabilities needed to achieve the objective given the available inputs and required outputs.',
         '- When required facets are missing and no fallback is possible, return JSON that captures the failure instead of inventing data.',
         'CRITICALLY:',
@@ -204,11 +194,46 @@ export class PlannerService implements PlannerServiceInterface {
       .filter((line): line is string => Boolean(line))
 
     const capabilityLines = capabilities.map((capability) => {
-      const facetsInfo = [
-        `Input facets: ${(capability.inputFacets ?? []).join(', ') || 'none'}`,
-        `Output facets: ${(capability.outputFacets ?? []).join(', ') || 'none'}`
-      ].join(' | ')
-      return `- ${capability.capabilityId} :: ${capability.summary} :: ${facetsInfo}`
+      const inputFacets = (capability.inputFacets ?? []).join(', ') || 'none'
+      const outputFacets = (capability.outputFacets ?? []).join(', ') || 'none'
+
+      const inputContractLines: string[] = []
+      if (capability.inputContract) {
+        if (capability.inputContract.mode === 'facets') {
+          inputContractLines.push(`  Input contract: facets -> ${(capability.inputContract.facets ?? []).join(', ') || 'none'}`)
+        } else if ('schema' in capability.inputContract && capability.inputContract.schema) {
+          const schema = JSON.stringify(capability.inputContract.schema, null, 2)
+          inputContractLines.push('  Input contract schema:')
+          inputContractLines.push(schema
+            .split('\n')
+            .map((line) => `    ${line}`)
+            .join('\n'))
+        }
+      }
+
+      const outputContractLines: string[] = []
+      if (capability.outputContract) {
+        if (capability.outputContract.mode === 'facets') {
+          outputContractLines.push(`  Output contract: facets -> ${(capability.outputContract.facets ?? []).join(', ') || 'none'}`)
+        } else if ('schema' in capability.outputContract && capability.outputContract.schema) {
+          const schema = JSON.stringify(capability.outputContract.schema, null, 2)
+          outputContractLines.push('  Output contract schema:')
+          outputContractLines.push(schema
+            .split('\n')
+            .map((line) => `    ${line}`)
+            .join('\n'))
+        }
+      }
+
+      return [
+        `- Capability ID: ${capability.capabilityId}`,
+        `  Display: ${capability.displayName}`,
+        `  Summary: ${capability.summary}`,
+        `  Input facets: ${inputFacets}`,
+        `  Output facets: ${outputFacets}`,
+        ...inputContractLines,
+        ...outputContractLines
+      ].join('\n')
     })
 
     const facetLines = facets.map((facet) => {
@@ -216,17 +241,60 @@ export class PlannerService implements PlannerServiceInterface {
       return `- ${facet.name} (${direction}) :: ${facet.description}`
     })
 
+    const graphSections: string[] = []
+    if (input.graphContext) {
+      if (input.graphContext.completedNodes.length) {
+        const nodeLines = input.graphContext.completedNodes.map((node) => {
+          const capability = node.capabilityId ?? 'virtual'
+          const facetList = node.outputFacets.length ? node.outputFacets.join(', ') : 'none'
+          return `- ${node.label} (${node.nodeId}) :: capability=${capability} | output facets=${facetList}`
+        })
+        graphSections.push(['Completed nodes already executed:', ...nodeLines].join('\n'))
+      }
+      if (input.graphContext.facetValues.length) {
+        const maxEntries = 12
+        const recentValues = input.graphContext.facetValues.slice(-maxEntries)
+        const facetValueLines = recentValues.map((entry) => {
+          const serialized = serializeFacetValue(entry.value)
+          const indented = serialized
+            .split('\n')
+            .map((line) => `    ${line}`)
+            .join('\n')
+          const capability = entry.sourceCapabilityId ?? 'virtual'
+          return `- ${entry.facet} (from ${entry.sourceLabel} / ${entry.sourceNodeId} :: capability=${capability}):\n${indented}`
+        })
+        graphSections.push(
+          [
+            'Facet values from completed nodes (values truncated to 800 characters when needed):',
+            ...facetValueLines
+          ].join('\n')
+        )
+      }
+    }
+
+    const sections: string[] = [
+      'Create a planner draft for the Flex orchestrator.',
+      envelopeLines.join('\n'),
+      'Select `capabilityId` values from the following registered capabilities (copy IDs exactly as shown):',
+      capabilityLines.join('\n\n'),
+      'Facet catalog summary:',
+      facetLines.slice(0, 25).join('\n')
+    ]
+
+    if (graphSections.length) {
+      sections.push('Current graph context from completed nodes:')
+      sections.push(...graphSections)
+    }
+
+    sections.push(
+      'Return JSON with nodes including stage, capabilityId, derived flag, inputFacets, outputFacets, and rationale. Do not create capabilities that are not listed.',
+      'When referring to variants, use the existing facet `copyVariants` (or other cataloged facets) instead of inventing new names.',
+      'Skip controller-managed normalization nodes unless the special instructions in this request explicitly require one.'
+    )
+
     return {
       role: 'user' as const,
-      content: [
-        'Create a planner draft for the Flex orchestrator.',
-        envelopeLines.join('\n'),
-        'Available capabilities:',
-        capabilityLines.join('\n'),
-        'Facet catalog summary:',
-        facetLines.slice(0, 25).join('\n'),
-        'Return JSON with nodes including stage, capabilityId, derived flag, inputFacets, outputFacets, and rationale.'
-      ].join('\n\n')
+      content: sections.join('\n\n')
     }
   }
 

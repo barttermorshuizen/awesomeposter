@@ -1,8 +1,9 @@
 import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, eq, and, isNotNull } from '@awesomeposter/db'
-import { sql } from 'drizzle-orm'
+import { sql, notInArray } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
 import type { TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
 import { setOrchestratorPersistence as setLegacyOrchestratorPersistence } from '../../../agents-server/src/services/orchestrator-persistence.js'
+import type { FacetSnapshot } from './run-context'
 
 export type OrchestratorRunStatus =
   | 'pending'
@@ -324,6 +325,7 @@ export type FlexRunRecord = {
   metadata?: Record<string, unknown> | null
   result?: Record<string, unknown> | null
   planVersion?: number
+  contextSnapshot?: FacetSnapshot | null
 }
 
 export class FlexRunPersistence {
@@ -354,6 +356,7 @@ export class FlexRunPersistence {
         schemaHash: record.schemaHash ?? null,
         metadataJson: metadata ? clone(metadata) : {},
         resultJson: record.result ? clone(record.result) : null,
+        contextSnapshotJson: record.contextSnapshot ? clone(record.contextSnapshot) : {},
         planVersion: record.planVersion ?? 0,
         createdAt: now,
         updatedAt: now
@@ -368,6 +371,7 @@ export class FlexRunPersistence {
           schemaHash: record.schemaHash ?? null,
           metadataJson: metadata ? clone(metadata) : {},
           resultJson: record.result ? clone(record.result) : null,
+          contextSnapshotJson: record.contextSnapshot ? clone(record.contextSnapshot) : sql`coalesce(flex_runs.context_snapshot_json, '{}'::jsonb)`,
           planVersion: record.planVersion ?? 0,
           updatedAt: now
         }
@@ -396,14 +400,25 @@ export class FlexRunPersistence {
     await this.orchestrator.touch(runId, status)
   }
 
-  async savePlanSnapshot(runId: string, planVersion: number, nodes: FlexPlanNodeSnapshot[]) {
+  async savePlanSnapshot(
+    runId: string,
+    planVersion: number,
+    nodes: FlexPlanNodeSnapshot[],
+    options: { facets?: FacetSnapshot } = {}
+  ) {
     const now = new Date()
     await this.db
       .update(flexRuns)
       .set({ planVersion, updatedAt: now })
       .where(eq(flexRuns.runId, runId))
 
-    if (!nodes.length) return
+    if (!nodes.length) {
+      await this.db.delete(flexPlanNodes).where(eq(flexPlanNodes.runId, runId))
+      if (options.facets) {
+        await this.saveRunContext(runId, options.facets)
+      }
+      return
+    }
     const rows = nodes.map((node) => ({
       runId,
       nodeId: node.nodeId,
@@ -436,6 +451,25 @@ export class FlexRunPersistence {
           updatedAt: sql`excluded.updated_at`
         }
       })
+
+    const nodeIds = nodes.map((node) => node.nodeId)
+    if (nodeIds.length) {
+      await this.db
+        .delete(flexPlanNodes)
+        .where(and(eq(flexPlanNodes.runId, runId), notInArray(flexPlanNodes.nodeId, nodeIds)))
+    }
+
+    if (options.facets) {
+      await this.saveRunContext(runId, options.facets)
+    }
+  }
+
+  async saveRunContext(runId: string, snapshot: FacetSnapshot) {
+    const now = new Date()
+    await this.db
+      .update(flexRuns)
+      .set({ contextSnapshotJson: clone(snapshot), updatedAt: now })
+      .where(eq(flexRuns.runId, runId))
   }
 
   async markNode(
@@ -534,7 +568,8 @@ export class FlexRunPersistence {
         schemaHash: row.schemaHash ?? null,
         metadata: (row.metadataJson as Record<string, unknown>) ?? null,
         result: (row.resultJson as Record<string, unknown> | null) ?? null,
-        planVersion: row.planVersion ?? 0
+        planVersion: row.planVersion ?? 0,
+        contextSnapshot: (row.contextSnapshotJson as FacetSnapshot | undefined) ?? undefined
       },
       nodes
     }

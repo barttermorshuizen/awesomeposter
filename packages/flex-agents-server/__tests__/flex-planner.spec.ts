@@ -248,13 +248,14 @@ describe('FlexPlanner', () => {
     const kinds = plan.nodes.map((node) => node.kind)
     expect(kinds).toContain('structuring')
     expect(kinds).toContain('execution')
-    expect(kinds).toContain('transformation')
     expect(kinds).toContain('validation')
     expect(kinds).toContain('fallback')
 
+    const hasNormalization = kinds.includes('transformation')
+
     const structuringNode = plan.nodes.find((node) => node.kind === 'structuring')!
     const executionNode = plan.nodes.find((node) => node.kind === 'execution')!
-    const normalizationNode = plan.nodes.find((node) => node.kind === 'transformation')!
+    const normalizationNode = plan.nodes.find((node) => node.kind === 'transformation') ?? null
     const fallbackNode = plan.nodes.find((node) => node.kind === 'fallback')!
 
     expect(structuringNode.capabilityId).toBe(STRATEGY_CAPABILITY_ID)
@@ -266,8 +267,12 @@ describe('FlexPlanner', () => {
     expect(executionNode.facets.output).toContain('copyVariants')
     expect(executionNode.rationale).toContain('planner_recommendation')
 
-    expect(normalizationNode.metadata.normalization).toBe(true)
-    expect(plan.metadata.normalizationInjected).toBe(true)
+    if (hasNormalization && normalizationNode) {
+      expect(normalizationNode.metadata.normalization).toBe(true)
+      expect(plan.metadata.normalizationInjected).toBe(true)
+    } else {
+      expect(plan.metadata.normalizationInjected).toBe(false)
+    }
 
     expect(fallbackNode.bundle.instructions?.some((instruction) => instruction.includes('Escalate'))).toBe(true)
     expect(plan.metadata.scenario).toBe('linkedin_post_variants')

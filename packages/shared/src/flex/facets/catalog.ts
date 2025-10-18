@@ -368,31 +368,24 @@ const defaultDefinitions: FacetDefinition[] = [
     title: 'Copy Variants',
     description: 'Structured multi-variant output payload for downstream channels and QA.',
     schema: {
-      type: 'object',
-      properties: {
-        variants: {
-          type: 'array',
-          minItems: 1,
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', minLength: 1 },
-              headline: { type: 'string', minLength: 1 },
-              body: { type: 'string', minLength: 1 },
-              callToAction: { type: 'string', minLength: 1 }
-            },
-            required: ['headline', 'body'],
-            additionalProperties: false
-          }
-        }
-      },
-      required: ['variants'],
-      additionalProperties: false
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          headline: { type: 'string', minLength: 1 },
+          body: { type: 'string', minLength: 1 },
+          callToAction: { type: 'string', minLength: 1 }
+        },
+        required: ['headline', 'body'],
+        additionalProperties: false
+      }
     },
     semantics: {
       summary: 'Represents the draft variants produced by writing agents.',
       instruction:
-        'Emit the `copyVariants` collection with each variant suitable for the target channel.'
+        'Emit a JSON object with a `copyVariants` array containing each variant suitable for the target channel.'
     },
     metadata: {
       version: 'v1',
