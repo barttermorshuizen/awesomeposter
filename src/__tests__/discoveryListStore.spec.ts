@@ -235,6 +235,71 @@ describe('useDiscoveryListStore', () => {
     vi.useRealTimers()
   })
 
+  it('refreshes results when bulk action telemetry events arrive for the active client', async () => {
+    const store = useDiscoveryListStore()
+    store.setClientId('client-telemetry')
+
+    searchDiscoveryItemsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 25,
+      latencyMs: 0,
+    })
+
+    await store.fetchResults('manual')
+    searchDiscoveryItemsMock.mockClear()
+
+    const bulkEvent: DiscoveryTelemetryEvent = {
+      schemaVersion: 1,
+      eventType: 'discovery.bulk.action.completed',
+      clientId: 'client-telemetry',
+      entityId: 'action-123',
+      timestamp: new Date().toISOString(),
+      payload: {
+        actionId: 'action-123',
+        action: 'promote',
+        clientId: 'client-telemetry',
+        actorId: 'actor-123',
+        itemCount: 2,
+        successCount: 2,
+        conflictCount: 0,
+        failedCount: 0,
+        durationMs: 120,
+        filtersSnapshot: {
+          status: ['spotted'],
+          sourceIds: [],
+          topicIds: [],
+          search: '',
+          dateFrom: null,
+          dateTo: null,
+          pageSize: 25,
+        },
+        recordedAt: new Date().toISOString(),
+        results: [
+          {
+            itemId: 'item-a',
+            status: 'success',
+            message: null,
+            briefId: 'brief-a',
+          },
+          {
+            itemId: 'item-b',
+            status: 'success',
+            message: null,
+            briefId: 'brief-b',
+          },
+        ],
+      },
+    }
+
+    store.handleTelemetryEvent(bulkEvent)
+
+    await Promise.resolve()
+
+    expect(searchDiscoveryItemsMock).toHaveBeenCalledTimes(1)
+  })
+
   it('loads selected item detail via service and updates state', async () => {
     const store = useDiscoveryListStore()
     const iso = new Date().toISOString()

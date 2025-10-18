@@ -304,6 +304,32 @@ export const discoveryItemStatusHistory = pgTable('discovery_item_status_history
   createdIdx: index('discovery_item_status_history_created_idx').on(table.createdAt),
 }))
 
+export const discoveryBulkActionAudits = pgTable('discovery_bulk_action_audits', {
+  id: uuid('id').primaryKey(),
+  actionId: uuid('action_id').notNull().unique(),
+  clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }).notNull(),
+  actorId: uuid('actor_id').notNull(),
+  actorName: text('actor_name').notNull(),
+  action: text('action').$type<'promote' | 'archive'>().notNull(),
+  note: text('note'),
+  filtersSnapshot: jsonb('filters_snapshot').$type<Record<string, unknown> | null>().default(null),
+  itemIds: uuid('item_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::uuid[]`),
+  successIds: uuid('success_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::uuid[]`),
+  conflictIds: uuid('conflict_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::uuid[]`),
+  failedIds: uuid('failed_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::uuid[]`),
+  successBriefIds: uuid('success_brief_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::uuid[]`),
+  resultsJson: jsonb('results_json').$type<Array<Record<string, unknown>>>().notNull(),
+  successCount: integer('success_count').notNull().default(0),
+  conflictCount: integer('conflict_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  totalCount: integer('total_count').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  clientIdx: index('discovery_bulk_action_audits_client_idx').on(table.clientId, table.createdAt),
+  actionIdx: index('discovery_bulk_action_audits_action_idx').on(table.action, table.createdAt),
+}))
+
 
 export const orchestratorRuns = pgTable('orchestrator_runs', {
   runId: text('run_id').primaryKey(),

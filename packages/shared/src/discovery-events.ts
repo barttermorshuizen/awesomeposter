@@ -4,7 +4,7 @@ import {
   discoveryBriefReferenceSchema,
   discoveryItemHistoryEntrySchema,
 } from './discovery/item.js'
-import { discoveryBulkFiltersSnapshotSchema } from './discovery/bulk.js'
+import { discoveryBulkFiltersSnapshotSchema, discoveryBulkActionItemResultSchema } from './discovery/bulk.js'
 
 export const discoverySourceSchema = z.object({
   id: z.string().uuid(),
@@ -335,6 +335,7 @@ export const discoveryBulkActionCompletedEventSchema = z.object({
     durationMs: z.number().int().min(0),
     filtersSnapshot: discoveryBulkFiltersSnapshotSchema.optional(),
     recordedAt: z.string(),
+    results: z.array(discoveryBulkActionItemResultSchema).optional(),
   }),
 })
 
@@ -432,6 +433,14 @@ export const discoveryTelemetryEventSchema = z.discriminatedUnion('eventType', [
   discoveryQueueUpdatedTelemetrySchema,
   discoveryScoringFailedTelemetrySchema,
   discoveryBriefPromotedTelemetrySchema,
+  z.object({
+    schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
+    eventType: z.literal('discovery.bulk.action.completed'),
+    clientId: z.string().uuid(),
+    entityId: z.string().uuid(),
+    timestamp: z.string(),
+    payload: discoveryBulkActionCompletedEventSchema.shape.payload,
+  }),
   z.object({
     schemaVersion: z.literal(DISCOVERY_TELEMETRY_SCHEMA_VERSION),
     eventType: z.literal('ingestion.started'),

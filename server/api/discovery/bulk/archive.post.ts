@@ -1,6 +1,6 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { discoveryBulkActionRequestSchema } from '@awesomeposter/shared'
-import { executeDiscoveryBulkAction } from '../../../../utils/discovery-bulk-actions'
+import { executeDiscoveryBulkAction } from '../../../utils/discovery-bulk-actions'
 
 export default defineEventHandler(async (event) => {
   let payload: unknown

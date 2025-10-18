@@ -125,6 +125,15 @@ export function toDiscoveryTelemetryEvent(envelope: DiscoveryEventEnvelope): Dis
         timestamp: envelope.payload.promotedAt,
         payload: envelope.payload,
       }
+    case 'discovery.bulk.action.completed':
+      return {
+        schemaVersion: DISCOVERY_TELEMETRY_SCHEMA_VERSION,
+        eventType: 'discovery.bulk.action.completed',
+        clientId: envelope.payload.clientId,
+        entityId: envelope.payload.actionId,
+        timestamp: envelope.payload.recordedAt,
+        payload: envelope.payload,
+      }
     default:
       return null
   }

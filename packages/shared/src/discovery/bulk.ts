@@ -37,6 +37,7 @@ export const discoveryBulkActionItemResultSchema = z.object({
   itemId: z.string().uuid(),
   status: z.enum(['success', 'conflict', 'failed']),
   message: z.string().optional().nullable(),
+  briefId: z.string().uuid().optional().nullable(),
 })
 
 export type DiscoveryBulkActionItemResult = z.infer<typeof discoveryBulkActionItemResultSchema>
