@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { useDiscoveryListStore, DISCOVERY_MIN_SEARCH_LENGTH } from '@/stores/discoveryList'
+import { useBulkSelectionStore } from '@/stores/discovery/bulkSelection'
+import { useNotificationsStore } from '@/stores/notifications'
 import DiscoveryItemDetailDrawer from '@/components/discovery/DiscoveryItemDetailDrawer.vue'
 import { fetchClientFeatureFlags } from '@/lib/feature-flags'
 import {
@@ -10,6 +12,8 @@ import {
   type DiscoveryEventHandlers,
   type DiscoveryFeatureDisabledPayload,
 } from '@/lib/discovery-sse'
+import { bulkArchive, bulkPromote } from '@/services/discovery/bulkActions'
+import type { DiscoveryBulkFiltersSnapshot } from '@awesomeposter/shared'
 import { DASHBOARD_CLIENT_STORAGE_KEY } from './loadDiscoveryDashboard'
 
 interface ClientOption {
@@ -26,6 +30,8 @@ type HighlightSegment = {
 const router = useRouter()
 const route = useRoute()
 const listStore = useDiscoveryListStore()
+const bulkSelectionStore = useBulkSelectionStore()
+const notificationsStore = useNotificationsStore()
 const filters = listStore.filters
 const pagination = listStore.pagination
 
@@ -57,6 +63,17 @@ const {
   promotionLoading,
   promotionError,
 } = storeToRefs(listStore)
+
+const {
+  selectedIds,
+  selectionCount,
+  hasSelection,
+  limitWarning,
+  hiddenSelectionCount,
+  visibleSelectionCount,
+  lastActionResponse,
+} = storeToRefs(bulkSelectionStore)
+
 
 const lastSearchTerm = computed(() => listStore.lastSearchTerm)
 
@@ -108,6 +125,142 @@ const searchMessages = computed(() => {
   }
   return []
 })
+
+const hasHiddenSelections = computed(() => hiddenSelectionCount.value > 0)
+const bulkConflictResults = computed(() =>
+  lastActionResponse.value?.results.filter((result) => result.status === 'conflict') ?? [],
+)
+const bulkFailureResults = computed(() =>
+  lastActionResponse.value?.results.filter((result) => result.status === 'failed') ?? [],
+)
+
+const bulkActionDialogOpen = ref(false)
+const bulkActionType = ref<'promote' | 'archive' | null>(null)
+const bulkActionNote = ref('')
+const bulkActionError = ref<string | null>(null)
+const bulkActionLoading = ref(false)
+const bulkIrreversibleConfirmed = ref(false)
+
+const bulkActionTitle = computed(() => {
+  if (bulkActionType.value === 'promote') {
+    return 'Confirm bulk promotion'
+  }
+  if (bulkActionType.value === 'archive') {
+    return 'Confirm bulk archive'
+  }
+  return 'Confirm bulk action'
+})
+
+const bulkActionPrimaryLabel = computed(() =>
+  bulkActionType.value === 'promote' ? 'Promote items' : 'Archive items',
+)
+
+const isBulkNoteValid = computed(() => bulkActionNote.value.trim().length >= 5)
+
+function buildBulkFiltersSnapshot(): DiscoveryBulkFiltersSnapshot {
+  const normalizedStatuses = filters.status.length
+    ? filters.status.map((status) => status.trim().toLowerCase()).filter(Boolean)
+    : ['spotted']
+  return {
+    status: normalizedStatuses,
+    sourceIds: [...filters.sourceIds],
+    topicIds: [...filters.topicIds],
+    search: filters.search,
+    dateFrom: filters.dateFrom ?? null,
+    dateTo: filters.dateTo ?? null,
+    pageSize: pagination.pageSize,
+  }
+}
+
+function openBulkActionDialog(type: 'promote' | 'archive') {
+  if (!selectionCount.value) {
+    return
+  }
+  bulkActionType.value = type
+  bulkActionNote.value = ''
+  bulkActionError.value = null
+  bulkIrreversibleConfirmed.value = false
+  bulkActionDialogOpen.value = true
+}
+
+function closeBulkActionDialog() {
+  bulkActionDialogOpen.value = false
+  bulkActionType.value = null
+  bulkActionError.value = null
+  bulkActionLoading.value = false
+}
+
+async function submitBulkAction() {
+  if (!bulkActionType.value) {
+    return
+  }
+  if (!clientId.value) {
+    bulkActionError.value = 'Select a client before running bulk actions.'
+    return
+  }
+  if (!selectionCount.value) {
+    bulkActionError.value = 'Select at least one discovery item.'
+    return
+  }
+  if (!isBulkNoteValid.value) {
+    bulkActionError.value = 'Add a reviewer note (at least 5 characters).'
+    return
+  }
+  if (!bulkIrreversibleConfirmed.value) {
+    bulkActionError.value = 'Confirm the irreversible warning before continuing.'
+    return
+  }
+
+  const note = bulkActionNote.value.trim()
+  const snapshot = bulkSelectionStore.ensureFiltersSnapshot(buildBulkFiltersSnapshot)
+  const payload = {
+    actionId: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
+    clientId: clientId.value,
+    itemIds: [...selectedIds.value],
+    note,
+    actorId: globalThis.crypto?.randomUUID?.() ?? '00000000-0000-4000-8000-000000000000',
+    filtersSnapshot: {
+      ...snapshot,
+      status: snapshot.status.length ? snapshot.status : ['spotted'],
+      search: snapshot.search ?? '',
+    },
+  }
+
+  bulkActionLoading.value = true
+  bulkActionError.value = null
+  try {
+    const service = bulkActionType.value === 'promote' ? bulkPromote : bulkArchive
+    const response = await service(payload)
+    bulkSelectionStore.applyActionResponse(response)
+    await listStore.refresh()
+
+    const summary = response.summary
+    const actionVerb = bulkActionType.value === 'promote' ? 'Promoted' : 'Archived'
+    notificationsStore.notifySuccess(
+      `${actionVerb} ${summary.success} item${summary.success === 1 ? '' : 's'} successfully.`,
+    )
+    if (summary.conflict > 0) {
+      notificationsStore.enqueue({
+        message: `${summary.conflict} item${summary.conflict === 1 ? '' : 's'} reported conflicts.`,
+        kind: 'warning',
+      })
+    }
+    if (summary.failed > 0) {
+      notificationsStore.notifyError(
+        `${summary.failed} item${summary.failed === 1 ? '' : 's'} failed to ${
+          bulkActionType.value === 'promote' ? 'promote' : 'archive'
+        }.`,
+      )
+    }
+
+    closeBulkActionDialog()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    bulkActionError.value = message
+  } finally {
+    bulkActionLoading.value = false
+  }
+}
 
 
 const resultSummary = computed(() => {
@@ -411,6 +564,18 @@ function refreshResults() {
   void listStore.refresh()
 }
 
+function toggleBulkSelection(itemId: string) {
+  bulkSelectionStore.toggleItem(itemId)
+}
+
+function isBulkSelected(itemId: string) {
+  return bulkSelectionStore.isSelected(itemId)
+}
+
+function clearBulkSelection() {
+  bulkSelectionStore.clearSelection()
+}
+
 function onSearchInputChanged() {
   if (!isReadyForQueries.value || !hasBootstrappedOnce) {
     return
@@ -436,6 +601,36 @@ watch(
   () => {
     onSearchInputChanged()
   },
+)
+
+watch(
+  featureFlagEnabled,
+  (enabled) => {
+    bulkSelectionStore.setFeatureEnabled(enabled)
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [
+    filters.status.join(','),
+    filters.sourceIds.join(','),
+    filters.topicIds.join(','),
+    filters.dateFrom ?? '',
+    filters.dateTo ?? '',
+    pagination.pageSize,
+  ],
+  () => {
+    bulkSelectionStore.captureFiltersSnapshot(buildBulkFiltersSnapshot())
+  },
+)
+
+watch(
+  items,
+  (current) => {
+    bulkSelectionStore.registerVisibleItems(current.map((item) => item.id))
+  },
+  { immediate: true },
 )
 
 watch(
@@ -521,6 +716,8 @@ watch(clientId, (id) => {
       window.localStorage.removeItem(DASHBOARD_CLIENT_STORAGE_KEY)
     }
   }
+
+  bulkSelectionStore.setClientId(id ?? null)
 
   if (!id) {
     detachSse()
@@ -889,6 +1086,95 @@ function clearPromotionError() {
 
             <div class="text-body-2 mb-4">{{ resultSummary }}</div>
 
+            <v-slide-y-transition>
+              <v-sheet
+                v-if="hasSelection"
+                class="bulk-selection-tray pa-4 mb-4"
+                color="primary"
+                variant="tonal"
+              >
+                <div class="d-flex flex-column flex-md-row justify-space-between gap-4 align-start">
+                  <div class="flex-grow-1">
+                    <div class="text-subtitle-2">
+                      {{ selectionCount }} item{{ selectionCount === 1 ? '' : 's' }} selected
+                    </div>
+                    <div class="text-caption text-medium-emphasis">
+                      <span v-if="hasHiddenSelections">
+                        {{ hiddenSelectionCount }} item{{ hiddenSelectionCount === 1 ? '' : 's' }} outside the current filter view.
+                      </span>
+                      <span v-else>
+                        {{ visibleSelectionCount }} visible in this result set.
+                      </span>
+                    </div>
+                    <div v-if="limitWarning" class="text-caption text-error mt-2">
+                      {{ limitWarning }}
+                    </div>
+                    <div
+                      v-if="lastActionResponse"
+                      class="text-caption text-medium-emphasis mt-2"
+                    >
+                      Last bulk action took {{ lastActionResponse.summary.durationMs }} ms
+                      ({{ lastActionResponse.summary.success }} success,
+                      {{ lastActionResponse.summary.conflict }} conflict,
+                      {{ lastActionResponse.summary.failed }} failed).
+                    </div>
+                    <div v-if="bulkConflictResults.length" class="d-flex flex-wrap gap-2 mt-3">
+                      <v-chip
+                        v-for="conflict in bulkConflictResults"
+                        :key="`conflict-${conflict.itemId}`"
+                        size="small"
+                        color="warning"
+                        variant="tonal"
+                      >
+                        Conflict {{ conflict.itemId.slice(0, 8) }}
+                        <span v-if="conflict.message"> — {{ conflict.message }}</span>
+                      </v-chip>
+                    </div>
+                    <div v-if="bulkFailureResults.length" class="d-flex flex-wrap gap-2 mt-3">
+                      <v-chip
+                        v-for="failure in bulkFailureResults"
+                        :key="`failure-${failure.itemId}`"
+                        size="small"
+                        color="error"
+                        variant="tonal"
+                      >
+                        Failed {{ failure.itemId.slice(0, 8) }}
+                        <span v-if="failure.message"> — {{ failure.message }}</span>
+                      </v-chip>
+                    </div>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2 align-center">
+                    <v-btn
+                      color="primary"
+                      variant="flat"
+                      class="text-none"
+                      :disabled="bulkActionLoading"
+                      @click="openBulkActionDialog('promote')"
+                    >
+                      Promote selected
+                    </v-btn>
+                    <v-btn
+                      color="warning"
+                      variant="flat"
+                      class="text-none"
+                      :disabled="bulkActionLoading"
+                      @click="openBulkActionDialog('archive')"
+                    >
+                      Archive selected
+                    </v-btn>
+                    <v-btn
+                      variant="text"
+                      class="text-none"
+                      :disabled="bulkActionLoading"
+                      @click="clearBulkSelection"
+                    >
+                      Clear selection
+                    </v-btn>
+                  </div>
+                </div>
+              </v-sheet>
+            </v-slide-y-transition>
+
             <div v-if="loading" class="my-4">
               <v-skeleton-loader type="list-item-three-line@3" />
             </div>
@@ -925,82 +1211,97 @@ function clearPromotionError() {
                   v-for="item in items"
                   :key="item.id"
                   class="discovery-item"
-                  :class="{ 'discovery-item--selected': selectedItemId === item.id }"
+                  :class="{
+                    'discovery-item--selected': selectedItemId === item.id,
+                    'discovery-item--bulk-selected': isBulkSelected(item.id),
+                  }"
                 >
-                  <div class="d-flex justify-space-between align-start flex-wrap gap-3 mb-2">
-                    <div>
-                      <a :href="item.url" target="_blank" rel="noopener" class="discovery-item__title">
-                        {{ item.title }}
-                      </a>
-                      <div class="text-caption text-medium-emphasis">
-                        Ingested {{ formatTimestamp(item.ingestedAt) }}
+                  <div class="discovery-item__selection">
+                    <v-checkbox
+                      :model-value="isBulkSelected(item.id)"
+                      density="comfortable"
+                      hide-details
+                      color="primary"
+                      @update:model-value="() => toggleBulkSelection(item.id)"
+                      @click.stop
+                    />
+                  </div>
+                  <div class="discovery-item__content">
+                    <div class="d-flex justify-space-between align-start flex-wrap gap-3 mb-2">
+                      <div>
+                        <a :href="item.url" target="_blank" rel="noopener" class="discovery-item__title">
+                          {{ item.title }}
+                        </a>
+                        <div class="text-caption text-medium-emphasis">
+                          Ingested {{ formatTimestamp(item.ingestedAt) }}
+                        </div>
+                      </div>
+                      <div class="d-flex align-center gap-2 flex-wrap justify-end">
+                        <v-chip
+                          v-if="item.score !== null"
+                          size="small"
+                          color="primary"
+                          variant="tonal"
+                        >
+                          {{ computeScoreLabel(item.score) }}
+                        </v-chip>
+                        <v-chip size="small" variant="outlined">
+                          {{ formatStatus(item.status) }}
+                        </v-chip>
+                        <v-btn
+                          variant="text"
+                          size="small"
+                          class="text-none"
+                          color="primary"
+                          @click="openDetail(item.id)"
+                        >
+                          View detail
+                        </v-btn>
+                        <v-btn
+                          v-if="item.briefRef"
+                          variant="text"
+                          size="small"
+                          class="text-none"
+                          color="primary"
+                          @click="openBriefFromList(item.briefRef.editUrl)"
+                        >
+                          Edit brief
+                        </v-btn>
                       </div>
                     </div>
-                    <div class="d-flex align-center gap-2 flex-wrap justify-end">
+
+                    <div class="text-body-2 text-medium-emphasis mb-3">
+                      {{ item.summary || 'No summary available for this item.' }}
+                    </div>
+
+                    <div v-if="item.topics.length" class="d-flex flex-wrap gap-2 mb-3">
                       <v-chip
-                        v-if="item.score !== null"
-                        size="small"
-                        color="primary"
+                        v-for="topic in item.topics"
+                        :key="`${item.id}-topic-${topic}`"
+                        size="x-small"
+                        color="secondary"
                         variant="tonal"
                       >
-                        {{ computeScoreLabel(item.score) }}
+                        {{ topic }}
                       </v-chip>
-                      <v-chip size="small" variant="outlined">
-                        {{ formatStatus(item.status) }}
-                      </v-chip>
-                      <v-btn
-                        variant="text"
-                        size="small"
-                        class="text-none"
-                        color="primary"
-                        @click="openDetail(item.id)"
-                      >
-                        View detail
-                      </v-btn>
-                      <v-btn
-                        v-if="item.briefRef"
-                        variant="text"
-                        size="small"
-                        class="text-none"
-                        color="primary"
-                        @click="openBriefFromList(item.briefRef.editUrl)"
-                      >
-                        Edit brief
-                      </v-btn>
                     </div>
-                  </div>
 
-                  <div class="text-body-2 text-medium-emphasis mb-3">
-                    {{ item.summary || 'No summary available for this item.' }}
-                  </div>
-
-                  <div v-if="item.topics.length" class="d-flex flex-wrap gap-2 mb-3">
-                    <v-chip
-                      v-for="topic in item.topics"
-                      :key="`${item.id}-topic-${topic}`"
-                      size="x-small"
-                      color="secondary"
-                      variant="tonal"
+                    <div
+                      v-for="(highlight, highlightIndex) in item.highlights"
+                      :key="`${item.id}-manual-highlight-${highlightIndex}`"
+                      class="discovery-item__highlight"
                     >
-                      {{ topic }}
-                    </v-chip>
-                  </div>
-
-                  <div
-                    v-for="(highlight, highlightIndex) in item.highlights"
-                    :key="`${item.id}-manual-highlight-${highlightIndex}`"
-                    class="discovery-item__highlight"
-                  >
-                    <span class="discovery-item__highlight-label">{{ highlightFieldLabel(highlight.field) }}</span>
-                    <span class="discovery-item__highlight-snippet">
-                      <template
-                        v-for="(segment, segmentIndex) in buildHighlightSegments(highlight.snippets[0] ?? '')"
-                        :key="`${item.id}-manual-segment-${highlightIndex}-${segmentIndex}`"
-                      >
-                        <mark v-if="segment.highlighted">{{ segment.text }}</mark>
-                        <span v-else>{{ segment.text }}</span>
-                      </template>
-                    </span>
+                      <span class="discovery-item__highlight-label">{{ highlightFieldLabel(highlight.field) }}</span>
+                      <span class="discovery-item__highlight-snippet">
+                        <template
+                          v-for="(segment, segmentIndex) in buildHighlightSegments(highlight.snippets[0] ?? '')"
+                          :key="`${item.id}-manual-segment-${highlightIndex}-${segmentIndex}`"
+                        >
+                          <mark v-if="segment.highlighted">{{ segment.text }}</mark>
+                          <span v-else>{{ segment.text }}</span>
+                        </template>
+                      </span>
+                    </div>
                   </div>
 
                 </div>
@@ -1018,6 +1319,63 @@ function clearPromotionError() {
       </v-col>
     </v-row>
   </v-container>
+  <v-dialog v-model="bulkActionDialogOpen" max-width="520">
+    <v-card>
+      <v-toolbar color="primary" density="compact" flat>
+        <v-toolbar-title class="text-white">{{ bulkActionTitle }}</v-toolbar-title>
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" class="text-white" @click="closeBulkActionDialog" />
+      </v-toolbar>
+      <v-card-text>
+        <p class="mb-3">
+          You are about to
+          <strong>{{ bulkActionType === 'promote' ? 'promote' : 'archive' }}</strong>
+          {{ selectionCount }} discovery item{{ selectionCount === 1 ? '' : 's' }}. This action will be applied to all selected items.
+        </p>
+        <v-alert type="warning" variant="tonal" class="mb-4">
+          Are you sure? This action cannot be undone.
+        </v-alert>
+        <v-textarea
+          v-model="bulkActionNote"
+          label="Reviewer note"
+          auto-grow
+          rows="3"
+          counter="2000"
+          :error="bulkActionNote.length > 0 && !isBulkNoteValid"
+          :error-messages="isBulkNoteValid ? [] : ['Note must be at least 5 characters.']"
+        />
+        <v-checkbox
+          v-model="bulkIrreversibleConfirmed"
+          label="I understand this action cannot be undone."
+          hide-details
+          class="mt-2"
+        />
+        <v-alert
+          v-if="bulkActionError"
+          type="error"
+          variant="tonal"
+          density="comfortable"
+          class="mt-3"
+        >
+          {{ bulkActionError }}
+        </v-alert>
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" class="text-none" @click="closeBulkActionDialog">Cancel</v-btn>
+        <v-btn
+          color="primary"
+          variant="flat"
+          class="text-none"
+          :disabled="!bulkIrreversibleConfirmed || !isBulkNoteValid || bulkActionLoading"
+          :loading="bulkActionLoading"
+          @click="submitBulkAction"
+        >
+          {{ bulkActionPrimaryLabel }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
   <DiscoveryItemDetailDrawer
     v-model="detailDrawerOpen"
     :loading="detailLoading"
@@ -1044,10 +1402,28 @@ function clearPromotionError() {
 
 .discovery-item {
   padding: 16px 0;
+  display: flex;
+  gap: 16px;
 }
 
-.discovery-item--selected {
+.discovery-item__selection {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+}
+
+.discovery-item__content {
+  flex: 1 1 auto;
+  padding: 0 0 12px;
+  border-radius: 12px;
+}
+
+.discovery-item--selected .discovery-item__content,
+.discovery-item--bulk-selected .discovery-item__content {
   background-color: rgba(var(--v-theme-primary), 0.06);
+}
+
+.bulk-selection-tray {
   border-radius: 12px;
 }
 

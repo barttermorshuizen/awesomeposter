@@ -4,6 +4,7 @@ import {
   discoveryBriefReferenceSchema,
   discoveryItemHistoryEntrySchema,
 } from './discovery/item.js'
+import { discoveryBulkFiltersSnapshotSchema } from './discovery/bulk.js'
 
 export const discoverySourceSchema = z.object({
   id: z.string().uuid(),
@@ -319,6 +320,26 @@ export const discoveryBriefPromotedEventSchema = z.object({
 
 export type DiscoveryBriefPromotedEvent = z.infer<typeof discoveryBriefPromotedEventSchema>
 
+export const discoveryBulkActionCompletedEventSchema = z.object({
+  type: z.literal('discovery.bulk.action.completed'),
+  version: z.number().int().min(1),
+  payload: z.object({
+    actionId: z.string().uuid(),
+    action: z.enum(['promote', 'archive']),
+    clientId: z.string().uuid(),
+    actorId: z.string().uuid(),
+    itemCount: z.number().int().min(0),
+    successCount: z.number().int().min(0),
+    conflictCount: z.number().int().min(0),
+    failedCount: z.number().int().min(0),
+    durationMs: z.number().int().min(0),
+    filtersSnapshot: discoveryBulkFiltersSnapshotSchema.optional(),
+    recordedAt: z.string(),
+  }),
+})
+
+export type DiscoveryBulkActionCompletedEvent = z.infer<typeof discoveryBulkActionCompletedEventSchema>
+
 export const discoveryEventEnvelopeSchema = z.union([
   discoverySourceCreatedEventSchema,
   discoverySourceUpdatedEventSchema,
@@ -333,6 +354,7 @@ export const discoveryEventEnvelopeSchema = z.union([
   discoverySearchRequestedEventSchema,
   discoverySearchCompletedEventSchema,
   discoveryBriefPromotedEventSchema,
+  discoveryBulkActionCompletedEventSchema,
 ])
 
 export type DiscoveryEventEnvelope = z.infer<typeof discoveryEventEnvelopeSchema>

@@ -225,6 +225,13 @@ export class DiscoveryItemAlreadyPromotedError extends Error {
   }
 }
 
+export class DiscoveryItemAlreadyArchivedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DiscoveryItemAlreadyArchivedError'
+  }
+}
+
 const deleteInputSchema = z.object({
   clientId: z.string().uuid(),
   sourceId: z.string().uuid(),
@@ -1114,6 +1121,59 @@ export async function promoteDiscoveryItem(options: PromoteDiscoveryItemOptions)
   })
 
   return detail
+}
+
+
+export type ArchiveDiscoveryItemOptions = {
+  itemId: string
+  note: string
+  actorId: string
+  actorName: string
+}
+
+export async function archiveDiscoveryItem(options: ArchiveDiscoveryItemOptions): Promise<void> {
+  const actorName = options.actorName.trim() || 'Unknown reviewer'
+  const actorId = ensureUuid(options.actorId)
+  const note = (options.note ?? '').trim()
+  const db = getDb()
+  const occurredAt = new Date()
+
+  await db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({
+        id: discoveryItems.id,
+        status: discoveryItems.status,
+      })
+      .from(discoveryItems)
+      .where(eq(discoveryItems.id, options.itemId))
+      .limit(1)
+
+    if (!item) {
+      throw new DiscoveryItemNotFoundError(`Discovery item ${options.itemId} was not found.`)
+    }
+
+    if (item.status === 'archived') {
+      throw new DiscoveryItemAlreadyArchivedError(`Discovery item ${options.itemId} has already been archived.`)
+    }
+
+    await tx
+      .update(discoveryItems)
+      .set({ status: 'archived', briefId: null })
+      .where(eq(discoveryItems.id, options.itemId))
+
+    await insertDiscoveryItemHistory(
+      {
+        itemId: options.itemId,
+        previousStatus: item.status,
+        nextStatus: 'archived',
+        note,
+        actorId,
+        actorName,
+        createdAt: occurredAt,
+      },
+      { tx },
+    )
+  })
 }
 
 export const __discoverySearchInternals = {
