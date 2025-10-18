@@ -41,16 +41,20 @@
 ### Objectives
 - Complete ingestion scheduling/normalization (3.1, 3.2) and expose client health status (2.3).
 - Deliver initial relevance modelling (4.1) while deferring duplicate suppression and threshold tuning (4.2, 4.3) to Sprint 3.
-- Deliver dashboard listing and promote/bulk actions UX (5.1–5.3) with end-to-end coverage.
+- Deliver dashboard listing plus promote/archive bulk actions UX (5.1–5.3) with end-to-end coverage (bulk delete now tracked separately as Story 5.6 for later sprint).
 - Land telemetry counts/retention improvements (6.2, 6.3) and harden pilot enablement collateral.
 
 ### Sequencing & Owners
 1. Platform kicks off 3.1 ingestion scheduling, handing schema outputs to backend for 3.2 normalization completion.
 2. Backend owner delivers Story 5.5 (`GET /api/discovery/search`, highlighting, load/perf script) before UI work begins.
 3. Frontend platform engineer lands Story 5.0 (dashboard foundation, route, Pinia shell, virtualization dep) immediately after the API is feature flagged for QA.
-4. Front-end leads revised Story 5.1 once 5.0/5.5 land, then layers 5.2 detail/promote and 5.3 bulk actions with backend support.
+4. Front-end leads revised Story 5.1 once 5.0/5.5 land, then layers 5.2 detail/promote and 5.3 bulk promote/archive with backend support.
 5. Telemetry squad (platform + front-end) implements 6.2 counts UI before backend finalises 6.3 retention/backfill scripts.
 6. PM wraps pilot training/runbook updates leveraging new telemetry outputs and scoring metrics.
+
+### Story Estimates
+- Story 5.3 (Bulk Promote & Archive): Large — 8 SP (frontend + backend pairing on batch endpoints, optimistic/conflict handling, telemetry/audit work).
+- Story 5.6 (Bulk Delete & Removal Safeguards): Medium — 5 SP (scheduled for Sprint 3 once 5.3 stabilises).
 
 ### Capacity & Assumptions
 - Same ~4.5 engineer-weeks (backend, frontend, platform at ~1.5 each) plus 1.0 data-science week dedicated to scoring work and 0.5 PM week for enablement collateral.
@@ -72,7 +76,7 @@
 - Pilot feedback loop must stay active; maintain weekly sync to triage discoveries and adjust backlog.
 
 ## Sprint 3 Outlook
-- Focus on resilience/observability to prep GA: restart/recovery controls (1.4), brief-action HITL refinements (1.5), telemetry throttling (6.4), dashboard audit log (5.4), ingestion retry health (3.3), scoring duplicate suppression/threshold tuning (4.2, 4.3), scoring traction signal (4.4).
+- Focus on resilience/observability to prep GA: restart/recovery controls (1.4), brief-action HITL refinements (1.5), telemetry throttling (6.4), dashboard audit log (5.4), bulk delete safeguards (5.6), ingestion retry health (3.3), scoring duplicate suppression/threshold tuning (4.2, 4.3), scoring traction signal (4.4).
 - Schedule the configuration discovery tranche (Stories 3.4–3.6) here; Sprint 2 bandwidth is fully consumed by ingestion, scoring, telemetry, and dashboard commitments, and Story 3.4 depends on Sprint 2 normalization outputs.
 - Sequence resilience first (1.4/1.5) before telemetry throttling and audit log, then close with traction signal experiments and ingestion retry improvements.
 - Dependencies: Sprint 2 scoring outputs feed 4.2–4.4; telemetry retention learnings set throttling limits; dashboard bulk/promote stability required before audit log; client weighting research must land before 4.3.
