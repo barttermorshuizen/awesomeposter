@@ -391,6 +391,42 @@ export const flexPlanNodes = pgTable(
   })
 )
 
+export const flexPlanSnapshots = pgTable(
+  'flex_plan_snapshots',
+  {
+    runId: text('run_id')
+      .notNull()
+      .references(() => flexRuns.runId, { onDelete: 'cascade' }),
+    planVersion: integer('plan_version').notNull(),
+    snapshotJson: jsonb('snapshot_json').$type<Record<string, unknown>>().notNull(),
+    facetSnapshotJson: jsonb('facet_snapshot_json').$type<Record<string, unknown> | null>().default(null),
+    schemaHash: text('schema_hash'),
+    pendingNodeIds: text('pending_node_ids').array().$type<string[]>().notNull().default(sql`ARRAY[]::text[]`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.runId, table.planVersion] })
+  })
+)
+
+export const flexRunOutputs = pgTable('flex_run_outputs', {
+  runId: text('run_id')
+    .primaryKey()
+    .references(() => flexRuns.runId, { onDelete: 'cascade' }),
+  planVersion: integer('plan_version').notNull(),
+  schemaHash: text('schema_hash'),
+  status: text('status')
+    .$type<'pending' | 'awaiting_hitl' | 'completed' | 'failed'>()
+    .notNull()
+    .default('pending'),
+  outputJson: jsonb('output_json').$type<Record<string, unknown>>().notNull(),
+  facetSnapshotJson: jsonb('facet_snapshot_json').$type<Record<string, unknown> | null>().default(null),
+  provenanceJson: jsonb('provenance_json').$type<Record<string, unknown> | null>().default(null),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
+})
+
 export const hitlRequests = pgTable('hitl_requests', {
   id: text('id').primaryKey(),
   runId: text('run_id').references(() => orchestratorRuns.runId, { onDelete: 'cascade' }),

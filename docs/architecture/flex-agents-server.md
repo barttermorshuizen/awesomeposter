@@ -317,16 +317,17 @@ sequenceDiagram
 7. Once all terminal nodes succeed, the engine composes the final response by combining the validated or normalized artifacts that fulfill the envelope schema and ends the SSE stream.
 
 ## 8. HITL and Rehydration Strategy
-- Maintain existing HITL tables (`hitl_requests`, `hitl_events`) while adding `flex_plan_snapshot` to capture outstanding nodes and context checksums.
-- When a HITL request fires, the engine serializes the pending node, the contract for the expected artifact, and a recommended operator prompt so the UI can render precise actions.
-- Rehydration reconstructs the `PlanGraph` from `flex_plan_snapshot` plus persisted outputs; policy refresh runs before execution resumes so newly introduced runtime rules take effect mid-flight.
+- Maintain existing HITL tables (`hitl_requests`, `hitl_events`) while persisting plan checkpoints to `flex_plan_snapshots` so every pause captures outstanding nodes, facet snapshots, and pending node IDs.
+- When a HITL request fires, the execution engine writes a transactional snapshot pairing the paused node’s bundle, compiled input/output schemas, and provenance metadata with the current facet state so operators have full context.
+- Rehydration reconstructs the `PlanGraph` from the latest `flex_plan_snapshots` row plus persisted outputs. Pending node IDs and stored facet provenance restore execution deterministically before policy refresh and resume.
 
 ## 9. Data Model & Persistence
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`).
 - `flex_plan_nodes`: stores node-level state, selected capability IDs, context hashes, and validation status for auditing and resumption.
+- `flex_plan_snapshots`: versioned checkpoints serializing plan graphs (node facets, compiled contracts, provenance, pending node IDs) and the facet snapshot used for resume/HITL flows.
+- `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, completion status, and timestamps so downstream systems can audit or resume runs.
 - `flex_capabilities`: stores registered agent metadata, heartbeat timestamps, availability state, and facet coverage hints.
 - Reuse `agent_messages` and `hitl_requests` tables, adding `flex_run_id` foreign keys for joint reporting.
-- Persist final outputs in `flex_run_outputs` with the validated JSON blob plus a copy of the client schema for downstream verification.
 
 ## 9.1 Capability Registration Flow
 1. Agent instance boots and gathers its metadata (capability ID, name, summary, supported locales/tones/formats, preferred models, facet coverage arrays, cost tier, health status).

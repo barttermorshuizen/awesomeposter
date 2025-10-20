@@ -1,9 +1,16 @@
-import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, eq, and, isNotNull } from '@awesomeposter/db'
-import { sql, notInArray } from 'drizzle-orm'
+import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, flexPlanSnapshots, flexRunOutputs, eq, and, isNotNull } from '@awesomeposter/db'
+import { sql, notInArray, desc } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
 import type { TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
 import { setOrchestratorPersistence as setLegacyOrchestratorPersistence } from '../../../agents-server/src/services/orchestrator-persistence.js'
 import type { FacetSnapshot } from './run-context'
+import type {
+  FlexPlanNodeContracts,
+  FlexPlanNodeFacets,
+  FlexPlanNodeProvenance,
+  FlexPlan,
+  FlexPlanEdge
+} from './flex-planner'
 
 export type OrchestratorRunStatus =
   | 'pending'
@@ -313,6 +320,11 @@ export type FlexPlanNodeSnapshot = {
   error?: Record<string, unknown> | null
   startedAt?: Date | null
   completedAt?: Date | null
+  facets?: FlexPlanNodeFacets | null
+  contracts?: FlexPlanNodeContracts | null
+  provenance?: FlexPlanNodeProvenance | null
+  metadata?: Record<string, unknown> | null
+  rationale?: string[] | null
 }
 
 export type FlexRunRecord = {
@@ -326,6 +338,58 @@ export type FlexRunRecord = {
   result?: Record<string, unknown> | null
   planVersion?: number
   contextSnapshot?: FacetSnapshot | null
+}
+
+type PlanSnapshotState = {
+  completedNodeIds: string[]
+  nodeOutputs: Record<string, Record<string, unknown>>
+}
+
+type SavePlanSnapshotOptions = {
+  facets?: FacetSnapshot
+  schemaHash?: string | null
+  edges?: FlexPlanEdge[]
+  planMetadata?: Record<string, unknown>
+  pendingState?: PlanSnapshotState
+  tx?: any
+}
+
+type RecordResultOptions = {
+  planVersion?: number
+  status?: FlexRunStatus
+  schemaHash?: string | null
+  facets?: FacetSnapshot | null
+  provenance?: Record<string, unknown> | null
+  snapshot?: {
+    nodes: FlexPlanNodeSnapshot[]
+    planVersion: number
+    edges?: FlexPlanEdge[]
+    planMetadata?: Record<string, unknown>
+    pendingState?: PlanSnapshotState
+  }
+}
+
+export type FlexRunOutputRow = {
+  runId: string
+  planVersion: number
+  schemaHash: string | null
+  status: FlexRunStatus
+  output: Record<string, unknown>
+  facets: FacetSnapshot | null
+  provenance: Record<string, unknown> | null
+  recordedAt: Date | null
+  updatedAt: Date | null
+}
+
+export type FlexPlanSnapshotRow = {
+  runId: string
+  planVersion: number
+  snapshot: Record<string, unknown>
+  facets: FacetSnapshot | null
+  schemaHash: string | null
+  pendingNodeIds: string[]
+  createdAt: Date | null
+  updatedAt: Date | null
 }
 
 export class FlexRunPersistence {
@@ -404,69 +468,132 @@ export class FlexRunPersistence {
     runId: string,
     planVersion: number,
     nodes: FlexPlanNodeSnapshot[],
-    options: { facets?: FacetSnapshot } = {}
+    options: SavePlanSnapshotOptions = {}
   ) {
     const now = new Date()
-    await this.db
-      .update(flexRuns)
-      .set({ planVersion, updatedAt: now })
-      .where(eq(flexRuns.runId, runId))
+    const execute = async (executor: any) => {
+      await executor
+        .update(flexRuns)
+        .set({ planVersion, updatedAt: now })
+        .where(eq(flexRuns.runId, runId))
 
-    if (!nodes.length) {
-      await this.db.delete(flexPlanNodes).where(eq(flexPlanNodes.runId, runId))
-      if (options.facets) {
-        await this.saveRunContext(runId, options.facets)
-      }
-      return
-    }
-    const rows = nodes.map((node) => ({
-      runId,
-      nodeId: node.nodeId,
-      capabilityId: node.capabilityId ?? null,
-      label: node.label ?? null,
-      status: node.status,
-      contextJson: node.context ? clone(node.context) : {},
-      outputJson: node.output ? clone(node.output) : null,
-      errorJson: node.error ? clone(node.error) : null,
-      startedAt: node.startedAt ?? null,
-      completedAt: node.completedAt ?? null,
-      createdAt: now,
-      updatedAt: now
-    }))
+      if (!nodes.length) {
+        await executor.delete(flexPlanNodes).where(eq(flexPlanNodes.runId, runId))
+      } else {
+        const rows = nodes.map((node) => ({
+          runId,
+          nodeId: node.nodeId,
+          capabilityId: node.capabilityId ?? null,
+          label: node.label ?? null,
+          status: node.status,
+          contextJson: node.context ? clone(node.context) : {},
+          outputJson: node.output ? clone(node.output) : null,
+          errorJson: node.error ? clone(node.error) : null,
+          startedAt: node.startedAt ?? null,
+          completedAt: node.completedAt ?? null,
+          createdAt: now,
+          updatedAt: now
+        }))
 
-    await this.db
-      .insert(flexPlanNodes)
-      .values(rows)
-      .onConflictDoUpdate({
-        target: [flexPlanNodes.runId, flexPlanNodes.nodeId],
-        set: {
-          capabilityId: sql`excluded.capability_id`,
-          label: sql`excluded.label`,
-          status: sql`excluded.status`,
-          contextJson: sql`excluded.context_json`,
-          outputJson: sql`excluded.output_json`,
-          errorJson: sql`excluded.error_json`,
-          startedAt: sql`excluded.started_at`,
-          completedAt: sql`excluded.completed_at`,
-          updatedAt: sql`excluded.updated_at`
+        await executor
+          .insert(flexPlanNodes)
+          .values(rows)
+          .onConflictDoUpdate({
+            target: [flexPlanNodes.runId, flexPlanNodes.nodeId],
+            set: {
+              capabilityId: sql`excluded.capability_id`,
+              label: sql`excluded.label`,
+              status: sql`excluded.status`,
+              contextJson: sql`excluded.context_json`,
+              outputJson: sql`excluded.output_json`,
+              errorJson: sql`excluded.error_json`,
+              startedAt: sql`excluded.started_at`,
+              completedAt: sql`excluded.completed_at`,
+              updatedAt: sql`excluded.updated_at`
+            }
+          })
+
+        const nodeIds = nodes.map((node) => node.nodeId)
+        if (nodeIds.length) {
+          await executor
+            .delete(flexPlanNodes)
+            .where(and(eq(flexPlanNodes.runId, runId), notInArray(flexPlanNodes.nodeId, nodeIds)))
         }
-      })
+      }
 
-    const nodeIds = nodes.map((node) => node.nodeId)
-    if (nodeIds.length) {
-      await this.db
-        .delete(flexPlanNodes)
-        .where(and(eq(flexPlanNodes.runId, runId), notInArray(flexPlanNodes.nodeId, nodeIds)))
+      if (options.facets) {
+        await this.saveRunContext(runId, options.facets, { tx: executor })
+      }
+
+      const pendingNodeIds = nodes
+        .filter((node) => node.status !== 'completed')
+        .map((node) => node.nodeId)
+
+      const snapshotPayload = {
+        version: planVersion,
+        nodes: nodes.map((node) => ({
+          nodeId: node.nodeId,
+          capabilityId: node.capabilityId ?? null,
+          label: node.label ?? null,
+          status: node.status,
+          context: node.context ? clone(node.context) : null,
+          output: node.output ? clone(node.output) : null,
+          error: node.error ? clone(node.error) : null,
+          facets: node.facets ? clone(node.facets) : null,
+          contracts: node.contracts ? clone(node.contracts) : null,
+          provenance: node.provenance ? clone(node.provenance) : null,
+          metadata: node.metadata ? clone(node.metadata) : null,
+          rationale: node.rationale ? clone(node.rationale) : null,
+          startedAt: node.startedAt ? node.startedAt.toISOString() : null,
+          completedAt: node.completedAt ? node.completedAt.toISOString() : null
+        })),
+        edges: options.edges ? clone(options.edges) : [],
+        metadata: options.planMetadata ? clone(options.planMetadata) : {},
+        pendingState: options.pendingState
+          ? {
+              completedNodeIds: clone(options.pendingState.completedNodeIds),
+              nodeOutputs: clone(options.pendingState.nodeOutputs)
+            }
+          : undefined
+      }
+
+      await executor
+        .insert(flexPlanSnapshots)
+        .values({
+          runId,
+          planVersion,
+          snapshotJson: clone(snapshotPayload),
+          facetSnapshotJson: options.facets ? clone(options.facets) : null,
+          schemaHash: options.schemaHash ?? null,
+          pendingNodeIds: pendingNodeIds.length ? pendingNodeIds : [],
+          createdAt: now,
+          updatedAt: now
+        })
+        .onConflictDoUpdate({
+          target: [flexPlanSnapshots.runId, flexPlanSnapshots.planVersion],
+          set: {
+            snapshotJson: sql`excluded.snapshot_json`,
+            facetSnapshotJson: sql`excluded.facet_snapshot_json`,
+            schemaHash: sql`excluded.schema_hash`,
+            pendingNodeIds: sql`excluded.pending_node_ids`,
+            updatedAt: now
+          }
+        })
     }
 
-    if (options.facets) {
-      await this.saveRunContext(runId, options.facets)
+    if (options.tx) {
+      await execute(options.tx)
+    } else {
+      await this.db.transaction(async (tx) => {
+        await execute(tx)
+      })
     }
   }
 
-  async saveRunContext(runId: string, snapshot: FacetSnapshot) {
+  async saveRunContext(runId: string, snapshot: FacetSnapshot, options: { tx?: any } = {}) {
     const now = new Date()
-    await this.db
+    const executor = options.tx ?? this.db
+    await executor
       .update(flexRuns)
       .set({ contextSnapshotJson: clone(snapshot), updatedAt: now })
       .where(eq(flexRuns.runId, runId))
@@ -518,19 +645,110 @@ export class FlexRunPersistence {
       .where(eq(flexRuns.runId, runId))
   }
 
-  async recordResult(runId: string, result: Record<string, unknown>) {
+  async recordResult(runId: string, result: Record<string, unknown>, options: RecordResultOptions = {}) {
     const now = new Date()
-    await this.db
-      .update(flexRuns)
-      .set({ resultJson: clone(result), status: 'completed', updatedAt: now })
-      .where(eq(flexRuns.runId, runId))
+    const status: FlexRunStatus = options.status ?? 'completed'
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(flexRuns)
+        .set({ resultJson: clone(result), status, updatedAt: now })
+        .where(eq(flexRuns.runId, runId))
+
+      await tx
+        .insert(flexRunOutputs)
+        .values({
+          runId,
+          planVersion: options.planVersion ?? options.snapshot?.planVersion ?? 0,
+          schemaHash: options.schemaHash ?? null,
+          status,
+          outputJson: clone(result),
+          facetSnapshotJson: options.facets ? clone(options.facets) : null,
+          provenanceJson: options.provenance ? clone(options.provenance) : null,
+          recordedAt: now,
+          updatedAt: now
+        })
+        .onConflictDoUpdate({
+          target: flexRunOutputs.runId,
+          set: {
+            planVersion: sql`excluded.plan_version`,
+            schemaHash: sql`excluded.schema_hash`,
+            status: sql`excluded.status`,
+            outputJson: sql`excluded.output_json`,
+            facetSnapshotJson: sql`excluded.facet_snapshot_json`,
+            provenanceJson: sql`excluded.provenance_json`,
+            updatedAt: now
+          }
+        })
+
+      if (options.snapshot) {
+        await this.savePlanSnapshot(runId, options.snapshot.planVersion, options.snapshot.nodes, {
+          facets: options.facets ?? undefined,
+          schemaHash: options.schemaHash ?? null,
+          edges: options.snapshot.edges,
+          planMetadata: options.snapshot.planMetadata,
+          pendingState: options.snapshot.pendingState,
+          tx
+        })
+      }
+    })
+
     await this.orchestrator.save(runId, {
-      status: 'completed',
+      status,
       runnerMetadata: {
         ...(result ? { resultKeys: Object.keys(result) } : {}),
         orchestrator: 'flex'
       }
     })
+  }
+
+  async loadRunOutput(runId: string): Promise<FlexRunOutputRow | null> {
+    const [row] = await this.db
+      .select()
+      .from(flexRunOutputs)
+      .where(eq(flexRunOutputs.runId, runId))
+      .limit(1)
+    if (!row) return null
+    return {
+      runId: row.runId,
+      planVersion: row.planVersion ?? 0,
+      schemaHash: row.schemaHash ?? null,
+      status: (row.status as FlexRunStatus) ?? 'pending',
+      output: (row.outputJson as Record<string, unknown>) ?? {},
+      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      provenance: (row.provenanceJson as Record<string, unknown> | null) ?? null,
+      recordedAt: row.recordedAt ?? null,
+      updatedAt: row.updatedAt ?? null
+    }
+  }
+
+  async loadPlanSnapshot(runId: string, planVersion?: number): Promise<FlexPlanSnapshotRow | null> {
+    let rows
+    if (typeof planVersion === 'number') {
+      rows = await this.db
+        .select()
+        .from(flexPlanSnapshots)
+        .where(and(eq(flexPlanSnapshots.runId, runId), eq(flexPlanSnapshots.planVersion, planVersion)))
+        .limit(1)
+    } else {
+      rows = await this.db
+        .select()
+        .from(flexPlanSnapshots)
+        .where(eq(flexPlanSnapshots.runId, runId))
+        .orderBy(desc(flexPlanSnapshots.planVersion))
+        .limit(1)
+    }
+    const [row] = rows
+    if (!row) return null
+    return {
+      runId: row.runId,
+      planVersion: row.planVersion ?? 0,
+      snapshot: (row.snapshotJson as Record<string, unknown>) ?? {},
+      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      schemaHash: row.schemaHash ?? null,
+      pendingNodeIds: Array.isArray(row.pendingNodeIds) ? [...row.pendingNodeIds] : [],
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null
+    }
   }
 
   async loadFlexRun(runId: string) {

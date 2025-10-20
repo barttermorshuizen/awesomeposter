@@ -18,6 +18,19 @@ class MemoryFlexPersistence {
   planVersions = new Map<string, number>()
   pendingResults = new Map<string, Record<string, unknown>>()
   contexts = new Map<string, Record<string, unknown>>()
+  snapshots = new Map<
+    string,
+    {
+      planVersion: number
+      snapshot: { nodes: any[]; edges: any[]; metadata: Record<string, unknown>; pendingState?: { completedNodeIds: string[]; nodeOutputs: Record<string, Record<string, unknown>> } }
+      facets: Record<string, unknown> | null
+      schemaHash: string | null
+      pendingNodeIds: string[]
+      createdAt: Date
+      updatedAt: Date
+    }
+  >()
+  outputs = new Map<string, any>()
 
   async createOrUpdateRun(record: any) {
     this.runs.set(record.runId, { ...record })
@@ -33,7 +46,18 @@ class MemoryFlexPersistence {
     if (run) run.status = status
   }
 
-  async savePlanSnapshot(runId: string, version: number, nodes: any[], options: { facets?: Record<string, unknown> } = {}) {
+  async savePlanSnapshot(
+    runId: string,
+    version: number,
+    nodes: any[],
+    options: {
+      facets?: Record<string, unknown>
+      schemaHash?: string | null
+      edges?: unknown
+      planMetadata?: Record<string, unknown>
+      pendingState?: { completedNodeIds: string[]; nodeOutputs: Record<string, Record<string, unknown>> }
+    } = {}
+  ) {
     this.planVersions.set(runId, version)
     const existingKeys = new Set<string>()
     nodes.forEach((node) => {
@@ -51,6 +75,32 @@ class MemoryFlexPersistence {
     if (options.facets) {
       this.contexts.set(runId, { ...options.facets })
     }
+    const pendingNodeIds = nodes
+      .filter((node) => node.status !== 'completed')
+      .map((node) => node.nodeId)
+    const timestamp = new Date('2025-04-01T12:00:00.000Z')
+
+    this.snapshots.set(runId, {
+      planVersion: version,
+      snapshot: {
+        nodes: nodes.map((node) => ({ ...node })),
+        edges: Array.isArray(options.edges) ? [...options.edges] : [],
+        metadata: options.planMetadata ? { ...options.planMetadata } : {},
+        ...(options.pendingState
+          ? {
+              pendingState: {
+                completedNodeIds: [...options.pendingState.completedNodeIds],
+                nodeOutputs: { ...options.pendingState.nodeOutputs }
+              }
+            }
+          : {})
+      },
+      facets: options.facets ? { ...options.facets } : null,
+      schemaHash: options.schemaHash ?? null,
+      pendingNodeIds,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    })
   }
 
   async markNode(runId: string, nodeId: string, updates: any) {
@@ -59,12 +109,14 @@ class MemoryFlexPersistence {
     this.nodes.set(key, { ...current, ...updates })
   }
 
-  async recordResult(runId: string, result: Record<string, unknown>) {
+  async recordResult(runId: string, result: Record<string, unknown>, options: any = {}) {
     this.results.set(runId, result)
+    this.outputs.set(runId, { result: { ...result }, options: { ...options } })
     const run = this.runs.get(runId)
     if (run) run.result = result
-    this.statuses.set(runId, 'completed')
-    if (run) run.status = 'completed'
+    const status = options.status ?? 'completed'
+    this.statuses.set(runId, status)
+    if (run) run.status = status
   }
 
   async ensure() {}
@@ -116,6 +168,24 @@ class MemoryFlexPersistence {
     const entry = Array.from(this.runs.values()).find((run) => run.threadId === threadId)
     if (!entry) return null
     return this.loadFlexRun(entry.runId)
+  }
+
+  async loadPlanSnapshot(runId: string, planVersion?: number) {
+    const record = this.snapshots.get(runId)
+    if (!record) return null
+    if (typeof planVersion === 'number' && record.planVersion !== planVersion) {
+      return null
+    }
+    return {
+      runId,
+      planVersion: record.planVersion,
+      snapshot: record.snapshot,
+      facets: record.facets,
+      schemaHash: record.schemaHash,
+      pendingNodeIds: record.pendingNodeIds,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt
+    }
   }
 }
 
@@ -499,6 +569,23 @@ describe('FlexRunCoordinator', () => {
     expect(events.map((e) => e.type)).toContain('node_complete')
     expect(events.map((e) => e.type)).toContain('complete')
 
+    const persistedOutput = persistence.outputs.get(result.runId)
+    expect(persistedOutput).toBeDefined()
+    const recordedPlanVersion = persistedOutput?.options?.planVersion ?? persistedOutput?.options?.snapshot?.planVersion
+    if (typeof recordedPlanVersion === 'number') {
+      expect(recordedPlanVersion).toBeGreaterThan(0)
+    }
+    const savedSnapshot = persistence.snapshots.get(result.runId)
+    const snapshotRecord = persistedOutput?.options?.snapshot ?? savedSnapshot?.snapshot
+    const finalSnapshot = snapshotRecord ?? null
+    expect(finalSnapshot).toBeDefined()
+    if (finalSnapshot) {
+      expect(Array.isArray(finalSnapshot.nodes)).toBe(true)
+      expect(finalSnapshot.nodes.length).toBeGreaterThan(0)
+      expect(finalSnapshot.nodes?.[0]?.context).toBeDefined()
+      expect(finalSnapshot.nodes?.[0]).toHaveProperty('facets')
+    }
+
     const planEvent = events.find((evt) => evt.type === 'plan_generated')
     const planNodes = (planEvent?.payload as any)?.plan?.nodes ?? []
     const executionSummary = planNodes.find((node: any) => node.capabilityId === CONTENT_CAPABILITY_ID)
@@ -793,6 +880,15 @@ describe('FlexRunCoordinator', () => {
     expect(hitlEvent).toBeTruthy()
     expect((hitlEvent?.payload as any)?.request?.id).toMatch(/^req_/)
     expect(persistence.statuses.get(result.runId)).toBe('awaiting_hitl')
+    const awaitingSnapshot = persistence.snapshots.get(result.runId)?.snapshot
+    expect(awaitingSnapshot).toBeDefined()
+    expect(awaitingSnapshot?.nodes?.some((node: any) => node.status === 'awaiting_hitl')).toBe(true)
+    expect(awaitingSnapshot?.pendingState?.completedNodeIds).toBeDefined()
+    expect(
+      awaitingSnapshot?.nodes?.some(
+        (node: any) => Array.isArray(node.facets?.output) && node.facets.output.includes('copyVariants')
+      )
+    ).toBe(true)
 
     // Simulate approval and resume flow
     hitlService.state = {
@@ -826,6 +922,29 @@ describe('FlexRunCoordinator', () => {
     }
     expect(resumeEvents.some((evt) => evt.type === 'complete')).toBe(true)
     expect(persistence.statuses.get(resumeResult.runId)).toBe('completed')
+    const resumeOutputRecord = persistence.outputs.get(resumeResult.runId)
+    expect(resumeOutputRecord?.options?.status).toBe('completed')
+    expect(resumeOutputRecord?.options?.facets).toBeDefined()
+    const resumeFacetSnapshot = resumeOutputRecord?.options?.facets?.copyVariants
+    expect(resumeFacetSnapshot?.provenance?.length ?? 0).toBeGreaterThan(0)
+    const resumeSnapshot = resumeOutputRecord?.options?.snapshot
+    if (resumeSnapshot) {
+      expect(resumeSnapshot.nodes.some((node: any) => node.status === 'completed')).toBe(true)
+      expect(resumeSnapshot.nodes.some((node: any) => node.status === 'awaiting_hitl')).toBe(false)
+      expect(
+        resumeSnapshot.nodes.some(
+          (node: any) => Array.isArray(node.facets?.output) && node.facets.output.includes('copyVariants')
+        )
+      ).toBe(true)
+      expect(
+        resumeSnapshot.nodes.every(
+          (node: any) =>
+            node.contracts?.output &&
+            typeof node.contracts.output === 'object' &&
+            Object.keys(node.contracts.output).length > 0
+        )
+      ).toBe(true)
+    }
   })
 
   it('starts a fresh run when threadId matches a completed run', async () => {

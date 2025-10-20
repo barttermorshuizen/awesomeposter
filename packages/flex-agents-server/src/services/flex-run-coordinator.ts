@@ -1,8 +1,23 @@
 import { createHash } from 'node:crypto'
 import type { TaskEnvelope, FlexEvent, HitlRunState, HitlRequestRecord, OutputContract, ContextBundle, NodeContract } from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
-import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexRunRecord } from './orchestrator-persistence'
-import { FlexPlanner, PlannerDraftRejectedError, type FlexPlan, type PlannerGraphState } from './flex-planner'
+import {
+  FlexRunPersistence,
+  type FlexPlanNodeSnapshot,
+  type FlexPlanSnapshotRow,
+  type FlexRunRecord
+} from './orchestrator-persistence'
+import {
+  FlexPlanner,
+  PlannerDraftRejectedError,
+  type FlexPlan,
+  type FlexPlanNodeContracts,
+  type FlexPlanNodeFacets,
+  type FlexPlanNodeProvenance,
+  type FlexPlanNodeKind,
+  type FlexPlanEdge,
+  type PlannerGraphState
+} from './flex-planner'
 import { FlexExecutionEngine, HitlPauseError, ReplanRequestedError } from './flex-execution-engine'
 import { getHitlService, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
@@ -217,7 +232,11 @@ export class FlexRunCoordinator {
       updateHitlState(hitlState)
       await this.persistence.updateStatus(runId, 'running')
 
-      const plan = this.rehydratePlan(resumeCandidate, envelopeToUse)
+      const latestSnapshot = await this.persistence.loadPlanSnapshot(
+        runId,
+        resumeCandidate.run.planVersion ?? undefined
+      )
+      const plan = this.rehydratePlan(resumeCandidate, envelopeToUse, latestSnapshot)
       await opts.onEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -289,7 +308,9 @@ export class FlexRunCoordinator {
           threadId,
           limit: hitlLimit,
           updateState: updateHitlState
-        }
+        },
+        schemaHash: schemaHashValue,
+        runContext
       })
       await this.persistence.saveRunContext(runId, runContext.snapshot())
       return { runId, status: 'completed', output: finalOutput }
@@ -305,10 +326,22 @@ export class FlexRunCoordinator {
         capabilityId: node.capabilityId,
         label: node.label,
         status: 'pending',
-        context: node.bundle
+        context: node.bundle,
+        facets: node.facets,
+        contracts: node.contracts,
+        provenance: node.provenance,
+        metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
+        rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
       }))
       await this.persistence.savePlanSnapshot(runId, activePlan.version, planSnapshot, {
-        facets: runContext.snapshot()
+        facets: runContext.snapshot(),
+        schemaHash: schemaHashValue,
+        edges: activePlan.edges,
+        planMetadata: activePlan.metadata,
+        pendingState: {
+          completedNodeIds: [],
+          nodeOutputs: {}
+        }
       })
       await opts.onEvent({
         type: 'plan_generated',
@@ -375,12 +408,13 @@ export class FlexRunCoordinator {
               limit: hitlLimit,
               onRequest: signalHitlRequest,
               onDenied: signalHitlDenied,
-              updateState: updateHitlState
-            },
-            onNodeComplete: ({ node }) => this.policyNormalizer.shouldTriggerReplan(normalizedPolicies, node),
-            initialState: pendingState,
-            runContext
-          })
+            updateState: updateHitlState
+          },
+          onNodeComplete: ({ node }) => this.policyNormalizer.shouldTriggerReplan(normalizedPolicies, node),
+          initialState: pendingState,
+          runContext,
+          schemaHash: schemaHashValue
+        })
           finalOutput = result
         } catch (error) {
           if (error instanceof ReplanRequestedError) {
@@ -423,7 +457,12 @@ export class FlexRunCoordinator {
               label: node.label,
               status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
               context: node.bundle,
-              output: pendingState!.nodeOutputs[node.id] ?? null
+              output: pendingState!.nodeOutputs[node.id] ?? null,
+              facets: node.facets,
+              contracts: node.contracts,
+              provenance: node.provenance,
+              metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
+              rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
             }))
             pendingState!.completedNodeIds = pendingState!.completedNodeIds.filter((nodeId) =>
               activePlan.nodes.some((node) => node.id === nodeId)
@@ -435,7 +474,14 @@ export class FlexRunCoordinator {
             ) as Record<string, Record<string, unknown>>
             pendingState!.facets = runContext.snapshot()
             await this.persistence.savePlanSnapshot(runId, activePlan.version, planSnapshot, {
-              facets: pendingState!.facets
+              facets: pendingState!.facets,
+              schemaHash: schemaHashValue,
+              edges: activePlan.edges,
+              planMetadata: activePlan.metadata,
+              pendingState: {
+                completedNodeIds: pendingState!.completedNodeIds,
+                nodeOutputs: pendingState!.nodeOutputs
+              }
             })
             await opts.onEvent({
               type: 'plan_updated',
@@ -489,7 +535,6 @@ export class FlexRunCoordinator {
       }
 
       await this.persistence.saveRunContext(runId, runContext.snapshot())
-      await this.persistence.recordResult(runId, finalOutput)
       await this.persistence.updateStatus(runId, 'completed')
       return { runId, status: 'completed', output: finalOutput }
     } catch (err) {
@@ -512,19 +557,164 @@ export class FlexRunCoordinator {
     }
   }
 
-  private rehydratePlan(existing: { run: FlexRunRecord; nodes: FlexPlanNodeSnapshot[] }, envelope: TaskEnvelope): FlexPlan {
+  private rehydratePlan(
+    existing: { run: FlexRunRecord; nodes: FlexPlanNodeSnapshot[] },
+    envelope: TaskEnvelope,
+    snapshotRow?: FlexPlanSnapshotRow | null
+  ): FlexPlan {
+    const snapshotPayload =
+      snapshotRow && snapshotRow.snapshot && typeof snapshotRow.snapshot === 'object'
+        ? (snapshotRow.snapshot as {
+            nodes?: Array<Record<string, unknown>>
+            edges?: FlexPlanEdge[]
+            metadata?: Record<string, unknown>
+          })
+        : null
+
+    const clone = <T>(value: T): T =>
+      value == null ? (value as T) : JSON.parse(JSON.stringify(value)) as T
+
+    const snapshotNodeMap = new Map<
+      string,
+      {
+        capabilityId?: string | null
+        label?: string | null
+        status?: string
+        context?: ContextBundle | null
+        output?: Record<string, unknown> | null
+        facets?: FlexPlanNodeFacets | null
+        contracts?: FlexPlanNodeContracts | null
+        provenance?: FlexPlanNodeProvenance | null
+        metadata?: Record<string, unknown> | null
+        rationale?: string[] | null
+      }
+    >()
+
+    if (Array.isArray(snapshotPayload?.nodes)) {
+      for (const raw of snapshotPayload!.nodes!) {
+        if (raw && typeof raw === 'object' && typeof raw.nodeId === 'string') {
+          snapshotNodeMap.set(raw.nodeId, {
+            capabilityId: typeof raw.capabilityId === 'string' ? raw.capabilityId : null,
+            label: typeof raw.label === 'string' ? raw.label : null,
+            status: typeof raw.status === 'string' ? raw.status : undefined,
+            context: (raw.context as ContextBundle | null | undefined) ?? null,
+            output: (raw.output as Record<string, unknown> | null | undefined) ?? null,
+            facets: (raw.facets as FlexPlanNodeFacets | null | undefined) ?? null,
+            contracts: (raw.contracts as FlexPlanNodeContracts | null | undefined) ?? null,
+            provenance: (raw.provenance as FlexPlanNodeProvenance | null | undefined) ?? null,
+            metadata: (raw.metadata as Record<string, unknown> | null | undefined) ?? null,
+            rationale: Array.isArray(raw.rationale) ? (raw.rationale as string[]) : null
+          })
+        }
+      }
+    }
+
+    const edges: FlexPlanEdge[] = Array.isArray(snapshotPayload?.edges)
+      ? snapshotPayload!.edges!
+          .filter(
+            (edge): edge is FlexPlanEdge =>
+              Boolean(edge) && typeof edge.from === 'string' && typeof edge.to === 'string'
+          )
+          .map((edge) => ({
+            from: edge.from,
+            to: edge.to,
+            ...(edge.reason ? { reason: edge.reason } : {})
+          }))
+      : []
+
+    const baseMetadata =
+      snapshotPayload?.metadata && typeof snapshotPayload.metadata === 'object'
+        ? clone(snapshotPayload.metadata)
+        : {}
+
+    const nodes = existing.nodes.map((node) => {
+      const snapshotNode = snapshotNodeMap.get(node.nodeId)
+      const snapshotContracts = snapshotNode?.contracts
+      const nodeContracts: FlexPlanNodeContracts =
+        snapshotContracts && typeof snapshotContracts === 'object' && snapshotContracts.output
+          ? {
+              ...(snapshotContracts.input ? { input: clone(snapshotContracts.input) } : {}),
+              output: clone(snapshotContracts.output)
+            }
+          : { output: clone(envelope.outputContract) }
+
+      const snapshotFacets = snapshotNode?.facets
+      const facets: FlexPlanNodeFacets = {
+        input: Array.isArray(snapshotFacets?.input) ? [...snapshotFacets.input] : [],
+        output: Array.isArray(snapshotFacets?.output) ? [...snapshotFacets.output] : []
+      }
+
+      const provenance: FlexPlanNodeProvenance = {}
+      if (snapshotNode?.provenance?.input) {
+        provenance.input = snapshotNode.provenance.input.map((entry) => clone(entry))
+      }
+      if (snapshotNode?.provenance?.output) {
+        provenance.output = snapshotNode.provenance.output.map((entry) => clone(entry))
+      }
+
+      const rationale = Array.isArray(snapshotNode?.rationale) ? [...snapshotNode.rationale] : []
+
+      const nodeMetadata =
+        snapshotNode?.metadata && typeof snapshotNode.metadata === 'object'
+          ? { ...snapshotNode.metadata }
+          : {}
+
+      const capabilityId = snapshotNode?.capabilityId ?? node.capabilityId ?? 'unknown'
+      const label = snapshotNode?.label ?? node.label ?? node.nodeId
+      const capabilityLabel =
+        typeof nodeMetadata.capabilityLabel === 'string'
+          ? (nodeMetadata.capabilityLabel as string)
+          : label
+
+      const kindRaw =
+        typeof nodeMetadata.kind === 'string'
+          ? (nodeMetadata.kind as string)
+          : typeof (nodeMetadata as any)?.plannerStage === 'string'
+          ? ((nodeMetadata as any).plannerStage as string)
+          : undefined
+      const allowedKinds: FlexPlanNodeKind[] = ['structuring', 'branch', 'execution', 'transformation', 'validation', 'fallback']
+      const kind: FlexPlanNodeKind =
+        kindRaw && allowedKinds.includes(kindRaw as FlexPlanNodeKind)
+          ? (kindRaw as FlexPlanNodeKind)
+          : 'execution'
+
+      const capabilityVersion =
+        typeof nodeMetadata.capabilityVersion === 'string' ? (nodeMetadata.capabilityVersion as string) : undefined
+      const derivedCapability =
+        nodeMetadata.derivedCapability &&
+        typeof nodeMetadata.derivedCapability === 'object' &&
+        typeof (nodeMetadata.derivedCapability as { fromCapabilityId?: unknown }).fromCapabilityId === 'string'
+          ? { fromCapabilityId: (nodeMetadata.derivedCapability as { fromCapabilityId: string }).fromCapabilityId }
+          : undefined
+
+      const nodeForBundle: FlexPlanNodeSnapshot =
+        snapshotNode?.context && !node.context ? { ...node, context: snapshotNode.context } : node
+      const bundle = this.normalizeContextBundle(existing.run.runId, nodeForBundle, envelope)
+
+      return {
+        id: node.nodeId,
+        kind,
+        capabilityId,
+        capabilityLabel,
+        label,
+        capabilityVersion,
+        ...(derivedCapability ? { derivedCapability } : {}),
+        bundle,
+        contracts: nodeContracts,
+        facets,
+        provenance,
+        rationale,
+        metadata: nodeMetadata
+      }
+    })
+
     return {
       runId: existing.run.runId,
-      version: existing.run.planVersion ?? 1,
+      version: snapshotRow?.planVersion ?? existing.run.planVersion ?? 1,
       createdAt: new Date().toISOString(),
-      nodes: existing.nodes.map((node) => ({
-        id: node.nodeId,
-        capabilityId: node.capabilityId ?? 'unknown',
-        label: node.label ?? node.nodeId,
-        bundle: this.normalizeContextBundle(existing.run.runId, node, envelope)
-      })),
-      edges: [],
-      metadata: { resumed: true }
+      nodes,
+      edges,
+      metadata: { ...baseMetadata, resumed: true }
     }
   }
 

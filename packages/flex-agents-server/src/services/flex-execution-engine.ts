@@ -12,14 +12,14 @@ import type {
   CapabilityContract,
   JsonSchemaShape
 } from '@awesomeposter/shared'
-import { FlexRunPersistence } from './orchestrator-persistence'
+import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
 import type { HitlService } from './hitl-service'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getAgents, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
-import { RunContext, type FacetEntry } from './run-context'
+import { RunContext, type FacetEntry, type FacetSnapshot } from './run-context'
 import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
@@ -187,6 +187,7 @@ export type FlexExecutionOptions = {
     facets?: Record<string, FacetEntry>
   }
   runContext?: RunContext
+  schemaHash?: string | null
 }
 
 type CapabilityResult = {
@@ -313,19 +314,29 @@ export class FlexExecutionEngine {
     const runContext =
       opts.runContext ??
       RunContext.fromSnapshot((opts.initialState?.facets as Record<string, FacetEntry> | undefined) ?? undefined)
+    const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
+    const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    for (const node of plan.nodes) {
+      nodeStatuses.set(node.id, completedNodeIds.has(node.id) ? 'completed' : 'pending')
+    }
 
     for (const node of plan.nodes) {
       if (completedNodeIds.has(node.id)) {
+        nodeStatuses.set(node.id, 'completed')
         continue
       }
       const isVirtual = !node.capabilityId
       if (isVirtual) {
+        nodeStatuses.set(node.id, 'running')
         await this.handleVirtualNode(runId, node, opts)
+        nodeStatuses.set(node.id, 'completed')
         completedNodeIds.add(node.id)
         continue
       }
 
       const startedAt = new Date()
+      nodeStatuses.set(node.id, 'running')
+      nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), startedAt })
       await this.persistence.markNode(runId, node.id, {
         status: 'running',
         capabilityId: node.capabilityId,
@@ -360,6 +371,8 @@ export class FlexExecutionEngine {
         completedNodeIds.add(node.id)
 
         const completedAt = new Date()
+        nodeStatuses.set(node.id, 'completed')
+        nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), completedAt })
         await this.persistence.markNode(runId, node.id, {
           status: 'completed',
           output: result.output,
@@ -405,6 +418,8 @@ export class FlexExecutionEngine {
         }
         const errorAt = new Date()
         const serialized = this.serializeError(error)
+        nodeStatuses.set(node.id, 'error')
+        nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), completedAt: errorAt })
         await this.persistence.markNode(runId, node.id, {
           status: 'error',
           error: serialized,
@@ -491,6 +506,18 @@ export class FlexExecutionEngine {
           status: 'awaiting_hitl',
           context: terminalNode.bundle
         })
+        nodeStatuses.set(terminalNode.id, 'awaiting_hitl')
+        const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+        await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
+          facets: runContext.snapshot(),
+          schemaHash: opts.schemaHash ?? null,
+          edges: plan.edges,
+          planMetadata: plan.metadata,
+          pendingState: {
+            completedNodeIds: Array.from(completedNodeIds),
+            nodeOutputs: Object.fromEntries(nodeOutputs.entries())
+          }
+        })
         await this.persistence.updateStatus(runId, 'awaiting_hitl')
         if (hitl.onRequest) {
           await hitl.onRequest(pendingRecord, latestState)
@@ -506,7 +533,26 @@ export class FlexExecutionEngine {
       opts
     )
 
-    await this.persistence.recordResult(runId, finalOutput)
+    const facetsSnapshot = runContext.snapshot()
+    const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+    const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
+    await this.persistence.recordResult(runId, finalOutput, {
+      planVersion: plan.version,
+      status: 'completed',
+      schemaHash: opts.schemaHash ?? null,
+      facets: facetsSnapshot,
+      provenance,
+      snapshot: {
+        planVersion: plan.version,
+        nodes: snapshotNodes,
+        edges: plan.edges,
+        planMetadata: plan.metadata,
+        pendingState: {
+          completedNodeIds: Array.from(completedNodeIds),
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries())
+        }
+      }
+    })
     await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
     return finalOutput
   }
@@ -958,6 +1004,47 @@ export class FlexExecutionEngine {
     }
   }
 
+  private buildPlanSnapshotNodes(
+    plan: FlexPlan,
+    nodeStatuses: Map<string, FlexPlanNodeStatus>,
+    nodeOutputs: Map<string, Record<string, unknown>>,
+    timings: Map<string, { startedAt?: Date | null; completedAt?: Date | null }>
+  ): FlexPlanNodeSnapshot[] {
+    return plan.nodes.map((node) => {
+      const timing = timings.get(node.id) ?? {}
+      const metadata =
+        node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null
+      const rationale = node.rationale && node.rationale.length ? [...node.rationale] : null
+      return {
+        nodeId: node.id,
+        capabilityId: node.capabilityId,
+        label: node.label,
+        status: nodeStatuses.get(node.id) ?? 'pending',
+        context: node.bundle,
+        output: nodeOutputs.get(node.id) ?? null,
+        facets: node.facets,
+        contracts: node.contracts,
+        provenance: node.provenance,
+        metadata,
+        rationale,
+        startedAt: timing.startedAt ?? null,
+        completedAt: timing.completedAt ?? null
+      }
+    })
+  }
+
+  private extractOutputProvenance(facets: FacetSnapshot, output: Record<string, unknown>) {
+    const provenance: Record<string, unknown> = {}
+    if (!output) return provenance
+    for (const key of Object.keys(output)) {
+      const entry = facets?.[key]
+      if (entry && Array.isArray(entry.provenance)) {
+        provenance[key] = entry.provenance.map((record) => ({ ...record }))
+      }
+    }
+    return provenance
+  }
+
   async resumePending(
     runId: string,
     envelope: TaskEnvelope,
@@ -966,19 +1053,38 @@ export class FlexExecutionEngine {
     opts: FlexExecutionOptions
   ) {
     let finalOutput = finalOutputParam ?? {}
+    const activeRunContext = opts.runContext ?? new RunContext()
+    const nodeOutputs = new Map<string, Record<string, unknown>>()
+    const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
+    const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    for (const node of plan.nodes) {
+      nodeStatuses.set(node.id, 'completed')
+    }
+
     if (opts.runContext) {
-      const contextProjection = opts.runContext.composeFinalOutput(envelope.outputContract, plan)
+      const contextProjection = activeRunContext.composeFinalOutput(envelope.outputContract, plan)
       if (!finalOutput || Object.keys(finalOutput).length === 0) {
         finalOutput = contextProjection
       } else if (Object.keys(contextProjection).length === 0) {
         const terminal = plan.nodes[plan.nodes.length - 1]
         for (const [facet, value] of Object.entries(finalOutput)) {
-          opts.runContext.updateFacet(facet, value, {
+          activeRunContext.updateFacet(facet, value, {
             nodeId: terminal?.id ?? 'resume_final',
             capabilityId: terminal?.capabilityId,
             rationale: 'resume_final_output'
           })
         }
+      }
+    }
+
+    if (!opts.runContext && finalOutput && Object.keys(finalOutput).length) {
+      const terminal = plan.nodes[plan.nodes.length - 1]
+      for (const [facet, value] of Object.entries(finalOutput)) {
+        activeRunContext.updateFacet(facet, value, {
+          nodeId: terminal?.id ?? 'resume_final',
+          capabilityId: terminal?.capabilityId,
+          rationale: 'resume_final_output'
+        })
       }
     }
 
@@ -989,6 +1095,8 @@ export class FlexExecutionEngine {
     const terminalNode = plan.nodes[plan.nodes.length - 1]
     if (terminalNode) {
       const startAt = new Date()
+      nodeStatuses.set(terminalNode.id, 'running')
+      nodeTimings.set(terminalNode.id, { ...(nodeTimings.get(terminalNode.id) ?? {}), startedAt: startAt })
       await this.persistence.markNode(runId, terminalNode.id, {
         status: 'running',
         startedAt: startAt
@@ -1006,11 +1114,14 @@ export class FlexExecutionEngine {
       )
 
       const completedAt = new Date()
+      nodeStatuses.set(terminalNode.id, 'completed')
+      nodeTimings.set(terminalNode.id, { ...(nodeTimings.get(terminalNode.id) ?? {}), completedAt })
       await this.persistence.markNode(runId, terminalNode.id, {
         status: 'completed',
         output: finalOutput,
         completedAt
       })
+      nodeOutputs.set(terminalNode.id, finalOutput)
       await opts.onEvent(
         this.buildEvent(
           'node_complete',
@@ -1032,7 +1143,26 @@ export class FlexExecutionEngine {
       opts
     )
 
-    await this.persistence.recordResult(runId, finalOutput)
+    const facetsSnapshot = activeRunContext.snapshot()
+    const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+    const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
+    await this.persistence.recordResult(runId, finalOutput, {
+      planVersion: plan.version,
+      status: 'completed',
+      schemaHash: opts.schemaHash ?? null,
+      facets: facetsSnapshot,
+      provenance,
+      snapshot: {
+        planVersion: plan.version,
+        nodes: snapshotNodes,
+        edges: plan.edges,
+        planMetadata: plan.metadata,
+        pendingState: {
+          completedNodeIds: plan.nodes.map((node) => node.id),
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries())
+        }
+      }
+    })
     await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
     return finalOutput
   }

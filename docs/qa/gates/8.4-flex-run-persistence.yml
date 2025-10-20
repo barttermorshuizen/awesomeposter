@@ -1,0 +1,40 @@
+schema: 1
+story: '8.4'
+story_title: 'Story 8.4: Flex Run Output & Snapshot Persistence'
+gate: PASS
+status_reason: 'Resume flow now hydrates plan snapshots with facet/contract provenance, and tests cover the HITL pause/resume path.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-21T16:05:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2025-11-04T16:05:00Z'
+
+evidence:
+  tests_reviewed: 2
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Persistence remains additive and leverages existing auth paths; no new exposure detected.'
+  performance:
+    status: PASS
+    notes: 'JSONB writes follow existing patterns and snapshot volume remains bounded by plan size.'
+  reliability:
+    status: PASS
+    notes: 'Plan rehydration pulls stored facets/contracts so resume completions preserve auditing metadata and deterministic replay.'
+  maintainability:
+    status: PASS
+    notes: 'Code and docs follow established flex server conventions, and new repository helpers are encapsulated.'
+
+recommendations:
+  immediate: []
+  future: []
