@@ -4,13 +4,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { useUiStore } from '@/stores/ui'
 import AppNotifications from '@/components/AppNotifications.vue'
+import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
 
 const router = useRouter()
 const route = useRoute()
 const { smAndDown } = useDisplay()
 const ui = useUiStore()
 
-const navItems = [
+const flexSandboxEnabled = isFlexSandboxEnabledClient()
+
+const baseNavItems = [
   { title: 'Dashboard', icon: 'mdi-view-dashboard-outline', to: { name: 'dashboard' } },
   { title: 'Briefs', icon: 'mdi-file-document-edit-outline', to: { name: 'briefs' } },
   { title: 'Inbox', icon: 'mdi-inbox-arrow-down-outline', to: { name: 'inbox' } },
@@ -21,8 +24,20 @@ const navItems = [
   { title: 'Settings', icon: 'mdi-cog-outline', to: { name: 'settings' } },
 ]
 
+const navItems = computed(() => {
+  const items = [...baseNavItems]
+  if (flexSandboxEnabled) {
+    items.splice(items.length - 1, 0, {
+      title: 'Flex Sandbox',
+      icon: 'mdi-graph-outline',
+      to: { name: 'flex-sandbox' },
+    })
+  }
+  return items
+})
+
 const currentIndex = computed(() => {
-  const idx = navItems.findIndex(i => router.resolve(i.to).name === route.name)
+  const idx = navItems.value.findIndex((i) => router.resolve(i.to).name === route.name)
   return idx === -1 ? 0 : idx
 })
 

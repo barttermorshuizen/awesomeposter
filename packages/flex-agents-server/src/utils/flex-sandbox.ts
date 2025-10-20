@@ -4,8 +4,16 @@ import { createError } from 'h3'
 const FLAG_NAME = 'USE_FLEX_DEV_SANDBOX'
 const DEFAULT_TEMPLATE_DIR = 'tmp'
 
+function isEnabled(value: string | undefined | null): boolean {
+  if (!value) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on'
+}
+
 export function isFlexSandboxEnabled(): boolean {
-  return (process.env[FLAG_NAME] || '').toLowerCase() === 'true'
+  if (isEnabled(process.env[FLAG_NAME])) return true
+  if (isEnabled(process.env.VITE_USE_FLEX_DEV_SANDBOX)) return true
+  return false
 }
 
 export function requireFlexSandboxEnabled() {

@@ -78,7 +78,10 @@ export const CONTENT_INSTRUCTIONS_APP = [
   '- If "contentRecommendations" (array of strings) is present, this is a revision task: apply the recommendations with minimal necessary edits.',
   '- If "previousDraft" is provided, use it as the base and only change what is required to follow the recommendations; otherwise, regenerate while deviating only where needed to satisfy them.',
   'Use tools to apply format‑specific rendering and platform optimization while respecting platform rules and client policy.',
-  'Output only the final post as plain text (no JSON or code fences).'
+  'Return the output as a JSON object that satisfies the declared output facet contract.',
+  '- Emit {"copyVariants": [...]} with at least one variant object.',
+  '- Each variant must include "headline" and "body"; include "callToAction" when provided and "id" when variants need stable references.',
+  '- Do not include markdown, commentary, or extra text outside the JSON payload.'
 ].concat(
   HITL_ENABLED
     ? [

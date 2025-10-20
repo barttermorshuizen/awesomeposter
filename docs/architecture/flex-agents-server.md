@@ -527,6 +527,14 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - QA tooling (`packages/flex-agents-server/src/tools/qa.ts`) provides rubric scoring and recommendation normalisation.
 - HITL adapters (`packages/flex-agents-server/src/tools/hitl.ts`) bridge agent escalations into the shared HITL service.
 
+### Developer Sandbox
+
+- Enable the flex planner sandbox by setting `USE_FLEX_DEV_SANDBOX=true` on the agents server and `VITE_USE_FLEX_DEV_SANDBOX=true` in the SPA build (both names are accepted by the server so scripts can export a single value). With the flag disabled the `/flex/sandbox` route, metadata API, and navigation entry stay hidden from production users.
+- The SPA fetches registry data from `GET /api/v1/flex/sandbox/metadata`, which returns facet catalog entries, capability snapshots (`active` + `all`), capability catalog prompts, and any `tmp/flex-*.json` TaskEnvelope templates. Override the template source via `FLEX_SANDBOX_TEMPLATE_DIR` when running custom experiments.
+- Sandbox runs use the existing `/api/v1/flex/run.stream` endpoint, so the feature inherits auth and SSE limits. The view streams `FlexEvent` frames with the shared `postFlexEventStream` helper to keep line with operator tooling.
+- The Vue workspace persists draft envelopes in `localStorage`, performs schema and capability validation client-side with `TaskEnvelopeSchema`, and surfaces planner telemetry through `FlexSandboxPlanInspector.vue`. Derived capability provenance, policy triggers, and node statuses reflect the enriched `plan_generated` / `plan_updated` events emitted by `FlexRunCoordinator`.
+- Treat the sandbox as non-production tooling: it never mutates registry state, respects existing API keys, and should only run in secure dev/staging environments. Disable the flag before shipping a prod build to guarantee the UI and routes are omitted.
+
 ### Maintenance Checklist
 
 1. Update the capability payload inside the relevant agent module when prompts, facet coverage, or preferred models change.

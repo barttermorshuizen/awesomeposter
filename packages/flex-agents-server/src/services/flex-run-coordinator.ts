@@ -239,12 +239,23 @@ export class FlexRunCoordinator {
                 (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
                   ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
                   : undefined
+              const derived =
+                node.derivedCapability?.fromCapabilityId &&
+                typeof node.derivedCapability.fromCapabilityId === 'string'
+                  ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                  : undefined
+              const metadata =
+                node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
               return {
                 id: node.id,
                 capabilityId: node.capabilityId,
                 label: node.label,
+                kind: node.kind,
+                status: 'pending',
                 ...(contracts ? { contracts } : {}),
-                ...(facets ? { facets } : {})
+                ...(facets ? { facets } : {}),
+                ...(derived ? { derivedCapability: derived } : {}),
+                ...(metadata ? { metadata } : {})
               }
             }),
             metadata: { resumed: true }
@@ -320,12 +331,23 @@ export class FlexRunCoordinator {
                 (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
                   ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
                   : undefined
+              const derived =
+                node.derivedCapability?.fromCapabilityId &&
+                typeof node.derivedCapability.fromCapabilityId === 'string'
+                  ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                  : undefined
+              const metadata =
+                node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
               return {
                 id: node.id,
                 capabilityId: node.capabilityId,
                 label: node.label,
+                kind: node.kind,
+                status: 'pending',
                 ...(contracts ? { contracts } : {}),
-                ...(facets ? { facets } : {})
+                ...(facets ? { facets } : {}),
+                ...(derived ? { derivedCapability: derived } : {}),
+                ...(metadata ? { metadata } : {})
               }
             }),
             metadata: activePlan.metadata
@@ -424,12 +446,39 @@ export class FlexRunCoordinator {
                 previousVersion,
                 version: activePlan.version,
                 trigger,
-                nodes: activePlan.nodes.map((node) => ({
-                  id: node.id,
-                  capabilityId: node.capabilityId,
-                  label: node.label,
-                  status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending'
-                })),
+                nodes: activePlan.nodes.map((node) => {
+                  const contractSource = node.contracts
+                  const contracts =
+                    contractSource && (contractSource.input || contractSource.output)
+                      ? {
+                          ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                          ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                        }
+                      : undefined
+                  const facetSource = node.facets
+                  const facets =
+                    (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                      ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                      : undefined
+                  const derived =
+                    node.derivedCapability?.fromCapabilityId &&
+                    typeof node.derivedCapability.fromCapabilityId === 'string'
+                      ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                      : undefined
+                  const metadata =
+                    node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                  return {
+                    id: node.id,
+                    capabilityId: node.capabilityId,
+                    label: node.label,
+                    kind: node.kind,
+                    status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                    ...(contracts ? { contracts } : {}),
+                    ...(facets ? { facets } : {}),
+                    ...(derived ? { derivedCapability: derived } : {}),
+                    ...(metadata ? { metadata } : {})
+                  }
+                }),
                 metadata: activePlan.metadata
               }
             })

@@ -273,6 +273,7 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
 
   let activeController: AbortController | null = null
   let pollTimer: number | null = null
+  let hasFetchedOnce = false
 
   const virtualizationEnabled = computed(() => total.value >= VIRTUALIZATION_THRESHOLD)
   const hasResults = computed(() => items.value.length > 0)
@@ -523,6 +524,11 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
 
     if (event.eventType === 'brief.promoted') {
       handleBriefPromoted(event)
+      return
+    }
+
+    if (event.eventType === 'discovery.bulk.action.completed') {
+      handleBulkActionCompleted(event)
     }
   }
 
@@ -550,6 +556,18 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
         statusHistory: payload.statusHistory,
       }
     }
+  }
+
+  function handleBulkActionCompleted(
+    event: Extract<DiscoveryTelemetryEvent, { eventType: 'discovery.bulk.action.completed' }>,
+  ) {
+    if (event.clientId !== clientId.value) {
+      return
+    }
+    if (!hasFetchedOnce) {
+      return
+    }
+    void fetchResults('bulk-telemetry')
   }
 
   async function fetchClientSources(client: string): Promise<DiscoverySourceOption[]> {
@@ -656,7 +674,15 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
     }
   }
 
-  type FetchTrigger = 'initial' | 'filters' | 'pagination' | 'search' | 'poll' | 'manual' | 'retry'
+  type FetchTrigger =
+    | 'initial'
+    | 'filters'
+    | 'pagination'
+    | 'search'
+    | 'poll'
+    | 'manual'
+    | 'retry'
+    | 'bulk-telemetry'
 
   async function fetchResults(trigger: FetchTrigger = 'manual') {
     if (!clientId.value) {
@@ -767,6 +793,9 @@ export const useDiscoveryListStore = defineStore('discoveryList', () => {
       }
       if (showLoading) {
         loading.value = false
+      }
+      if (!controller.signal.aborted) {
+        hasFetchedOnce = true
       }
     }
   }
