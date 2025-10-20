@@ -1,12 +1,28 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { TaskEnvelope, CapabilityRecord } from '@awesomeposter/shared'
-import { TaskEnvelopeSchema } from '@awesomeposter/shared'
+import { storeToRefs } from 'pinia'
+import {
+  TaskEnvelopeSchema,
+  HitlOriginAgentEnum,
+  HitlRequestPayloadSchema,
+  type TaskEnvelope,
+  type CapabilityRecord,
+  type FacetDirection,
+  type HitlOriginAgent,
+  type HitlRequestPayload
+} from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import FlexSandboxPlanInspector from '@/components/FlexSandboxPlanInspector.vue'
+import HitlPromptPanel from '@/components/HitlPromptPanel.vue'
 import type { FlexSandboxPlan, FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode } from '@/lib/flexSandboxTypes'
 import { appendHistoryEntry, extractPlanPayload } from '@/lib/flexSandboxPlan'
 import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
+import { useHitlStore } from '@/stores/hitl'
+
+type FacetMetadataDescriptor = {
+  direction?: FacetDirection
+  [key: string]: unknown
+}
 
 type FacetDescriptor = {
   name: string
@@ -14,7 +30,7 @@ type FacetDescriptor = {
   description?: string
   schema?: Record<string, unknown>
   semantics?: Record<string, unknown>
-  metadata?: Record<string, unknown>
+  metadata?: FacetMetadataDescriptor
 }
 
 type CapabilityCatalogEntry = {
@@ -110,8 +126,16 @@ const correlationId = ref<string | undefined>()
 const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
 
+const hitlStore = useHitlStore()
+const { pendingRun, hasActiveRequest } = storeToRefs(hitlStore)
+
 const backoffNotices = ref<string[]>([])
 const expandedEventIds = ref<Set<string>>(new Set())
+const showCapabilitySnapshot = ref(true)
+const showFacetSnapshot = ref(true)
+const showCatalogSnapshot = ref(false)
+
+const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRun.value.pendingRequestId))
 
 let saveTimeout: number | null = null
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
@@ -130,6 +154,20 @@ const facetSet = computed(() => {
   const set = new Set<string>()
   metadata.value?.facets.forEach((facet) => set.add(facet.name))
   return set
+})
+
+const capabilitySnapshot = computed(() => {
+  const all = metadata.value?.capabilities?.all ?? []
+  return [...all].sort((a, b) => a.displayName.localeCompare(b.displayName))
+})
+
+const facetCatalogEntries = computed(() => {
+  const facets = metadata.value?.facets ?? []
+  return [...facets].sort((a, b) => {
+    const aLabel = a.title || a.name
+    const bLabel = b.title || b.name
+    return aLabel.localeCompare(bLabel)
+  })
 })
 
 const selectedTemplate = computed(() => {
@@ -407,6 +445,7 @@ function resetRunState() {
   correlationId.value = undefined
   runId.value = undefined
   plan.value = null
+  hitlStore.resetAll()
 }
 
 function updatePlanFromGenerated(payload: unknown, timestamp: string) {
@@ -521,10 +560,26 @@ function handleEvent(evt: FlexEventWithId) {
   }
   if (evt.runId) {
     runId.value = evt.runId
+    hitlStore.setRunId(evt.runId)
   }
   switch (evt.type) {
     case 'start':
       runStatus.value = 'running'
+      hitlStore.resetAll()
+      {
+        const payload = evt.payload as Record<string, unknown> | undefined
+        const startedRunId = typeof payload?.runId === 'string' ? payload.runId : undefined
+        if (startedRunId) {
+          runId.value = startedRunId
+          hitlStore.setRunId(startedRunId)
+        } else if (evt.runId) {
+          hitlStore.setRunId(evt.runId)
+        }
+        const thread = typeof payload?.threadId === 'string' ? payload.threadId : undefined
+        if (thread) {
+          hitlStore.setThreadId(thread)
+        }
+      }
       break
     case 'plan_generated':
       updatePlanFromGenerated(evt.payload, evt.timestamp)
@@ -547,6 +602,21 @@ function handleEvent(evt: FlexEventWithId) {
     case 'hitl_request':
       runStatus.value = 'hitl'
       updateNodeStatus(evt.nodeId, 'awaiting_hitl', evt.timestamp)
+      {
+        const request = extractHitlRequest(evt.payload)
+        if (request) {
+          const receivedAt = request.createdAt ? new Date(request.createdAt) : new Date(evt.timestamp)
+          const threadHint = pendingRun.value.threadId ?? runId.value ?? null
+          hitlStore.startTrackingRequest({
+            requestId: request.id,
+            payload: request.requestPayload,
+            originAgent: request.originAgent,
+            receivedAt,
+            threadId: threadHint
+          })
+          hitlStore.markAwaiting(request.id)
+        }
+      }
       break
     case 'validation_error': {
       runStatus.value = 'error'
@@ -560,7 +630,12 @@ function handleEvent(evt: FlexEventWithId) {
       break
     }
     case 'log':
-      if (evt.message && evt.message.toLowerCase().includes('error')) {
+      if (evt.message === 'hitl_request_denied') {
+        const payload = evt.payload as Record<string, unknown> | undefined
+        const reason = typeof payload?.reason === 'string' ? payload.reason : undefined
+        hitlStore.handleDenial(reason)
+        runStatus.value = 'running'
+      } else if (evt.message && evt.message.toLowerCase().includes('error')) {
         runError.value = evt.message
       }
       break
@@ -568,6 +643,7 @@ function handleEvent(evt: FlexEventWithId) {
       if (runStatus.value !== 'error') {
         runStatus.value = 'completed'
       }
+      hitlStore.resetAll()
       break
   }
 }
@@ -597,22 +673,36 @@ function handleBackoff(info: { retryAfter: number; attempt: number; pending?: nu
   backoffNotices.value = [...backoffNotices.value, `${new Date().toLocaleTimeString()}: ${detail}`]
 }
 
-async function runEnvelope() {
-  if (!parsedEnvelope.value) {
-    updateValidation()
-    if (!parsedEnvelope.value) return
+async function runEnvelope(options?: { envelope?: TaskEnvelope; resumeContext?: { runId?: string | null; threadId?: string | null } }) {
+  let envelope = options?.envelope
+  if (!envelope) {
+    if (!parsedEnvelope.value) {
+      updateValidation()
+      if (!parsedEnvelope.value) return
+    }
+    envelope = parsedEnvelope.value
   }
   if (runStatus.value === 'running') {
     return
   }
   resetRunState()
+  if (options?.resumeContext) {
+    const resumeRunId = options.resumeContext.runId ?? null
+    const resumeThreadId = options.resumeContext.threadId ?? null
+    if (resumeRunId) {
+      hitlStore.setRunId(resumeRunId)
+    }
+    if (resumeThreadId) {
+      hitlStore.setThreadId(resumeThreadId)
+    }
+  }
   runStatus.value = 'running'
   const headers: Record<string, string> = {}
   if (FLEX_AUTH) headers.authorization = `Bearer ${FLEX_AUTH}`
 
   streamHandle = postFlexEventStream({
     url: `${FLEX_BASE_URL}/api/v1/flex/run.stream`,
-    body: parsedEnvelope.value,
+    body: envelope,
     headers,
     onEvent: handleEvent,
     onCorrelationId: (cid) => {
@@ -635,6 +725,38 @@ async function runEnvelope() {
   }
 }
 
+async function handleHitlResume() {
+  if (runStatus.value === 'running') return
+  if (!parsedEnvelope.value) {
+    updateValidation()
+    if (!parsedEnvelope.value) return
+  }
+  let resumeEnvelope = cloneEnvelope(parsedEnvelope.value)
+  const resumeRunId = pendingRun.value.runId ?? runId.value ?? null
+  const threadId = pendingRun.value.threadId ?? null
+  const constraintsSource = isRecord(resumeEnvelope.constraints) ? resumeEnvelope.constraints : {}
+  const nextConstraints: Record<string, unknown> = { ...constraintsSource }
+  if (resumeRunId) {
+    nextConstraints.resumeRunId = resumeRunId
+  }
+  if (threadId) {
+    nextConstraints.threadId = threadId
+  }
+  if (Object.keys(nextConstraints).length > 0) {
+    resumeEnvelope = {
+      ...resumeEnvelope,
+      constraints: nextConstraints
+    }
+  }
+  await runEnvelope({
+    envelope: resumeEnvelope,
+    resumeContext: {
+      runId: resumeRunId,
+      threadId
+    }
+  })
+}
+
 function abortRun() {
   if (!streamHandle) return
   try {
@@ -643,6 +765,7 @@ function abortRun() {
     // ignore
   } finally {
     streamHandle = null
+    hitlStore.resetAll()
   }
 }
 
@@ -679,6 +802,103 @@ function formatTimestamp(ts: string | undefined): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function formatCapabilityName(cap: CapabilityRecord): string {
+  const versionSuffix = cap.version ? ` (v${cap.version})` : ''
+  return `${cap.displayName}${versionSuffix}`
+}
+
+function formatCapabilityDetails(cap: CapabilityRecord): string {
+  const parts: string[] = []
+  if (cap.capabilityId) parts.push(cap.capabilityId)
+  if (cap.status) parts.push(formatCapabilityStatusLabel(cap.status))
+  return parts.join(' | ')
+}
+
+function formatCapabilityStatusLabel(status?: CapabilityRecord['status']): string {
+  if (!status) return ''
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
+function formatFacetLabel(facet: FacetDescriptor): string {
+  if (facet.title && facet.title !== facet.name) {
+    return `${facet.title} (${facet.name})`
+  }
+  return facet.title ?? facet.name
+}
+
+function formatFacetDirectionLabel(direction?: FacetDirection): string {
+  if (!direction) return ''
+  switch (direction) {
+    case 'input':
+      return 'Input'
+    case 'output':
+      return 'Output'
+    case 'bidirectional':
+      return 'Bidirectional'
+    default:
+      return direction
+  }
+}
+
+function facetDirectionColor(direction?: FacetDirection): string | undefined {
+  switch (direction) {
+    case 'input':
+      return 'primary'
+    case 'output':
+      return 'success'
+    case 'bidirectional':
+      return 'secondary'
+    default:
+      return undefined
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function cloneEnvelope(envelope: TaskEnvelope): TaskEnvelope {
+  return JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
+}
+
+function extractHitlRequest(payload: unknown): {
+  id: string
+  originAgent: HitlOriginAgent
+  requestPayload: HitlRequestPayload
+  createdAt?: string
+} | null {
+  if (!isRecord(payload)) return null
+  const request = payload.request
+  if (!isRecord(request)) return null
+  const id = typeof request.id === 'string' ? request.id : null
+  if (!id) return null
+  const originAgentValue = typeof request.originAgent === 'string' ? request.originAgent : ''
+  const originAgentResult = HitlOriginAgentEnum.safeParse(originAgentValue)
+  const payloadResult = HitlRequestPayloadSchema.safeParse(request.payload)
+  if (!payloadResult.success) return null
+  let originAgent: HitlOriginAgent = 'generation'
+  if (originAgentResult.success) {
+    originAgent = originAgentResult.data
+  } else if (originAgentValue) {
+    const normalized = originAgentValue.toLowerCase()
+    if (normalized.includes('strategy')) originAgent = 'strategy'
+    else if (normalized.includes('qa')) originAgent = 'qa'
+    else originAgent = 'generation'
+  }
+  const createdRaw = request.createdAt
+  const createdAt =
+    typeof createdRaw === 'string'
+      ? createdRaw
+      : createdRaw instanceof Date
+        ? createdRaw.toISOString()
+        : undefined
+  return {
+    id,
+    originAgent,
+    requestPayload: payloadResult.data,
+    createdAt
+  }
+}
 onMounted(() => {
   if (FLEX_SANDBOX_ENABLED) {
     void loadMetadata()
@@ -805,21 +1025,102 @@ watch(
                 {{ metadata?.capabilities?.active.length ?? 0 }} active /
                 {{ metadata?.capabilities?.all.length ?? 0 }} total
               </div>
-              <div class="text-body-2 mb-2">
+              <div v-if="capabilitySnapshot.length" class="mt-3">
+                <div class="d-flex align-center justify-space-between mb-1">
+                  <div class="text-caption text-medium-emphasis text-uppercase">Registered capabilities</div>
+                  <v-btn
+                    icon
+                    size="x-small"
+                    variant="text"
+                    :aria-label="showCapabilitySnapshot ? 'Collapse capabilities' : 'Expand capabilities'"
+                    @click="showCapabilitySnapshot = !showCapabilitySnapshot"
+                  >
+                    <v-icon :icon="showCapabilitySnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                  </v-btn>
+                </div>
+                <v-expand-transition>
+                  <v-list
+                    v-if="showCapabilitySnapshot"
+                    density="compact"
+                    class="registry-overview-list"
+                  >
+                    <v-list-item
+                      v-for="cap in capabilitySnapshot"
+                      :key="cap.capabilityId"
+                      class="py-1"
+                    >
+                      <v-list-item-title>{{ formatCapabilityName(cap) }}</v-list-item-title>
+                      <v-list-item-subtitle>
+                        {{ formatCapabilityDetails(cap) }}
+                      </v-list-item-subtitle>
+                    </v-list-item>
+                  </v-list>
+                </v-expand-transition>
+              </div>
+              <div class="text-body-2 mt-4 mb-2">
                 <strong>Facets:</strong> {{ metadata?.facets.length ?? 0 }}
               </div>
-              <div v-if="metadata?.capabilityCatalog?.length" class="text-body-2">
-                <strong>Catalog:</strong>
-                <v-chip
-                  v-for="cap in metadata.capabilityCatalog"
-                  :key="cap.id"
-                  size="small"
-                  color="primary"
-                  class="me-1 mb-1"
-                  variant="outlined"
-                >
-                  {{ cap.name }}
-                </v-chip>
+              <div v-if="facetCatalogEntries.length" class="mt-1">
+                <div class="d-flex align-center justify-space-between mb-1">
+                  <div class="text-caption text-medium-emphasis text-uppercase">Facet catalog</div>
+                  <v-btn
+                    icon
+                    size="x-small"
+                    variant="text"
+                    :aria-label="showFacetSnapshot ? 'Collapse facets' : 'Expand facets'"
+                    @click="showFacetSnapshot = !showFacetSnapshot"
+                  >
+                    <v-icon :icon="showFacetSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                  </v-btn>
+                </div>
+                <v-expand-transition>
+                  <div v-if="showFacetSnapshot" class="registry-facets">
+                    <v-chip
+                      v-for="facet in facetCatalogEntries"
+                      :key="facet.name"
+                      size="small"
+                      class="me-1 mb-1"
+                      variant="outlined"
+                      :color="facetDirectionColor(facet.metadata?.direction)"
+                    >
+                      <span>{{ formatFacetLabel(facet) }}</span>
+                      <span
+                        v-if="facet.metadata?.direction"
+                        class="ms-2 text-caption text-medium-emphasis"
+                      >
+                        {{ formatFacetDirectionLabel(facet.metadata?.direction) }}
+                      </span>
+                    </v-chip>
+                  </div>
+                </v-expand-transition>
+              </div>
+              <div v-if="metadata?.capabilityCatalog?.length" class="mt-4">
+                <div class="d-flex align-center justify-space-between mb-1">
+                  <div class="text-caption text-medium-emphasis text-uppercase">Capability catalog prompts</div>
+                  <v-btn
+                    icon
+                    size="x-small"
+                    variant="text"
+                    :aria-label="showCatalogSnapshot ? 'Collapse catalog prompts' : 'Expand catalog prompts'"
+                    @click="showCatalogSnapshot = !showCatalogSnapshot"
+                  >
+                    <v-icon :icon="showCatalogSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                  </v-btn>
+                </div>
+                <v-expand-transition>
+                  <div v-if="showCatalogSnapshot" class="d-flex flex-wrap">
+                    <v-chip
+                      v-for="cap in metadata.capabilityCatalog"
+                      :key="cap.id"
+                      size="small"
+                      color="primary"
+                      class="me-1 mb-1"
+                      variant="outlined"
+                    >
+                      {{ cap.name }} <span class="text-caption text-medium-emphasis ms-2">({{ cap.id }})</span>
+                    </v-chip>
+                  </div>
+                </v-expand-transition>
               </div>
               <v-alert
                 v-if="metadataError"
@@ -880,7 +1181,7 @@ watch(
               />
               <v-textarea
                 v-model="draftText"
-                class="font-mono sandbox-editor"
+                class="font-mono sandbox-editor flex-grow-1"
                 variant="outlined"
                 :no-resize="true"
                 row-height="18"
@@ -901,6 +1202,14 @@ watch(
                 @click="abortRun"
               >
                 Stop
+              </v-btn>
+              <v-btn
+                v-else-if="runStatus === 'hitl'"
+                prepend-icon="mdi-reload"
+                variant="text"
+                @click="handleHitlResume"
+              >
+                Resume
               </v-btn>
               <v-spacer />
               <div class="d-flex flex-column text-caption text-medium-emphasis">
@@ -960,6 +1269,10 @@ watch(
         </v-col>
 
         <v-col cols="12" md="4" class="d-flex flex-column ga-4">
+          <HitlPromptPanel
+            v-if="showHitlPanel"
+            @resume="handleHitlResume"
+          />
           <FlexSandboxPlanInspector
             :plan="plan"
             :capability-catalog="capabilityRecords"
@@ -1020,9 +1333,33 @@ watch(
   max-height: 0;
   opacity: 0;
 }
+.sandbox-editor {
+  display: flex;
+  flex-direction: column;
+}
+.sandbox-editor :deep(.v-field) {
+  flex: 1 1 auto;
+  display: flex;
+}
+.sandbox-editor :deep(.v-field__field) {
+  flex: 1 1 auto;
+  display: flex;
+}
 .sandbox-editor :deep(textarea) {
-  height: 420px !important;
-  max-height: 420px;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 240px;
   overflow-y: auto !important;
+  resize: none !important;
+}
+.registry-overview-list {
+  background-color: transparent;
+}
+.registry-overview-list :deep(.v-list-item-title) {
+  font-weight: 500;
+}
+.registry-facets {
+  display: flex;
+  flex-wrap: wrap;
 }
 </style>
