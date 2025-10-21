@@ -11,7 +11,8 @@ import type {
   CapabilityRecord,
   CapabilityContract,
   JsonSchemaShape,
-  RuntimePolicy
+  RuntimePolicy,
+  Action
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -23,10 +24,22 @@ import { getLogger } from './logger'
 import { RunContext, type FacetEntry, type FacetSnapshot } from './run-context'
 import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
 import type { RuntimePolicyEffect } from './policy-normalizer'
+import type { PendingPolicyActionState, PolicyAttemptState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
 type AjvInstance = ReturnType<typeof Ajv>
 type AjvValidateFn = ReturnType<AjvInstance['compile']>
+
+type RuntimePolicyActionResult =
+  | { kind: 'goto'; nextIndex: number }
+  | { kind: 'noop' }
+
+const POLICY_ACTION_SOURCE = {
+  runtime: 'runtime',
+  approval: 'hitl.approve',
+  rejection: 'hitl.reject'
+} as const
+type PolicyActionSource = (typeof POLICY_ACTION_SOURCE)[keyof typeof POLICY_ACTION_SOURCE]
 
 class FlexValidationError extends Error {
   constructor(
@@ -191,6 +204,9 @@ export type FlexExecutionOptions = {
     completedNodeIds?: string[]
     nodeOutputs?: Record<string, Record<string, unknown>>
     facets?: Record<string, FacetEntry>
+    policyActions?: PendingPolicyActionState[]
+    policyAttempts?: PolicyAttemptState
+    mode?: RuntimePolicySnapshotMode
   }
   runContext?: RunContext
   schemaHash?: string | null
@@ -207,6 +223,20 @@ export class HitlPauseError extends Error {
   }
 }
 
+export class RunPausedError extends Error {
+  constructor(message = 'Execution paused by runtime policy') {
+    super(message)
+    this.name = 'RunPausedError'
+  }
+}
+
+export class RuntimePolicyFailureError extends Error {
+  constructor(public readonly policyId: string, message: string) {
+    super(message)
+    this.name = 'RuntimePolicyFailureError'
+  }
+}
+
 export type ReplanTrigger = {
   reason: string
   details?: Record<string, unknown>
@@ -219,6 +249,8 @@ export class ReplanRequestedError extends Error {
       completedNodeIds: string[]
       nodeOutputs: Record<string, Record<string, unknown>>
       facets: Record<string, FacetEntry>
+      policyActions?: PendingPolicyActionState[]
+      policyAttempts?: PolicyAttemptState
     }
   ) {
     super('Replan requested')
@@ -322,13 +354,45 @@ export class FlexExecutionEngine {
       RunContext.fromSnapshot((opts.initialState?.facets as Record<string, FacetEntry> | undefined) ?? undefined)
     const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
     const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    const policyActions: PendingPolicyActionState[] = Array.isArray(opts.initialState?.policyActions)
+      ? opts.initialState!.policyActions.map((action) => ({ ...action }))
+      : []
+    const policyAttempts = new Map<string, number>(Object.entries(opts.initialState?.policyAttempts ?? {}))
     for (const node of plan.nodes) {
       nodeStatuses.set(node.id, completedNodeIds.has(node.id) ? 'completed' : 'pending')
     }
 
-    for (const node of plan.nodes) {
+    let startIndex = 0
+    if (policyActions.length) {
+      const pendingDispatch = await this.processPendingPolicyActions({
+        runId,
+        envelope,
+        plan,
+        opts,
+        runContext,
+        nodeOutputs,
+        nodeStatuses,
+        nodeTimings,
+        completedNodeIds,
+        policyActions,
+        policyAttempts
+      })
+      policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
+      if (typeof pendingDispatch.nextIndex === 'number') {
+        startIndex = pendingDispatch.nextIndex
+      }
+    }
+
+    if (startIndex === 0) {
+      const firstPendingIndex = plan.nodes.findIndex((node) => !completedNodeIds.has(node.id))
+      startIndex = firstPendingIndex >= 0 ? firstPendingIndex : plan.nodes.length
+    }
+
+    for (let index = startIndex; index < plan.nodes.length; ) {
+      const node = plan.nodes[index]
       if (completedNodeIds.has(node.id)) {
         nodeStatuses.set(node.id, 'completed')
+        index += 1
         continue
       }
       const isVirtual = !node.capabilityId
@@ -337,6 +401,7 @@ export class FlexExecutionEngine {
         await this.handleVirtualNode(runId, node, opts)
         nodeStatuses.set(node.id, 'completed')
         completedNodeIds.add(node.id)
+        index += 1
         continue
       }
 
@@ -416,31 +481,51 @@ export class FlexExecutionEngine {
             throw new ReplanRequestedError(effect.trigger, {
               completedNodeIds: Array.from(completedNodeIds),
               nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
-              facets: runContext.snapshot()
+              facets: runContext.snapshot(),
+              policyActions: policyActions.length ? policyActions.map((action) => ({ ...action })) : undefined,
+              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
             })
           }
           if (effect.kind === 'action') {
-            await this.handleRuntimePolicyAction(effect.policy, {
-              runId,
-              envelope,
-              plan,
-              opts,
-              node,
-              runContext,
-              nodeOutputs,
-              nodeStatuses,
-              nodeTimings,
-              completedNodeIds
-            })
-      }
-    }
-  } catch (error) {
-    if (error instanceof ReplanRequestedError) {
-      throw error
-    }
-    if (error instanceof HitlPauseError) {
-      throw error
-    }
+            const actionOutcome = await this.handleRuntimePolicyAction(
+              effect.policy,
+              {
+                runId,
+                envelope,
+                plan,
+                opts,
+                node,
+                runContext,
+                nodeOutputs,
+                nodeStatuses,
+                nodeTimings,
+                completedNodeIds,
+                policyActions,
+                policyAttempts
+              },
+              { source: POLICY_ACTION_SOURCE.runtime }
+            )
+            if (actionOutcome?.kind === 'goto') {
+              index = actionOutcome.nextIndex
+              continue
+            }
+          }
+        }
+
+        index += 1
+      } catch (error) {
+        if (error instanceof ReplanRequestedError) {
+          throw error
+        }
+        if (error instanceof HitlPauseError) {
+          throw error
+        }
+        if (error instanceof RunPausedError) {
+          throw error
+        }
+        if (error instanceof RuntimePolicyFailureError) {
+          throw error
+        }
         const errorAt = new Date()
         const serialized = this.serializeError(error)
         nodeStatuses.set(node.id, 'error')
@@ -498,7 +583,9 @@ export class FlexExecutionEngine {
         nodeStatuses,
         nodeTimings,
         completedNodeIds,
-        schemaHash: opts.schemaHash ?? null
+        schemaHash: opts.schemaHash ?? null,
+        policyActions,
+        policyAttempts
       })
     }
 
@@ -525,7 +612,10 @@ export class FlexExecutionEngine {
         planMetadata: plan.metadata,
         pendingState: {
           completedNodeIds: Array.from(completedNodeIds),
-          nodeOutputs: Object.fromEntries(nodeOutputs.entries())
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+          policyActions: this.clonePolicyActions(policyActions),
+          policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+          mode: opts.initialState?.mode
         }
       }
     })
@@ -600,21 +690,33 @@ export class FlexExecutionEngine {
       nodeStatuses: Map<string, FlexPlanNodeStatus>
       nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
       completedNodeIds: Set<string>
-    }
-  ): Promise<void> {
+      policyActions: PendingPolicyActionState[]
+      policyAttempts: Map<string, number>
+    },
+    options: {
+      actionOverride?: Action
+      source?: PolicyActionSource
+      requestId?: string | null
+    } = {}
+  ): Promise<RuntimePolicyActionResult | null> {
+    const action = options.actionOverride ?? policy.action
+    const actionDetails = this.describePolicyAction(action)
+    const source = options.source ?? POLICY_ACTION_SOURCE.runtime
     const policyPayload: Record<string, unknown> = {
       policyId: policy.id,
-      action: policy.action.type,
+      action: action.type,
+      actionDetails,
       nodeId: context.node.id,
-      capabilityId: context.node.capabilityId
+      capabilityId: context.node.capabilityId,
+      source
     }
-    if (policy.action.rationale) {
-      policyPayload.rationale = policy.action.rationale
+    if (options.requestId) {
+      policyPayload.requestId = options.requestId
     }
-    if (policy.action.type === 'emit') {
-      policyPayload.event = policy.action.event
-      if (policy.action.payload !== undefined) {
-        policyPayload.payload = policy.action.payload
+    if (action.type === 'emit') {
+      policyPayload.event = action.event
+      if (action.payload !== undefined) {
+        policyPayload.payload = action.payload
       }
     }
     try {
@@ -622,14 +724,22 @@ export class FlexExecutionEngine {
         this.buildEvent('policy_triggered', policyPayload, {
           runId: context.runId,
           nodeId: context.node.id,
-          message: `runtime_policy:${policy.action.type}`
+          message: `runtime_policy:${source}:${action.type}`
         })
       )
     } catch {}
 
-    switch (policy.action.type) {
+    switch (action.type) {
       case 'hitl': {
         const finalOutput = context.runContext.composeFinalOutput(context.envelope.outputContract, context.plan)
+        const followUpEntry: PendingPolicyActionState = {
+          policyId: policy.id,
+          nodeId: context.node.id,
+          requestId: null,
+          approveAction: action.approveAction ?? undefined,
+          rejectAction: action.rejectAction ?? undefined
+        }
+        context.policyActions.push(followUpEntry)
         await this.triggerHitlPause({
           runId: context.runId,
           envelope: context.envelope,
@@ -643,31 +753,56 @@ export class FlexExecutionEngine {
           nodeTimings: context.nodeTimings,
           completedNodeIds: context.completedNodeIds,
           schemaHash: context.opts.schemaHash ?? null,
-          rationale: policy.action.rationale,
-          policyId: policy.id
+          rationale: action.rationale,
+          policyId: policy.id,
+          pendingPolicyAction: followUpEntry,
+          policyActions: context.policyActions,
+          policyAttempts: context.policyAttempts
         })
-        break
+        return { kind: 'noop' }
       }
       case 'emit': {
         await this.emitRuntimeEvent({
           runId: context.runId,
           node: context.node,
           opts: context.opts,
-          eventName: policy.action.event,
-          payload: policy.action.payload ?? {},
+          eventName: action.event,
+          payload: action.payload ?? {},
           policyId: policy.id,
-          rationale: policy.action.rationale
+          rationale: action.rationale
         })
-        break
+        return { kind: 'noop' }
+      }
+      case 'goto': {
+        return await this.handleGotoAction({
+          policy,
+          action,
+          context
+        })
+      }
+      case 'fail': {
+        throw new RuntimePolicyFailureError(
+          policy.id,
+          action.message ?? `Runtime policy ${policy.id} requested failure`
+        )
+      }
+      case 'pause': {
+        await this.triggerPolicyPause({
+          policyId: policy.id,
+          reason: action.reason,
+          context
+        })
+        return { kind: 'noop' }
       }
       default: {
         try {
           getLogger().warn('flex_runtime_policy_unhandled', {
             runId: context.runId,
             policyId: policy.id,
-            action: policy.action.type
+            action: action.type
           })
         } catch {}
+        return { kind: 'noop' }
       }
     }
   }
@@ -993,6 +1128,311 @@ export class FlexExecutionEngine {
     } catch {}
   }
 
+  private describePolicyAction(action: Action): Record<string, unknown> {
+    switch (action.type) {
+      case 'goto':
+        return {
+          type: 'goto',
+          next: action.next,
+          ...(action.maxAttempts ? { maxAttempts: action.maxAttempts } : {})
+        }
+      case 'hitl':
+        return {
+          type: 'hitl',
+          ...(action.rationale ? { rationale: action.rationale } : {}),
+          ...(action.approveAction ? { approveAction: this.describePolicyAction(action.approveAction) } : {}),
+          ...(action.rejectAction ? { rejectAction: this.describePolicyAction(action.rejectAction) } : {})
+        }
+      case 'fail':
+        return {
+          type: 'fail',
+          ...(action.message ? { message: action.message } : {})
+        }
+      case 'pause':
+        return {
+          type: 'pause',
+          ...(action.reason ? { reason: action.reason } : {})
+        }
+      case 'emit':
+        return {
+          type: 'emit',
+          event: action.event,
+          ...(action.payload ? { payload: action.payload } : {})
+        }
+      case 'replan':
+        return {
+          type: 'replan',
+          ...(action.rationale ? { rationale: action.rationale } : {})
+        }
+      default:
+        return { type: action.type }
+    }
+  }
+
+  private clonePolicyActions(actions: PendingPolicyActionState[]): PendingPolicyActionState[] {
+    return actions.map((action) => JSON.parse(JSON.stringify(action)) as PendingPolicyActionState)
+  }
+
+  private async handleGotoAction(args: {
+    policy: RuntimePolicy
+    action: Extract<Action, { type: 'goto' }>
+    context: {
+      runId: string
+      plan: FlexPlan
+      opts: FlexExecutionOptions
+      node: FlexPlanNode
+      nodeOutputs: Map<string, Record<string, unknown>>
+      nodeStatuses: Map<string, FlexPlanNodeStatus>
+      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      completedNodeIds: Set<string>
+      policyAttempts: Map<string, number>
+    }
+  }): Promise<RuntimePolicyActionResult> {
+    const { policy, action, context } = args
+    const attempts = (context.policyAttempts.get(policy.id) ?? 0) + 1
+    context.policyAttempts.set(policy.id, attempts)
+    const maxAttempts = action.maxAttempts ?? 1
+    if (attempts > maxAttempts) {
+      try {
+        getLogger().info('flex_runtime_policy_goto_skipped', {
+          runId: context.runId,
+          policyId: policy.id,
+          next: action.next,
+          attempts,
+          maxAttempts
+        })
+      } catch {}
+      return { kind: 'noop' }
+    }
+
+    const targetIndex = context.plan.nodes.findIndex((node) => node.id === action.next)
+    if (targetIndex === -1) {
+      try {
+        getLogger().warn('flex_runtime_policy_goto_missing_node', {
+          runId: context.runId,
+          policyId: policy.id,
+          next: action.next
+        })
+      } catch {}
+      return { kind: 'noop' }
+    }
+
+    for (let i = targetIndex; i < context.plan.nodes.length; i++) {
+      const targetNode = context.plan.nodes[i]
+      context.completedNodeIds.delete(targetNode.id)
+      context.nodeOutputs.delete(targetNode.id)
+      context.nodeStatuses.set(targetNode.id, 'pending')
+      context.nodeTimings.delete(targetNode.id)
+      await this.persistence.markNode(context.runId, targetNode.id, {
+        status: 'pending',
+        output: null,
+        completedAt: null
+      })
+    }
+
+    try {
+      getLogger().info('flex_runtime_policy_goto', {
+        runId: context.runId,
+        policyId: policy.id,
+        next: action.next,
+        attempts,
+        maxAttempts
+      })
+    } catch {}
+
+    try {
+      await context.opts.onEvent(
+        this.buildEvent(
+          'policy_update',
+          {
+            policyId: policy.id,
+            action: 'goto',
+            next: action.next,
+            attempts,
+            maxAttempts
+          },
+          {
+            runId: context.runId,
+            nodeId: context.node.id,
+            message: `runtime_policy_goto:${action.next}`
+          }
+        )
+      )
+    } catch {}
+
+    return { kind: 'goto', nextIndex: targetIndex }
+  }
+
+  private async triggerPolicyPause(args: {
+    policyId: string
+    reason?: string
+    context: {
+      runId: string
+      envelope: TaskEnvelope
+      plan: FlexPlan
+      opts: FlexExecutionOptions
+      node: FlexPlanNode
+      runContext: RunContext
+      nodeOutputs: Map<string, Record<string, unknown>>
+      nodeStatuses: Map<string, FlexPlanNodeStatus>
+      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      completedNodeIds: Set<string>
+      policyActions: PendingPolicyActionState[]
+      policyAttempts: Map<string, number>
+    }
+  }): Promise<never> {
+    const { policyId, reason, context } = args
+    const facetsSnapshot = context.runContext.snapshot()
+    const snapshotNodes = this.buildPlanSnapshotNodes(
+      context.plan,
+      context.nodeStatuses,
+      context.nodeOutputs,
+      context.nodeTimings
+    )
+    await this.persistence.savePlanSnapshot(context.runId, context.plan.version, snapshotNodes, {
+      facets: facetsSnapshot,
+      schemaHash: context.opts.schemaHash ?? null,
+      edges: context.plan.edges,
+      planMetadata: context.plan.metadata,
+      pendingState: {
+        completedNodeIds: Array.from(context.completedNodeIds),
+        nodeOutputs: Object.fromEntries(context.nodeOutputs.entries()),
+        policyActions: this.clonePolicyActions(context.policyActions),
+        policyAttempts: context.policyAttempts.size
+          ? Object.fromEntries(context.policyAttempts.entries())
+          : undefined,
+        mode: 'pause'
+      }
+    })
+    await this.persistence.updateStatus(context.runId, 'awaiting_hitl')
+
+    try {
+      getLogger().info('flex_runtime_policy_paused', {
+        runId: context.runId,
+        policyId,
+        reason
+      })
+    } catch {}
+
+    try {
+      await context.opts.onEvent(
+        this.buildEvent(
+          'policy_update',
+          {
+            policyId,
+            action: 'pause',
+            reason: reason ?? null
+          },
+          {
+            runId: context.runId,
+            nodeId: context.node.id,
+            message: reason ?? `runtime_policy_pause:${policyId}`
+          }
+        )
+      )
+    } catch {}
+
+    throw new RunPausedError(reason ?? `Runtime policy ${policyId} requested pause`)
+  }
+
+  private async processPendingPolicyActions(args: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeStatuses: Map<string, FlexPlanNodeStatus>
+    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    completedNodeIds: Set<string>
+    policyActions: PendingPolicyActionState[]
+    policyAttempts: Map<string, number>
+  }): Promise<{ remainingActions: PendingPolicyActionState[]; nextIndex: number | null }> {
+    const hitlState = args.opts.hitl?.state
+    if (!hitlState) {
+      return { remainingActions: args.policyActions, nextIndex: null }
+    }
+
+    const remaining: PendingPolicyActionState[] = []
+    let nextIndex: number | null = null
+
+    for (const entry of args.policyActions) {
+      if (!entry.requestId) {
+        remaining.push(entry)
+        continue
+      }
+
+      const decision = this.resolveHitlDecision(hitlState, entry.requestId)
+      if (!decision) {
+        remaining.push(entry)
+        continue
+      }
+
+      const followUpAction =
+        decision === 'approve'
+          ? entry.approveAction ?? null
+          : entry.rejectAction ?? { type: 'fail', message: `Runtime policy ${entry.policyId} rejected by HITL` }
+
+      if (!followUpAction) {
+        continue
+      }
+
+      const targetNode =
+        args.plan.nodes.find((node) => node.id === entry.nodeId) ?? args.plan.nodes[args.plan.nodes.length - 1]
+
+      const syntheticPolicy: RuntimePolicy = {
+        id: entry.policyId,
+        enabled: true,
+        trigger: { kind: 'manual' },
+        action: followUpAction
+      }
+
+      const actionOutcome = await this.handleRuntimePolicyAction(
+        syntheticPolicy,
+        {
+          runId: args.runId,
+          envelope: args.envelope,
+          plan: args.plan,
+          opts: args.opts,
+          node: targetNode,
+          runContext: args.runContext,
+          nodeOutputs: args.nodeOutputs,
+          nodeStatuses: args.nodeStatuses,
+          nodeTimings: args.nodeTimings,
+          completedNodeIds: args.completedNodeIds,
+          policyActions: args.policyActions,
+          policyAttempts: args.policyAttempts
+        },
+        {
+          actionOverride: followUpAction,
+          source: decision === 'approve' ? POLICY_ACTION_SOURCE.approval : POLICY_ACTION_SOURCE.rejection,
+          requestId: entry.requestId
+        }
+      )
+
+      if (actionOutcome?.kind === 'goto') {
+        nextIndex = nextIndex === null ? actionOutcome.nextIndex : Math.min(nextIndex, actionOutcome.nextIndex)
+      }
+    }
+
+    return {
+      remainingActions: remaining,
+      nextIndex
+    }
+  }
+
+  private resolveHitlDecision(state: HitlRunState, requestId: string): 'approve' | 'reject' | null {
+    const responses = state.responses.filter((response) => response.requestId === requestId)
+    if (!responses.length) return null
+    const latest = responses[responses.length - 1]
+    if (typeof latest.approved === 'boolean') {
+      return latest.approved ? 'approve' : 'reject'
+    }
+    if (latest.responseType === 'approval') return 'approve'
+    if (latest.responseType === 'rejection') return 'reject'
+    return null
+  }
+
   private requiresHitlApproval(envelope: TaskEnvelope): boolean {
     const policyDirectives = envelope.policies?.planner?.directives as Record<string, unknown> | undefined
     if (policyDirectives && typeof policyDirectives.requiresHitlApproval === 'boolean') {
@@ -1020,6 +1460,9 @@ export class FlexExecutionEngine {
     schemaHash?: string | null
     rationale?: string
     policyId?: string
+    pendingPolicyAction?: PendingPolicyActionState
+    policyActions: PendingPolicyActionState[]
+    policyAttempts: Map<string, number>
   }): Promise<never> {
     const {
       runId,
@@ -1035,7 +1478,10 @@ export class FlexExecutionEngine {
       completedNodeIds,
       schemaHash,
       rationale,
-      policyId
+      policyId,
+      pendingPolicyAction,
+      policyActions,
+      policyAttempts
     } = args
 
     const hitl = opts.hitl
@@ -1087,6 +1533,10 @@ export class FlexExecutionEngine {
       throw new Error('HITL request was not created')
     }
 
+    if (pendingPolicyAction) {
+      pendingPolicyAction.requestId = pendingRecord.id
+    }
+
     await this.persistence.markNode(runId, targetNode.id, {
       status: 'awaiting_hitl',
       context: targetNode.bundle
@@ -1096,7 +1546,9 @@ export class FlexExecutionEngine {
     const pendingStateSnapshot = {
       completedNodeIds: Array.from(completedNodeIds),
       nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
-      facets: runContext.snapshot()
+      facets: runContext.snapshot(),
+      policyActions: this.clonePolicyActions(policyActions),
+      policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
     }
     await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
       facets: pendingStateSnapshot.facets,
@@ -1105,7 +1557,10 @@ export class FlexExecutionEngine {
       planMetadata: plan.metadata,
       pendingState: {
         completedNodeIds: pendingStateSnapshot.completedNodeIds,
-        nodeOutputs: pendingStateSnapshot.nodeOutputs
+        nodeOutputs: pendingStateSnapshot.nodeOutputs,
+        policyActions: pendingStateSnapshot.policyActions,
+        policyAttempts: pendingStateSnapshot.policyAttempts,
+        mode: 'hitl'
       }
     })
     await this.persistence.updateStatus(runId, 'awaiting_hitl')
@@ -1291,8 +1746,55 @@ export class FlexExecutionEngine {
     const nodeOutputs = new Map<string, Record<string, unknown>>()
     const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
     const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    const policyActions: PendingPolicyActionState[] = Array.isArray(opts.initialState?.policyActions)
+      ? opts.initialState!.policyActions.map((action) => ({ ...action }))
+      : []
+    const policyAttempts = new Map<string, number>(Object.entries(opts.initialState?.policyAttempts ?? {}))
+    if (opts.initialState?.nodeOutputs) {
+      for (const [nodeId, output] of Object.entries(opts.initialState.nodeOutputs)) {
+        nodeOutputs.set(nodeId, { ...(output ?? {}) })
+      }
+    }
+
+    const completedNodeIds = new Set<string>(
+      opts.initialState?.completedNodeIds ?? plan.nodes.map((node) => node.id)
+    )
+
     for (const node of plan.nodes) {
-      nodeStatuses.set(node.id, 'completed')
+      nodeStatuses.set(node.id, completedNodeIds.has(node.id) ? 'completed' : 'pending')
+    }
+
+    if (policyActions.length) {
+      const pendingDispatch = await this.processPendingPolicyActions({
+        runId,
+        envelope,
+        plan,
+        opts,
+        runContext: activeRunContext,
+        nodeOutputs,
+        nodeStatuses,
+        nodeTimings,
+        completedNodeIds,
+        policyActions,
+        policyAttempts
+      })
+      policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
+      if (typeof pendingDispatch.nextIndex === 'number') {
+        return this.execute(runId, envelope, plan, {
+          onEvent: opts.onEvent,
+          correlationId: opts.correlationId,
+          hitl: opts.hitl,
+          initialState: {
+            completedNodeIds: Array.from(completedNodeIds),
+            nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+            policyActions,
+            policyAttempts: Object.fromEntries(policyAttempts.entries()),
+            mode: opts.initialState?.mode
+          },
+          runContext: activeRunContext,
+          schemaHash: opts.schemaHash ?? null
+        })
+      }
     }
 
     if (opts.runContext) {
@@ -1392,8 +1894,11 @@ export class FlexExecutionEngine {
         edges: plan.edges,
         planMetadata: plan.metadata,
         pendingState: {
-          completedNodeIds: plan.nodes.map((node) => node.id),
-          nodeOutputs: Object.fromEntries(nodeOutputs.entries())
+          completedNodeIds: Array.from(completedNodeIds),
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+          policyActions: this.clonePolicyActions(policyActions),
+          policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+          mode: opts.initialState?.mode
         }
       }
     })

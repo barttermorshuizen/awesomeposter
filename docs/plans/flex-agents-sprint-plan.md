@@ -95,7 +95,9 @@
 ### Candidate Stories
 - Follow-up resilience tasks (e.g., dynamic policy conflict handling, planner heuristics refinements).
 - Operator enablement tasks: finalizing feature flag rollout SOP, UI polish for flex popup.
-- Policy action/runtime work (8.23 Flex Policy Action Execution, 8.24 Flex Conditional Action Node, 8.25 Flex Planner Envelope-Driven Context) — all gated on 8.9 completion.
+- Policy action/runtime work (8.23 Flex Policy Action Execution, 8.25 Flex Planner Envelope-Driven Context) — all gated on 8.9 completion.
+- 8.24 Flex Conditional Action Node — needs refinement to resolve overlap between planner-authored branching and existing runtime policies before scheduling (targeted for Sprint 3 once direction is confirmed).
+- **New:** 8.27 Flex Runtime Node Selector Extension — depends on 8.26 and the policy runtime stories above; expands selector grammar once fallback execution is stable.
 - Additional capability onboarding or automation stories (e.g., 8.11+ once prioritized).
 
 ### Dependencies & Considerations

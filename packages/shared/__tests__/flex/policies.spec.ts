@@ -61,11 +61,16 @@ describe('TaskPolicies schema', () => {
   it('parses each trigger and action variant', () => {
     const parsed = parseTaskPolicies({
       runtime: [
-        { id: 'goto', trigger: { kind: 'onStart' }, action: { type: 'goto', next: 'node-2' } },
+        { id: 'goto', trigger: { kind: 'onStart' }, action: { type: 'goto', next: 'node-2', maxAttempts: 2 } },
         {
           id: 'validation-hitl',
           trigger: { kind: 'onValidationFail', selector: { kind: 'qa' } },
-          action: { type: 'hitl' }
+          action: {
+            type: 'hitl',
+            rationale: 'manual QA approval',
+            approveAction: { type: 'emit', event: 'qa_approved' },
+            rejectAction: { type: 'fail', message: 'qa_rejected' }
+          }
         },
         {
           id: 'metric-fail',
@@ -87,6 +92,39 @@ describe('TaskPolicies schema', () => {
 
     const actionTypes = parsed.runtime.map((policy) => policy.action.type)
     expect(actionTypes).toEqual(['goto', 'hitl', 'fail', 'emit', 'pause'])
+    const hitlPolicy = parsed.runtime.find((policy) => policy.id === 'validation-hitl')
+    expect(hitlPolicy?.action).toMatchObject({
+      approveAction: { type: 'emit', event: 'qa_approved' },
+      rejectAction: { type: 'fail', message: 'qa_rejected' }
+    })
+  })
+
+  it('rejects legacy action names with helpful error', () => {
+    expect(() =>
+      parseTaskPolicies({
+        runtime: [
+          {
+            id: 'legacy-hitl',
+            trigger: { kind: 'manual' },
+            action: { type: 'hitl_pause' } as any
+          }
+        ]
+      })
+    ).toThrowError(/Legacy runtime policy action \\"hitl_pause\\" detected/)
+  })
+
+  it('rejects unknown action names with supported list', () => {
+    expect(() =>
+      parseTaskPolicies({
+        runtime: [
+          {
+            id: 'unknown-action',
+            trigger: { kind: 'manual' },
+            action: { type: 'teleport' } as any
+          }
+        ]
+      })
+    ).toThrowError(/Unknown runtime policy action \\"teleport\\"/)
   })
 
   it('enforces goto actions to specify a next node', () => {

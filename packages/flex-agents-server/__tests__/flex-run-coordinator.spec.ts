@@ -1,6 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import type { FlexEvent, TaskEnvelope, HitlRunState, HitlRequestRecord, HitlRequestPayload, TaskPolicies } from '@awesomeposter/shared'
+import type {
+  FlexEvent,
+  TaskEnvelope,
+  HitlRunState,
+  HitlRequestRecord,
+  HitlRequestPayload,
+  TaskPolicies,
+  HitlResponseInput
+} from '@awesomeposter/shared'
 import { parseTaskPolicies } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
@@ -10,6 +18,7 @@ import { CONTENT_CAPABILITY_ID } from '../src/agents/content-generator'
 import { STRATEGY_CAPABILITY_ID } from '../src/agents/strategy-manager'
 import { QA_CAPABILITY_ID } from '../src/agents/quality-assurance'
 import type { PlannerServiceInterface, PlannerServiceInput } from '../src/services/planner-service'
+import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from '../src/services/runtime-policy-types'
 
 class MemoryFlexPersistence {
   runs = new Map<string, any>()
@@ -56,7 +65,13 @@ class MemoryFlexPersistence {
       schemaHash?: string | null
       edges?: unknown
       planMetadata?: Record<string, unknown>
-      pendingState?: { completedNodeIds: string[]; nodeOutputs: Record<string, Record<string, unknown>> }
+      pendingState?: {
+        completedNodeIds: string[]
+        nodeOutputs: Record<string, Record<string, unknown>>
+        policyActions?: PendingPolicyActionState[]
+        policyAttempts?: Record<string, number>
+        mode?: RuntimePolicySnapshotMode
+      }
     } = {}
   ) {
     this.planVersions.set(runId, version)
@@ -91,7 +106,14 @@ class MemoryFlexPersistence {
           ? {
               pendingState: {
                 completedNodeIds: [...options.pendingState.completedNodeIds],
-                nodeOutputs: { ...options.pendingState.nodeOutputs }
+                nodeOutputs: { ...options.pendingState.nodeOutputs },
+                ...(options.pendingState.policyActions
+                  ? { policyActions: options.pendingState.policyActions.map((action) => ({ ...action })) }
+                  : {}),
+                ...(options.pendingState.policyAttempts
+                  ? { policyAttempts: { ...options.pendingState.policyAttempts } }
+                  : {}),
+                ...(options.pendingState.mode ? { mode: options.pendingState.mode } : {})
               }
             }
           : {})
@@ -233,7 +255,34 @@ class StubHitlService {
     return { status: 'pending' as const, request: record }
   }
 
-  async applyResponses() {
+  async applyResponses(runId: string, responses: HitlResponseInput[]) {
+    if (!responses || !responses.length) return this.state
+    const now = new Date()
+    for (const response of responses) {
+      const record = {
+        id: `resp_${Math.random().toString(36).slice(2, 8)}`,
+        requestId: response.requestId,
+        responseType:
+          response.responseType || (typeof response.approved === 'boolean' ? (response.approved ? 'approval' : 'rejection') : 'freeform'),
+        selectedOptionId: response.selectedOptionId,
+        freeformText: response.freeformText,
+        approved: response.approved,
+        responderId: response.responderId,
+        responderDisplayName: response.responderDisplayName,
+        createdAt: now,
+        metadata: response.metadata
+      }
+      this.state = {
+        requests: this.state.requests.map((req) =>
+          req.id === record.requestId
+            ? { ...req, status: 'resolved', updatedAt: now }
+            : req
+        ),
+        responses: [...this.state.responses, record],
+        pendingRequestId: this.state.pendingRequestId === record.requestId ? null : this.state.pendingRequestId,
+        deniedCount: this.state.deniedCount
+      }
+    }
     return this.state
   }
 
@@ -1078,6 +1127,172 @@ describe('FlexRunCoordinator', () => {
       (evt) => evt.type === 'policy_update' && (evt.payload as any)?.event === 'qa_feedback_ready'
     )
     expect(updateEvt).toBeTruthy()
+  })
+
+  it('retries target node via goto action respecting max attempts', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+    const events: FlexEvent[] = []
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'retry-on-qa',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: { type: 'goto', next: 'ContentGeneratorAgent_linkedinVariants_2', maxAttempts: 1 }
+          }
+        ]
+      }
+    })
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_goto_retry',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(result.status).toBe('completed')
+    const contentCompletions = events.filter(
+      (evt) => evt.type === 'node_complete' && (evt.payload as any)?.capabilityId === CONTENT_CAPABILITY_ID
+    ).length
+    const qaCompletions = events.filter(
+      (evt) => evt.type === 'node_complete' && (evt.payload as any)?.capabilityId === QA_CAPABILITY_ID
+    ).length
+    expect(contentCompletions).toBe(2)
+    expect(qaCompletions).toBe(2)
+  })
+
+  it('fails run when runtime policy requests failure', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'force-fail',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: { type: 'fail', message: 'policy forced failure' }
+          }
+        ]
+      }
+    })
+
+    await expect(
+      coordinator.run(envelope, {
+        correlationId: 'cid_fail_policy',
+        onEvent: async () => {}
+      })
+    ).rejects.toThrow(/policy forced failure/)
+
+    const recordedRunId = Array.from(persistence.statuses.keys()).pop()
+    expect(recordedRunId).toBeTruthy()
+    expect(persistence.statuses.get(recordedRunId!)).toBe('failed')
+  })
+
+  it('pauses run and resumes execution when policy pause triggers', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+    const events: FlexEvent[] = []
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'pause-on-qa',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: { type: 'pause', reason: 'manual hold' }
+          }
+        ]
+      }
+    })
+
+    const pauseResult = await coordinator.run(envelope, {
+      correlationId: 'cid_policy_pause',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(pauseResult.status).toBe('awaiting_hitl')
+    expect(pauseResult.output).toBeNull()
+
+    const resumeEnvelope = buildEnvelope({
+      constraints: {
+        resumeRunId: pauseResult.runId,
+        threadId: pauseResult.runId
+      },
+      policies: {
+        planner: {},
+        runtime: []
+      }
+    })
+
+    const resumeEvents: FlexEvent[] = []
+    const resumeResult = await coordinator.run(resumeEnvelope, {
+      correlationId: 'cid_policy_pause_resume',
+      onEvent: async (evt) => resumeEvents.push(evt)
+    })
+
+    expect(resumeResult.status).toBe('completed')
+    expect(persistence.statuses.get(resumeResult.runId)).toBe('completed')
+  })
+
+  it('applies hitl rejection follow-up action and fails the run', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator, hitlService } = createCoordinator(persistence)
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'qa-hitl',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: { type: 'hitl', rationale: 'Needs manual approval' }
+          }
+        ]
+      }
+    })
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_hitl_reject',
+      onEvent: async () => {}
+    })
+
+    expect(result.status).toBe('awaiting_hitl')
+    const pendingRequestId = hitlService.state.pendingRequestId
+    expect(pendingRequestId).toBeTruthy()
+
+    const storedSnapshot = persistence.snapshots.get(result.runId)
+    const storedPolicyActions = storedSnapshot?.snapshot?.pendingState?.policyActions ?? []
+    expect(Array.isArray(storedPolicyActions)).toBe(true)
+    expect(storedPolicyActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ policyId: 'qa-hitl', requestId: expect.any(String) })
+      ])
+    )
+
+    await hitlService.applyResponses(result.runId, [{ requestId: pendingRequestId!, approved: false }])
+
+    const resumeEnvelope = buildEnvelope({
+      constraints: {
+        resumeRunId: result.runId,
+        threadId: hitlService.state.requests[0]?.threadId ?? result.runId
+      },
+      policies: {
+        planner: {},
+        runtime: []
+      }
+    })
+
+    await expect(
+      coordinator.run(resumeEnvelope, {
+        correlationId: 'cid_hitl_reject_resume',
+        onEvent: async () => {}
+      })
+    ).rejects.toThrow(/Runtime policy/)
   })
 
   it('starts a fresh run when threadId matches a completed run', async () => {

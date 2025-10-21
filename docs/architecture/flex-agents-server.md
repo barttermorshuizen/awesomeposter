@@ -105,18 +105,23 @@ Runtime policies watch execution signals and request a unified `Action` when the
 
 ```ts
 export type Action =
-  | { type: "goto"; next: string }
+  | { type: "goto"; next: string; maxAttempts?: number }
   | { type: "replan"; rationale?: string }
-  | { type: "hitl"; rationale?: string }
+  | {
+      type: "hitl"
+      rationale?: string
+      approveAction?: Action
+      rejectAction?: Action
+    }
   | { type: "fail"; message?: string }
   | { type: "pause"; reason?: string }
   | { type: "emit"; event: string; payload?: Record<string, any> };
 
 export interface RuntimePolicy {
-  id: string;
-  enabled?: boolean;
-  trigger: PolicyTrigger;
-  action: Action;
+  id: string
+  enabled?: boolean
+  trigger: PolicyTrigger
+  action: Action
 }
 
 export type PolicyTrigger =
@@ -133,6 +138,8 @@ export interface NodeSelector {
   capabilityId?: string;
 }
 ```
+
+Runtime policy validation now rejects unknown action names with migration hints (for example `hitl_pause → hitl`) so callers only reference the canonical union above. `goto` handlers track per-policy attempt counts and stop retrying once `maxAttempts` (default `1`) is exhausted. `hitl` directives can chain follow-up `Action`s that execute once the operator approves or rejects a request; approval defaults to “resume” when no nested action is supplied while rejection falls back to a terminal `fail`. `pause` actions persist the full execution snapshot – including policy state – so resumptions continue deterministically without re-planning.
 
 Example payload:
 
@@ -477,7 +484,7 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 - `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
 - `plan_updated`: new plan version persisted after replanning; payload includes `previousVersion`, `version`, and summary node statuses.
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
-- `policy_triggered`: emitted when runtime policies force a replan; payload describes the triggering directive.
+- `policy_triggered`: emitted when runtime policies fire; payload includes canonical `actionDetails` (type, metadata, nested follow-ups) alongside legacy fields so clients can identify the requested behaviour.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
 - `complete`: final frame containing `payload.output` that satisfies the caller schema.
@@ -679,6 +686,10 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - Phase 1: implement planner, policy normalization, and dynamic bundling for the create-post use case; run dual writes to existing agents server for comparison.
 - Phase 2: enable HITL + rehydration parity, then allow selected operator accounts to use the flex popup in production via feature flag.
 - Phase 3: migrate additional workflows (brief creation, QA scoring) once parity confidence is high; plan eventual retirement of legacy orchestrator.
+
+## 13. Verification
+- `packages/shared/__tests__/flex/policies.spec.ts` validates the canonical runtime action union, nested HITL follow-ups, and legacy name guards.
+- `packages/flex-agents-server/__tests__/flex-run-coordinator.spec.ts` covers goto retry limits, explicit fail actions, pause/resume snapshots, and HITL rejection defaults to prevent runtime regressions.
 
 ## 14. Risks & Open Questions
 - Planner correctness: dynamic graph generation increases complexity; we need strong telemetry and debug tooling to trace decisions.

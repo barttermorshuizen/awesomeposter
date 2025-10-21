@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { ZodError, z } from 'zod'
 
 const LooseRecordSchema = z.record(z.unknown())
 
@@ -38,33 +38,73 @@ export const PolicyTriggerSchema = z.discriminatedUnion('kind', [
 ])
 export type PolicyTrigger = z.infer<typeof PolicyTriggerSchema>
 
-export const ActionSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('goto'),
-    next: z.string().min(1)
-  }),
-  z.object({
-    type: z.literal('replan'),
-    rationale: z.string().min(1).optional()
-  }),
-  z.object({
-    type: z.literal('hitl'),
-    rationale: z.string().min(1).optional()
-  }),
-  z.object({
-    type: z.literal('fail'),
-    message: z.string().min(1).optional()
-  }),
-  z.object({
-    type: z.literal('pause'),
-    reason: z.string().min(1).optional()
-  }),
-  z.object({
-    type: z.literal('emit'),
-    event: z.string().min(1),
-    payload: LooseRecordSchema.optional()
-  })
-])
+const CANONICAL_ACTION_TYPES = new Set(['goto', 'replan', 'hitl', 'fail', 'pause', 'emit'] as const)
+
+const LEGACY_ACTION_ALIASES: Record<string, string> = {
+  goto_node: 'goto',
+  retry_node: 'goto',
+  replan_run: 'replan',
+  hitl_pause: 'hitl',
+  fail_run: 'fail',
+  pause_run: 'pause',
+  log_only: 'emit'
+}
+
+const ActionSchemaInternal = z.lazy(() =>
+  z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('goto'),
+      next: z.string().min(1),
+      maxAttempts: z.number().int().positive().optional()
+    }),
+    z.object({
+      type: z.literal('replan'),
+      rationale: z.string().min(1).optional()
+    }),
+    z.object({
+      type: z.literal('hitl'),
+      rationale: z.string().min(1).optional(),
+      approveAction: ActionSchemaInternal.optional(),
+      rejectAction: ActionSchemaInternal.optional()
+    }),
+    z.object({
+      type: z.literal('fail'),
+      message: z.string().min(1).optional()
+    }),
+    z.object({
+      type: z.literal('pause'),
+      reason: z.string().min(1).optional()
+    }),
+    z.object({
+      type: z.literal('emit'),
+      event: z.string().min(1),
+      payload: LooseRecordSchema.optional()
+    })
+  ])
+)
+
+export const ActionSchema = z.preprocess((input) => {
+  if (!input || typeof input !== 'object') return input
+  const candidate = input as Record<string, unknown>
+  const rawType = candidate.type
+  if (typeof rawType === 'string') {
+    if (CANONICAL_ACTION_TYPES.has(rawType as any)) {
+      return input
+    }
+    const mapped = LEGACY_ACTION_ALIASES[rawType]
+    const message = mapped
+      ? `Legacy runtime policy action "${rawType}" detected. Update the policy to use canonical action "${mapped}".`
+      : `Unknown runtime policy action "${rawType}". Supported actions: ${Array.from(CANONICAL_ACTION_TYPES).join(', ')}.`
+    throw new ZodError([
+      {
+        path: ['type'],
+        message,
+        code: z.ZodIssueCode.custom
+      }
+    ])
+  }
+  return input
+}, ActionSchemaInternal)
 export type Action = z.infer<typeof ActionSchema>
 
 export const RuntimePolicySchema = z

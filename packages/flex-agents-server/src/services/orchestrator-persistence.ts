@@ -11,6 +11,7 @@ import type {
   FlexPlan,
   FlexPlanEdge
 } from './flex-planner'
+import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 
 export type OrchestratorRunStatus =
   | 'pending'
@@ -343,6 +344,9 @@ export type FlexRunRecord = {
 type PlanSnapshotState = {
   completedNodeIds: string[]
   nodeOutputs: Record<string, Record<string, unknown>>
+  policyActions?: PendingPolicyActionState[]
+  policyAttempts?: Record<string, number>
+  mode?: RuntimePolicySnapshotMode
 }
 
 type SavePlanSnapshotOptions = {
@@ -552,7 +556,14 @@ export class FlexRunPersistence {
         pendingState: options.pendingState
           ? {
               completedNodeIds: clone(options.pendingState.completedNodeIds),
-              nodeOutputs: clone(options.pendingState.nodeOutputs)
+              nodeOutputs: clone(options.pendingState.nodeOutputs),
+              ...(options.pendingState.policyActions
+                ? { policyActions: clone(options.pendingState.policyActions) }
+                : {}),
+              ...(options.pendingState.policyAttempts
+                ? { policyAttempts: clone(options.pendingState.policyAttempts) }
+                : {}),
+              ...(options.pendingState.mode ? { mode: options.pendingState.mode } : {})
             }
           : undefined
       }

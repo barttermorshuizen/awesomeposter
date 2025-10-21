@@ -18,10 +18,11 @@ import {
   type FlexPlanEdge,
   type PlannerGraphState
 } from './flex-planner'
-import { FlexExecutionEngine, HitlPauseError, ReplanRequestedError } from './flex-execution-engine'
+import { FlexExecutionEngine, HitlPauseError, ReplanRequestedError, RunPausedError } from './flex-execution-engine'
 import { getHitlService, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
 import { RunContext, type FacetSnapshot } from './run-context'
+import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 
 type RunOptions = {
   onEvent: (event: FlexEvent) => Promise<void>
@@ -348,6 +349,35 @@ export class FlexRunCoordinator {
         }
       })
 
+      const pendingStateSnapshotRaw =
+        latestSnapshot && latestSnapshot.snapshot && typeof latestSnapshot.snapshot === 'object'
+          ? (latestSnapshot.snapshot as { pendingState?: unknown }).pendingState ?? null
+          : null
+      const resumeInitialState = pendingStateSnapshotRaw
+        ? {
+            completedNodeIds: Array.isArray((pendingStateSnapshotRaw as any).completedNodeIds)
+              ? ((pendingStateSnapshotRaw as any).completedNodeIds as string[])
+              : [],
+            nodeOutputs:
+              (pendingStateSnapshotRaw as any).nodeOutputs &&
+              typeof (pendingStateSnapshotRaw as any).nodeOutputs === 'object'
+                ? ((pendingStateSnapshotRaw as any).nodeOutputs as Record<string, Record<string, unknown>>)
+                : {},
+            policyActions: Array.isArray((pendingStateSnapshotRaw as any).policyActions)
+              ? ((pendingStateSnapshotRaw as any).policyActions as PendingPolicyActionState[])
+              : [],
+            policyAttempts:
+              (pendingStateSnapshotRaw as any).policyAttempts &&
+              typeof (pendingStateSnapshotRaw as any).policyAttempts === 'object'
+                ? ((pendingStateSnapshotRaw as any).policyAttempts as Record<string, number>)
+                : {},
+            mode:
+              typeof (pendingStateSnapshotRaw as any).mode === 'string'
+                ? ((pendingStateSnapshotRaw as any).mode as RuntimePolicySnapshotMode)
+                : undefined
+          }
+        : undefined
+
       const contextProjection = runContext.composeFinalOutput(envelopeToUse.outputContract, plan)
       const persistedOutput = resumeCandidate.run.result ?? this.extractFinalOutput(resumeCandidate.nodes) ?? {}
       if (!Object.keys(contextProjection).length && Object.keys(persistedOutput).length) {
@@ -376,7 +406,16 @@ export class FlexRunCoordinator {
           updateState: updateHitlState
         },
         schemaHash: schemaHashValue,
-        runContext
+        runContext,
+        initialState: resumeInitialState
+          ? {
+              completedNodeIds: resumeInitialState.completedNodeIds,
+              nodeOutputs: resumeInitialState.nodeOutputs,
+              policyActions: resumeInitialState.policyActions,
+              policyAttempts: resumeInitialState.policyAttempts,
+              mode: resumeInitialState.mode
+            }
+          : undefined
       })
       await this.persistence.saveRunContext(runId, runContext.snapshot())
       this.emittedHitlResolutions.delete(runId)
@@ -404,12 +443,14 @@ export class FlexRunCoordinator {
         facets: runContext.snapshot(),
         schemaHash: schemaHashValue,
         edges: activePlan.edges,
-        planMetadata: activePlan.metadata,
-        pendingState: {
-          completedNodeIds: [],
-          nodeOutputs: {}
-        }
-      })
+      planMetadata: activePlan.metadata,
+      pendingState: {
+        completedNodeIds: [],
+        nodeOutputs: {},
+        policyActions: [],
+        policyAttempts: {}
+      }
+    })
       await opts.onEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -457,11 +498,16 @@ export class FlexRunCoordinator {
 
       await this.persistence.updateStatus(runId, 'running')
       let finalOutput: Record<string, unknown> | null = null
-      let pendingState: {
-        completedNodeIds: string[]
-        nodeOutputs: Record<string, Record<string, unknown>>
-        facets: FacetSnapshot
-      } | undefined
+      let pendingState:
+        | {
+            completedNodeIds: string[]
+            nodeOutputs: Record<string, Record<string, unknown>>
+            facets: FacetSnapshot
+            policyActions?: PendingPolicyActionState[]
+            policyAttempts?: Record<string, number>
+            mode?: RuntimePolicySnapshotMode
+          }
+        | undefined
 
       while (!finalOutput) {
         try {
@@ -489,7 +535,9 @@ export class FlexRunCoordinator {
             pendingState = {
               completedNodeIds: error.state.completedNodeIds,
               nodeOutputs: error.state.nodeOutputs,
-              facets: error.state.facets
+              facets: error.state.facets,
+              ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
+              ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
             }
             await opts.onEvent({
               type: 'policy_triggered',
@@ -547,7 +595,10 @@ export class FlexRunCoordinator {
               planMetadata: activePlan.metadata,
               pendingState: {
                 completedNodeIds: pendingState!.completedNodeIds,
-                nodeOutputs: pendingState!.nodeOutputs
+                nodeOutputs: pendingState!.nodeOutputs,
+                policyActions: pendingState!.policyActions ?? [],
+                policyAttempts: pendingState!.policyAttempts ?? {},
+                mode: pendingState!.mode
               }
             })
             await opts.onEvent({
@@ -607,7 +658,7 @@ export class FlexRunCoordinator {
       return { runId, status: 'completed', output: finalOutput }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err))
-      if (error instanceof HitlPauseError) {
+      if (error instanceof HitlPauseError || error instanceof RunPausedError) {
         await this.persistence.saveRunContext(runId, runContext.snapshot())
         await this.persistence.updateStatus(runId, 'awaiting_hitl')
         return { runId, status: 'awaiting_hitl', output: null }
