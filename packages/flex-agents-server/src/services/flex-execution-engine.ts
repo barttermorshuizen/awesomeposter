@@ -10,7 +10,8 @@ import type {
   HitlRequestPayload,
   CapabilityRecord,
   CapabilityContract,
-  JsonSchemaShape
+  JsonSchemaShape,
+  RuntimePolicy
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -21,6 +22,7 @@ import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
 import { RunContext, type FacetEntry, type FacetSnapshot } from './run-context'
 import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
+import type { RuntimePolicyEffect } from './policy-normalizer'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
 type AjvInstance = ReturnType<typeof Ajv>
@@ -180,7 +182,11 @@ export type FlexExecutionOptions = {
     output: Record<string, unknown>
     runId: string
     plan: FlexPlan
-  }) => Promise<ReplanTrigger | null | void> | ReplanTrigger | null | void
+  }) =>
+    | Promise<RuntimePolicyEffect | null | void>
+    | RuntimePolicyEffect
+    | null
+    | void
   initialState?: {
     completedNodeIds?: string[]
     nodeOutputs?: Record<string, Record<string, unknown>>
@@ -399,23 +405,42 @@ export class FlexExecutionEngine {
           )
         )
 
-        const trigger = await opts.onNodeComplete?.({
+        const effect = await opts.onNodeComplete?.({
           node,
           output: result.output,
           runId,
           plan
         })
-        if (trigger) {
-          throw new ReplanRequestedError(trigger, {
-            completedNodeIds: Array.from(completedNodeIds),
-            nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
-            facets: runContext.snapshot()
-          })
-        }
-      } catch (error) {
-        if (error instanceof ReplanRequestedError) {
-          throw error
-        }
+        if (effect) {
+          if (effect.kind === 'replan') {
+            throw new ReplanRequestedError(effect.trigger, {
+              completedNodeIds: Array.from(completedNodeIds),
+              nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+              facets: runContext.snapshot()
+            })
+          }
+          if (effect.kind === 'action') {
+            await this.handleRuntimePolicyAction(effect.policy, {
+              runId,
+              envelope,
+              plan,
+              opts,
+              node,
+              runContext,
+              nodeOutputs,
+              nodeStatuses,
+              nodeTimings,
+              completedNodeIds
+            })
+      }
+    }
+  } catch (error) {
+    if (error instanceof ReplanRequestedError) {
+      throw error
+    }
+    if (error instanceof HitlPauseError) {
+      throw error
+    }
         const errorAt = new Date()
         const serialized = this.serializeError(error)
         nodeStatuses.set(node.id, 'error')
@@ -456,74 +481,25 @@ export class FlexExecutionEngine {
       Object.keys(composedOutput).length > 0 ? composedOutput : this.composeFinalOutput(plan, nodeOutputs)
 
     if (this.requiresHitlApproval(envelope)) {
-      const hitl = opts.hitl
-      if (!hitl) {
-        throw new Error('HITL context unavailable for flex run')
-      }
       const terminalNode = this.getTerminalExecutionNode(plan)
       if (!terminalNode) {
         throw new Error('No terminal node available for HITL approval')
       }
 
-      let latestState = hitl.state
-      let pendingRecord: HitlRequestRecord | null = null
-      await this.persistence.recordPendingResult(runId, finalOutput)
-
-      await withHitlContext(
-        {
-          runId,
-          threadId: hitl.threadId ?? undefined,
-          stepId: terminalNode.id,
-          capabilityId: terminalNode.capabilityId,
-          hitlService: hitl.service,
-          limit: hitl.limit,
-          onRequest: (record, state) => {
-            pendingRecord = record
-            latestState = state
-          },
-          onDenied: async (reason, state) => {
-            latestState = state
-            if (hitl.onDenied) await hitl.onDenied(reason, state)
-          },
-          snapshot: hitl.state
-        },
-        async () => {
-          const payload = this.buildHitlPayload(envelope, finalOutput)
-          const result = await hitl.service.raiseRequest(payload)
-          if (result.status === 'denied') {
-            throw new Error(result.reason || 'HITL request denied')
-          }
-        }
-      )
-
-      if (latestState !== hitl.state) {
-        hitl.state = latestState
-        hitl.updateState?.(latestState)
-      }
-
-      if (pendingRecord) {
-        await this.persistence.markNode(runId, terminalNode.id, {
-          status: 'awaiting_hitl',
-          context: terminalNode.bundle
-        })
-        nodeStatuses.set(terminalNode.id, 'awaiting_hitl')
-        const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
-        await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
-          facets: runContext.snapshot(),
-          schemaHash: opts.schemaHash ?? null,
-          edges: plan.edges,
-          planMetadata: plan.metadata,
-          pendingState: {
-            completedNodeIds: Array.from(completedNodeIds),
-            nodeOutputs: Object.fromEntries(nodeOutputs.entries())
-          }
-        })
-        await this.persistence.updateStatus(runId, 'awaiting_hitl')
-        if (hitl.onRequest) {
-          await hitl.onRequest(pendingRecord, latestState)
-        }
-        throw new HitlPauseError()
-      }
+      await this.triggerHitlPause({
+        runId,
+        envelope,
+        plan,
+        opts,
+        runContext,
+        targetNode: terminalNode,
+        finalOutput,
+        nodeOutputs,
+        nodeStatuses,
+        nodeTimings,
+        completedNodeIds,
+        schemaHash: opts.schemaHash ?? null
+      })
     }
 
     await this.ensureOutputMatchesContract(
@@ -609,6 +585,91 @@ export class FlexExecutionEngine {
       return capability
     }
     throw new Error(`Capability ${capabilityId} not registered or inactive`)
+  }
+
+  private async handleRuntimePolicyAction(
+    policy: RuntimePolicy,
+    context: {
+      runId: string
+      envelope: TaskEnvelope
+      plan: FlexPlan
+      opts: FlexExecutionOptions
+      node: FlexPlanNode
+      runContext: RunContext
+      nodeOutputs: Map<string, Record<string, unknown>>
+      nodeStatuses: Map<string, FlexPlanNodeStatus>
+      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      completedNodeIds: Set<string>
+    }
+  ): Promise<void> {
+    const policyPayload: Record<string, unknown> = {
+      policyId: policy.id,
+      action: policy.action.type,
+      nodeId: context.node.id,
+      capabilityId: context.node.capabilityId
+    }
+    if (policy.action.rationale) {
+      policyPayload.rationale = policy.action.rationale
+    }
+    if (policy.action.type === 'emit') {
+      policyPayload.event = policy.action.event
+      if (policy.action.payload !== undefined) {
+        policyPayload.payload = policy.action.payload
+      }
+    }
+    try {
+      await context.opts.onEvent(
+        this.buildEvent('policy_triggered', policyPayload, {
+          runId: context.runId,
+          nodeId: context.node.id,
+          message: `runtime_policy:${policy.action.type}`
+        })
+      )
+    } catch {}
+
+    switch (policy.action.type) {
+      case 'hitl': {
+        const finalOutput = context.runContext.composeFinalOutput(context.envelope.outputContract, context.plan)
+        await this.triggerHitlPause({
+          runId: context.runId,
+          envelope: context.envelope,
+          plan: context.plan,
+          opts: context.opts,
+          runContext: context.runContext,
+          targetNode: context.node,
+          finalOutput,
+          nodeOutputs: context.nodeOutputs,
+          nodeStatuses: context.nodeStatuses,
+          nodeTimings: context.nodeTimings,
+          completedNodeIds: context.completedNodeIds,
+          schemaHash: context.opts.schemaHash ?? null,
+          rationale: policy.action.rationale,
+          policyId: policy.id
+        })
+        break
+      }
+      case 'emit': {
+        await this.emitRuntimeEvent({
+          runId: context.runId,
+          node: context.node,
+          opts: context.opts,
+          eventName: policy.action.event,
+          payload: policy.action.payload ?? {},
+          policyId: policy.id,
+          rationale: policy.action.rationale
+        })
+        break
+      }
+      default: {
+        try {
+          getLogger().warn('flex_runtime_policy_unhandled', {
+            runId: context.runId,
+            policyId: policy.id,
+            action: policy.action.type
+          })
+        } catch {}
+      }
+    }
   }
 
   private async validateCapabilityInputs(
@@ -846,7 +907,11 @@ export class FlexExecutionEngine {
     return plan.nodes[plan.nodes.length - 1]
   }
 
-  private buildHitlPayload(envelope: TaskEnvelope, finalOutput: Record<string, unknown>): HitlRequestPayload {
+  private buildHitlPayload(
+    envelope: TaskEnvelope,
+    finalOutput: Record<string, unknown>,
+    overrides?: { question?: string | null; policyId?: string; nodeLabel?: string }
+  ): HitlRequestPayload {
     const variants = Array.isArray((finalOutput as any)?.copyVariants) ? (finalOutput as any).copyVariants : []
     const objective = (envelope.objective || '').trim()
     const summaryLines = [
@@ -856,8 +921,18 @@ export class FlexExecutionEngine {
         : 'No structured variants detected.'
     ].filter(Boolean) as string[]
 
+    if (overrides?.policyId) {
+      summaryLines.push(`Runtime policy: ${overrides.policyId}`)
+    }
+    if (overrides?.nodeLabel) {
+      summaryLines.push(`Triggered by node: ${overrides.nodeLabel}`)
+    }
+
+    const defaultQuestion = 'Review generated flex run output and approve before completing the request.'
+    const question = overrides?.question?.trim() ? overrides.question.trim() : defaultQuestion
+
     return {
-      question: 'Review generated flex run output and approve before completing the request.',
+      question,
       kind: 'approval',
       options: [
         { id: 'approve', label: 'Approve output' },
@@ -869,16 +944,175 @@ export class FlexExecutionEngine {
     }
   }
 
+  private async emitRuntimeEvent(args: {
+    runId: string
+    node: FlexPlanNode
+    opts: FlexExecutionOptions
+    eventName: string
+    payload: Record<string, unknown>
+    policyId: string
+    rationale?: string
+  }) {
+    const { runId, node, opts, eventName, payload, policyId, rationale } = args
+    try {
+      await opts.onEvent(
+        this.buildEvent(
+          'policy_update',
+          {
+            policyId,
+            action: 'emit',
+            event: eventName,
+            payload
+          },
+          {
+            runId,
+            nodeId: node.id,
+            message: `runtime_policy_emit:${eventName}`
+          }
+        )
+      )
+    } catch {}
+    try {
+      await opts.onEvent(
+        this.buildEvent(
+          'log',
+          {
+            severity: 'info',
+            policyId,
+            action: 'emit',
+            event: eventName,
+            payload
+          },
+          {
+            runId,
+            nodeId: node.id,
+            message: rationale ?? undefined
+          }
+        )
+      )
+    } catch {}
+  }
+
   private requiresHitlApproval(envelope: TaskEnvelope): boolean {
-    const policies = (envelope.policies ?? {}) as Record<string, unknown>
-    if (typeof policies.requiresHitlApproval === 'boolean') {
-      return policies.requiresHitlApproval
+    const policyDirectives = envelope.policies?.planner?.directives as Record<string, unknown> | undefined
+    if (policyDirectives && typeof policyDirectives.requiresHitlApproval === 'boolean') {
+      return policyDirectives.requiresHitlApproval
     }
     const constraints = (envelope.constraints ?? {}) as Record<string, unknown>
     if (typeof constraints.requiresHitlApproval === 'boolean') {
       return constraints.requiresHitlApproval
     }
     return false
+  }
+
+  private async triggerHitlPause(args: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    targetNode: FlexPlanNode
+    finalOutput: Record<string, unknown>
+    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeStatuses: Map<string, FlexPlanNodeStatus>
+    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    completedNodeIds: Set<string>
+    schemaHash?: string | null
+    rationale?: string
+    policyId?: string
+  }): Promise<never> {
+    const {
+      runId,
+      envelope,
+      plan,
+      opts,
+      runContext,
+      targetNode,
+      finalOutput,
+      nodeOutputs,
+      nodeStatuses,
+      nodeTimings,
+      completedNodeIds,
+      schemaHash,
+      rationale,
+      policyId
+    } = args
+
+    const hitl = opts.hitl
+    if (!hitl) {
+      throw new Error('HITL context unavailable for flex run')
+    }
+
+    let latestState = hitl.state
+    let pendingRecord: HitlRequestRecord | null = null
+    await this.persistence.recordPendingResult(runId, finalOutput)
+
+    await withHitlContext(
+      {
+        runId,
+        threadId: hitl.threadId ?? undefined,
+        stepId: targetNode.id,
+        capabilityId: targetNode.capabilityId,
+        hitlService: hitl.service,
+        limit: hitl.limit,
+        onRequest: (record, state) => {
+          pendingRecord = record
+          latestState = state
+        },
+        onDenied: async (reason, state) => {
+          latestState = state
+          if (hitl.onDenied) await hitl.onDenied(reason, state)
+        },
+        snapshot: hitl.state
+      },
+      async () => {
+        const payload = this.buildHitlPayload(envelope, finalOutput, {
+          question: rationale,
+          policyId,
+          nodeLabel: targetNode.label
+        })
+        const result = await hitl.service.raiseRequest(payload)
+        if (result.status === 'denied') {
+          throw new Error(result.reason || 'HITL request denied')
+        }
+      }
+    )
+
+    if (latestState !== hitl.state) {
+      hitl.state = latestState
+      hitl.updateState?.(latestState)
+    }
+
+    if (!pendingRecord) {
+      throw new Error('HITL request was not created')
+    }
+
+    await this.persistence.markNode(runId, targetNode.id, {
+      status: 'awaiting_hitl',
+      context: targetNode.bundle
+    })
+    nodeStatuses.set(targetNode.id, 'awaiting_hitl')
+    const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+    const pendingStateSnapshot = {
+      completedNodeIds: Array.from(completedNodeIds),
+      nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+      facets: runContext.snapshot()
+    }
+    await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
+      facets: pendingStateSnapshot.facets,
+      schemaHash: schemaHash ?? null,
+      edges: plan.edges,
+      planMetadata: plan.metadata,
+      pendingState: {
+        completedNodeIds: pendingStateSnapshot.completedNodeIds,
+        nodeOutputs: pendingStateSnapshot.nodeOutputs
+      }
+    })
+    await this.persistence.updateStatus(runId, 'awaiting_hitl')
+    if (hitl.onRequest) {
+      await hitl.onRequest(pendingRecord, latestState)
+    }
+    throw new HitlPauseError()
   }
 
   private async ensureOutputMatchesContract(

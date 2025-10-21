@@ -91,9 +91,12 @@ const DEFAULT_ENVELOPE: TaskEnvelope = {
     }
   },
   policies: {
-    plannerDirectives: {
-      disallowStages: []
-    }
+    planner: {
+      directives: {
+        disallowStages: []
+      }
+    },
+    runtime: []
   },
   specialInstructions: [],
   outputContract: {
@@ -145,8 +148,14 @@ const templates = computed(() => metadata.value?.templates ?? [])
 const capabilityRecords = computed(() => metadata.value?.capabilities?.all ?? [])
 const capabilityMap = computed(() => {
   const map = new Map<string, CapabilityRecord>()
-  for (const cap of capabilityRecords.value) {
+  const active = metadata.value?.capabilities?.active ?? []
+  for (const cap of active) {
     map.set(cap.capabilityId, cap)
+  }
+  for (const cap of capabilityRecords.value) {
+    if (!map.has(cap.capabilityId)) {
+      map.set(cap.capabilityId, cap)
+    }
   }
   return map
 })
@@ -377,12 +386,14 @@ function runDomainValidation(envelope: TaskEnvelope): { errors: string[]; warnin
 
   const capabilities = capabilityMap.value
   if (capabilities.size > 0) {
-    const directives = (envelope.policies as Record<string, unknown> | undefined)?.plannerDirectives as
-      | Record<string, unknown>
-      | undefined
-    const preferred = Array.isArray(directives?.preferredCapabilities)
-      ? (directives!.preferredCapabilities as unknown[])
+    const planner = envelope.policies?.planner
+    const canonicalPreferred = planner?.selection?.prefer ?? []
+    const directivePreferred = Array.isArray(
+      (planner?.directives as Record<string, unknown> | undefined)?.preferredCapabilities
+    )
+      ? ((planner!.directives as Record<string, unknown>).preferredCapabilities as unknown[])
       : []
+    const preferred = Array.from(new Set([...canonicalPreferred, ...directivePreferred]))
     for (const entry of preferred) {
       if (typeof entry !== 'string') {
         errors.push(`Preferred capability entries must be strings; received ${String(entry)}`)
@@ -618,6 +629,16 @@ function handleEvent(evt: FlexEventWithId) {
         }
       }
       break
+    case 'hitl_resolved': {
+      runStatus.value = 'running'
+      const resolution = extractHitlResolution(evt.payload)
+      if (resolution) {
+        hitlStore.completeRequest({ requestId: resolution.id })
+      } else {
+        hitlStore.clearRequest('resolved')
+      }
+      break
+    }
     case 'validation_error': {
       runStatus.value = 'error'
       const payload = (evt.payload ?? {}) as Record<string, unknown>
@@ -890,14 +911,23 @@ function extractHitlRequest(payload: unknown): {
     typeof createdRaw === 'string'
       ? createdRaw
       : createdRaw instanceof Date
-        ? createdRaw.toISOString()
-        : undefined
+      ? createdRaw.toISOString()
+      : undefined
   return {
     id,
     originAgent,
     requestPayload: payloadResult.data,
     createdAt
   }
+}
+
+function extractHitlResolution(payload: unknown): { id: string } | null {
+  if (!isRecord(payload)) return null
+  const request = payload.request
+  if (!isRecord(request)) return null
+  const id = typeof request.id === 'string' ? request.id : null
+  if (!id) return null
+  return { id }
 }
 onMounted(() => {
   if (FLEX_SANDBOX_ENABLED) {

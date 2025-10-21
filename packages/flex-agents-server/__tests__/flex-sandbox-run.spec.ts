@@ -59,7 +59,7 @@ describe('FlexRunCoordinator sandbox emission', () => {
     const envelope: TaskEnvelope = {
       objective: 'Validate plan stream',
       inputs: {},
-      policies: {},
+      policies: { runtime: [] },
       specialInstructions: [],
       outputContract: { mode: 'json_schema', schema: { type: 'object', additionalProperties: true } }
     }

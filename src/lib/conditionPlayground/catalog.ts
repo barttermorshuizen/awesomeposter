@@ -1,14 +1,10 @@
-import type { MockConditionCatalog, MockConditionVariableType } from '@awesomeposter/shared'
+import {
+  conditionVariableCatalog,
+  type ConditionVariableCatalog,
+  type ConditionVariableDefinition,
+} from '@awesomeposter/shared'
 
-export interface PlaygroundVariable {
-  id: string
-  path: string
-  label: string
-  type: MockConditionVariableType
-  group: string
-  description?: string
-  example?: unknown
-}
+export type PlaygroundVariable = ConditionVariableDefinition
 
 export interface PlaygroundSamplePayload {
   id: string
@@ -17,98 +13,8 @@ export interface PlaygroundSamplePayload {
   payload: Record<string, unknown>
 }
 
-export const playgroundVariables: readonly PlaygroundVariable[] = [
-  {
-    id: 'qaFindings.overallScore',
-    path: 'qaFindings.overallScore',
-    label: 'QA Findings · Overall Score',
-    type: 'number',
-    group: 'QA Findings',
-    description: 'Aggregated QA score between 0 and 1. Lower indicates higher risk.',
-    example: 0.42,
-  },
-  {
-    id: 'qaFindings.flagsCount',
-    path: 'qaFindings.flagsCount',
-    label: 'QA Findings · Flags Count',
-    type: 'number',
-    group: 'QA Findings',
-    description: 'Total number of QA flags raised for the run.',
-    example: 3,
-  },
-  {
-    id: 'qaFindings.containsCritical',
-    path: 'qaFindings.containsCritical',
-    label: 'QA Findings · Has Critical Flag',
-    type: 'boolean',
-    group: 'QA Findings',
-    description: 'True when a critical flag was raised (e.g. policy violation).',
-    example: true,
-  },
-  {
-    id: 'qaFindings.flagCodes',
-    path: 'qaFindings.flagCodes',
-    label: 'QA Findings · Flag Codes',
-    type: 'array',
-    group: 'QA Findings',
-    description: 'List of QA flag identifiers attached to the run.',
-    example: ['plagiarism', 'safety_low_confidence'],
-  },
-  {
-    id: 'brief.id',
-    path: 'brief.id',
-    label: 'Brief · Identifier',
-    type: 'string',
-    group: 'Brief Metadata',
-    description: 'Unique identifier for the originating brief.',
-    example: 'brief_123',
-  },
-  {
-    id: 'brief.language',
-    path: 'brief.language',
-    label: 'Brief · Language',
-    type: 'string',
-    group: 'Brief Metadata',
-    description: 'ISO language code for the requested output.',
-    example: 'en-US',
-  },
-  {
-    id: 'brief.priority',
-    path: 'brief.priority',
-    label: 'Brief · Priority',
-    type: 'string',
-    group: 'Brief Metadata',
-    description: 'Operational priority (e.g. `standard`, `urgent`, `pilot`).',
-    example: 'pilot',
-  },
-  {
-    id: 'run.latencyMs',
-    path: 'run.latencyMs',
-    label: 'Run · Latency (ms)',
-    type: 'number',
-    group: 'Runtime Signals',
-    description: 'Total elapsed time in milliseconds for the planner run.',
-    example: 1280,
-  },
-  {
-    id: 'run.revisionCount',
-    path: 'run.revisionCount',
-    label: 'Run · Revisions Count',
-    type: 'number',
-    group: 'Runtime Signals',
-    description: 'Number of revisions requested during the run.',
-    example: 2,
-  },
-  {
-    id: 'run.requiresHitl',
-    path: 'run.requiresHitl',
-    label: 'Run · Requires HITL',
-    type: 'boolean',
-    group: 'Runtime Signals',
-    description: 'True when the run is waiting on a human-in-the-loop response.',
-    example: false,
-  },
-] as const
+export const playgroundVariables: readonly PlaygroundVariable[] =
+  conditionVariableCatalog.variables
 
 export const playgroundSamples: readonly PlaygroundSamplePayload[] = [
   {
@@ -182,19 +88,13 @@ export const playgroundSamples: readonly PlaygroundSamplePayload[] = [
   },
 ] as const
 
-export function createMockCatalog(): MockConditionCatalog {
-  return {
-    variables: playgroundVariables.map((variable) => ({
-      id: variable.id,
-      path: variable.path,
-      type: variable.type,
-    })),
-  }
+export function getCatalog(): ConditionVariableCatalog {
+  return conditionVariableCatalog
 }
 
 export function buildVariableLookup(): Map<string, PlaygroundVariable> {
   const map = new Map<string, PlaygroundVariable>()
-  for (const variable of playgroundVariables) {
+  for (const variable of conditionVariableCatalog.variables) {
     map.set(variable.id, variable)
   }
   return map

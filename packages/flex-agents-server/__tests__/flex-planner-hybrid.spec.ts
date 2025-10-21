@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import type { PlannerServiceInterface } from '../src/services/planner-service'
+import { parseTaskPolicies } from '@awesomeposter/shared'
+import type { PlannerServiceInterface, PlannerServiceInput } from '../src/services/planner-service'
 import { FlexPlanner, PlannerDraftRejectedError } from '../src/services/flex-planner'
 
 const ACTIVE_CAPABILITY = {
@@ -43,8 +44,18 @@ const envelope = {
     objectiveBrief: 'Describe the new product launch.'
   },
   policies: {
-    maxTokens: 400,
-    replanAfter: ['generation']
+    planner: {
+      optimisation: {
+        maxTokens: 400
+      }
+    },
+    runtime: [
+      {
+        id: 'replan_generation_stage',
+        trigger: { kind: 'onNodeComplete', selector: { kind: 'generation' } },
+        action: { type: 'replan', rationale: 'Legacy stage directive' }
+      }
+    ]
   },
   outputContract: {
     mode: 'json_schema' as const,
@@ -57,7 +68,7 @@ const envelope = {
 describe('FlexPlanner hybrid handshake', () => {
   it('invokes onRequest with normalized policies and capability metadata', async () => {
     const plannerService: PlannerServiceInterface = {
-      async proposePlan() {
+      async proposePlan(_input: PlannerServiceInput) {
         return {
           nodes: [
             {
@@ -87,17 +98,17 @@ describe('FlexPlanner hybrid handshake', () => {
     expect(invoked).toHaveLength(1)
     const [context] = invoked
     expect(context.runId).toBe('run_test')
-    expect(context.policies).toMatchObject(envelope.policies)
+    expect(context.policies).toEqual(parseTaskPolicies(envelope.policies))
     expect(context.capabilities).toHaveLength(1)
     expect(context.capabilities[0].capabilityId).toBe(ACTIVE_CAPABILITY.capabilityId)
     expect(plan.nodes.length).toBeGreaterThanOrEqual(1)
     expect(plan.nodes[0]?.capabilityId).toBe(ACTIVE_CAPABILITY.capabilityId)
-    expect(plan.metadata.normalizedPolicyKeys).toContain('maxTokens')
+    expect(plan.metadata.policySummary.runtimeCount).toBe(1)
   })
 
   it('throws PlannerDraftRejectedError with diagnostics when draft references missing capability', async () => {
     const plannerService: PlannerServiceInterface = {
-      async proposePlan() {
+      async proposePlan(_input: PlannerServiceInput) {
         return {
           nodes: [
             {

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TaskPoliciesSchema } from './policies.js'
 
 /**
  * Canonical flex Orchestrator contracts shared between the planner,
@@ -128,7 +129,7 @@ export const TaskEnvelopeSchema = z.object({
   objective: z.string().min(1),
   inputs: LooseRecordSchema.optional(),
   constraints: LooseRecordSchema.optional(),
-  policies: LooseRecordSchema.optional(),
+  policies: TaskPoliciesSchema.optional(),
   specialInstructions: z.array(z.string()).optional(),
   metadata: TaskMetadataSchema.optional(),
   outputContract: OutputContractSchema

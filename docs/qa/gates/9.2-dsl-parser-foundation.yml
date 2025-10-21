@@ -1,0 +1,63 @@
+schema: 1
+story: '9.2'
+story_title: 'Story 9.2: Shared DSL Parser and Validation'
+gate: FAIL
+status_reason: 'Round-trip renderer drops parentheses and catalog validation ignores type mismatches; both must be addressed before release.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-21T11:21:48Z'
+top_issues:
+  - severity: high
+    summary: 'toDsl loses parentheses when mixing &&/||, changing expression semantics'
+    refs:
+      - packages/shared/src/condition-dsl/engine.ts:966
+      - tests/fixtures/condition-dsl
+    suggested_owner: dev
+    details: 'Example: parseDsl("foo && (bar || baz)") renders toDsl → "foo && bar || baz"; reparsing flips grouping. Repro via `node --input-type=module` script.'
+  - severity: high
+    summary: 'Catalog validation omits literal type checks, so required type-mismatch errors never surface'
+    refs:
+      - packages/shared/src/condition-dsl/engine.ts:763
+      - docs/stories/9.2.dsl-parser-foundation.md:17
+    suggested_owner: dev
+    details: 'Expressions like `qaFindings.overallScore == "bad"` parse successfully despite AC4 demanding type-mismatch errors.'
+  - severity: medium
+    summary: 'Playground variable options assume group is always defined, causing vue-tsc failure'
+    refs:
+      - src/views/ConditionPlaygroundView.vue:22
+    suggested_owner: dev
+    details: 'VariableOption.group is typed as string but populated from `ConditionVariableDefinition["group"]` (string | undefined); type-checking breaks.'
+waiver:
+  active: false
+quality_score: 60
+expires: '2025-11-04T11:21:52Z'
+evidence:
+  tests_reviewed: 13
+  risks_identified: 3
+  trace:
+    ac_covered: [2, 5]
+    ac_gaps: [1, 3, 4]
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new security-sensitive surfaces detected.'
+  performance:
+    status: PASS
+    notes: 'Parser changes remain lightweight; no perf regressions observed.'
+  reliability:
+    status: FAIL
+    notes: 'Broken round-trip semantics lead to incorrect policy evaluation.'
+  maintainability:
+    status: CONCERNS
+    notes: 'Missing type validation and failing vue-tsc check reduce confidence.'
+recommendations:
+  immediate:
+    - action: 'Repair toDsl precedence handling so logical grouping survives round-trips.'
+      refs:
+        - packages/shared/src/condition-dsl/engine.ts:966
+    - action: 'Add catalog-driven literal type validation (with tests) to satisfy AC4.'
+      refs:
+        - packages/shared/src/condition-dsl/engine.ts:763
+    - action: 'Update ConditionPlayground variable typing/defaults so vue-tsc succeeds.'
+      refs:
+        - src/views/ConditionPlaygroundView.vue:22
+  future: []

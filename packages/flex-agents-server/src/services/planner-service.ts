@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { OpenAI } from 'openai'
-import type { TaskEnvelope, CapabilityRecord, FacetDefinition } from '@awesomeposter/shared'
+import type { TaskEnvelope, CapabilityRecord, FacetDefinition, TaskPolicies } from '@awesomeposter/shared'
 import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
@@ -47,6 +47,11 @@ export type PlannerServiceInput = {
   variantCount: number
   capabilities: CapabilityRecord[]
   graphContext?: PlannerGraphContext
+  policies: TaskPolicies
+  policyMetadata?: {
+    legacyNotes: string[]
+    legacyFields: string[]
+  }
 }
 
 export interface PlannerServiceInterface {
@@ -184,7 +189,11 @@ export class PlannerService implements PlannerServiceInterface {
       `Objective: ${input.envelope.objective}`,
       `Scenario: ${input.scenario}`,
       `Variant Count: ${input.variantCount}`,
-      `Policies: ${JSON.stringify(input.envelope.policies ?? {}, null, 2)}`,
+      `Policies: ${JSON.stringify(input.policies, null, 2)}`,
+      input.policyMetadata?.legacyNotes?.length ? `Policy Notes: ${input.policyMetadata.legacyNotes.join('; ')}` : null,
+      input.policyMetadata?.legacyFields?.length
+        ? `Legacy Policy Fields: ${input.policyMetadata.legacyFields.join(', ')}`
+        : null,
       `Inputs Summary: ${JSON.stringify(input.envelope.inputs ?? {}, null, 2)}`,
       input.envelope.specialInstructions && input.envelope.specialInstructions.length
         ? `Special Instructions: ${JSON.stringify(input.envelope.specialInstructions, null, 2)}`

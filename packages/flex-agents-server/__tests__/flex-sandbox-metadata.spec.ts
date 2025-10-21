@@ -5,6 +5,7 @@ import { fetchNodeRequestHandler } from 'node-mock-http'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
+import { isFlexSandboxEnabled } from '../src/utils/flex-sandbox'
 
 const ROUTE_PATH = '../routes/api/v1/flex/sandbox/metadata.get'
 
@@ -45,6 +46,8 @@ describe('GET /api/v1/flex/sandbox/metadata', () => {
 
   it('returns 404 when sandbox flag disabled', async () => {
     process.env.USE_FLEX_DEV_SANDBOX = 'false'
+    process.env.VITE_USE_FLEX_DEV_SANDBOX = 'false'
+    expect(isFlexSandboxEnabled()).toBe(false)
     const { default: handler } = await import(ROUTE_PATH)
     const request = makeRequest(handler as any)
     const res = await request()
@@ -60,74 +63,75 @@ describe('GET /api/v1/flex/sandbox/metadata', () => {
         JSON.stringify({
           objective: 'Inspect planner output',
           inputs: {},
-          policies: {},
+          policies: { runtime: [] },
           outputContract: { mode: 'json_schema', schema: { type: 'object', additionalProperties: true } }
         }),
         'utf8'
       )
 
-    process.env.USE_FLEX_DEV_SANDBOX = 'true'
-    process.env.FLEX_SANDBOX_TEMPLATE_DIR = tempDir
+      process.env.USE_FLEX_DEV_SANDBOX = 'true'
+      process.env.VITE_USE_FLEX_DEV_SANDBOX = 'true'
+      process.env.FLEX_SANDBOX_TEMPLATE_DIR = tempDir
 
-    const snapshot = {
-      active: [
-        {
-          capabilityId: 'writer.v1',
-          version: '1.0',
-          displayName: 'Writer',
-          summary: 'Writes things',
-          inputTraits: null,
-          inputContract: null,
-          outputContract: { mode: 'json_schema', schema: { type: 'object' } },
-          cost: null,
-          preferredModels: [],
-          heartbeat: null,
-          metadata: null,
-          status: 'active',
-          lastSeenAt: new Date().toISOString(),
-          registeredAt: new Date().toISOString(),
-          inputFacets: ['objectiveBrief'],
-          outputFacets: ['copyVariants']
-        }
-      ],
-      all: [
-        {
-          capabilityId: 'writer.v1',
-          version: '1.0',
-          displayName: 'Writer',
-          summary: 'Writes things',
-          inputTraits: null,
-          inputContract: null,
-          outputContract: { mode: 'json_schema', schema: { type: 'object' } },
-          cost: null,
-          preferredModels: [],
-          heartbeat: null,
-          metadata: null,
-          status: 'active',
-          lastSeenAt: new Date().toISOString(),
-          registeredAt: new Date().toISOString(),
-          inputFacets: ['objectiveBrief'],
-          outputFacets: ['copyVariants']
-        }
-      ]
-    }
+      const snapshot = {
+        active: [
+          {
+            capabilityId: 'writer.v1',
+            version: '1.0',
+            displayName: 'Writer',
+            summary: 'Writes things',
+            inputTraits: null,
+            inputContract: null,
+            outputContract: { mode: 'json_schema', schema: { type: 'object' } },
+            cost: null,
+            preferredModels: [],
+            heartbeat: null,
+            metadata: null,
+            status: 'active',
+            lastSeenAt: new Date().toISOString(),
+            registeredAt: new Date().toISOString(),
+            inputFacets: ['objectiveBrief'],
+            outputFacets: ['copyVariants']
+          }
+        ],
+        all: [
+          {
+            capabilityId: 'writer.v1',
+            version: '1.0',
+            displayName: 'Writer',
+            summary: 'Writes things',
+            inputTraits: null,
+            inputContract: null,
+            outputContract: { mode: 'json_schema', schema: { type: 'object' } },
+            cost: null,
+            preferredModels: [],
+            heartbeat: null,
+            metadata: null,
+            status: 'active',
+            lastSeenAt: new Date().toISOString(),
+            registeredAt: new Date().toISOString(),
+            inputFacets: ['objectiveBrief'],
+            outputFacets: ['copyVariants']
+          }
+        ]
+      }
 
-    vi.doMock('../src/services/flex-capability-registry', () => ({
-      getFlexCapabilityRegistryService: () => ({
-        getSnapshot: vi.fn().mockResolvedValue(snapshot)
-      })
-    }))
+      vi.doMock('../src/services/flex-capability-registry', () => ({
+        getFlexCapabilityRegistryService: () => ({
+          getSnapshot: vi.fn().mockResolvedValue(snapshot)
+        })
+      }))
 
-    vi.doMock('../src/services/agents-container', () => ({
-      getCapabilityRegistry: () => [
-        { id: 'strategy', name: 'Strategy', description: 'Plans things', create: vi.fn() },
-        { id: 'qa', name: 'QA', description: 'Checks things', create: vi.fn() }
-      ],
-      resolveCapabilityPrompt: (id: string) =>
-        id === 'strategy'
-          ? { instructions: 'Plan carefully', toolsAllowlist: ['plan'] }
-          : { instructions: 'Check output', toolsAllowlist: ['verify'] }
-    }))
+      vi.doMock('../src/services/agents-container', () => ({
+        getCapabilityRegistry: () => [
+          { id: 'strategy', name: 'Strategy', description: 'Plans things', create: vi.fn() },
+          { id: 'qa', name: 'QA', description: 'Checks things', create: vi.fn() }
+        ],
+        resolveCapabilityPrompt: (id: string) =>
+          id === 'strategy'
+            ? { instructions: 'Plan carefully', toolsAllowlist: ['plan'] }
+            : { instructions: 'Check output', toolsAllowlist: ['verify'] }
+      }))
 
       const { default: handler } = await import(ROUTE_PATH)
       const request = makeRequest(handler as any)

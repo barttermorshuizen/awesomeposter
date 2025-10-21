@@ -4,13 +4,15 @@ import type {
   JsonSchemaContract,
   NodeContract,
   OutputContract,
-  TaskEnvelope
+  TaskEnvelope,
+  TaskPolicies
 } from '@awesomeposter/shared'
 import {
   FacetContractCompiler,
   type FacetCatalog,
   type FacetProvenance,
-  getFacetCatalog
+  getFacetCatalog,
+  parseTaskPolicies
 } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
@@ -183,13 +185,21 @@ type PlanRequestContext = {
   runId: string
   scenario: ScenarioId
   variantCount: number
-  policies: Record<string, unknown>
+  policies: TaskPolicies
+  policyMetadata?: {
+    legacyNotes: string[]
+    legacyFields: string[]
+  }
   capabilities: CapabilityRecord[]
 }
 
 type BuildPlanOptions = {
   onRequest?: (context: PlanRequestContext) => Promise<void> | void
-  normalizedPolicies?: Record<string, unknown>
+  policies?: TaskPolicies
+  policyMetadata?: {
+    legacyNotes: string[]
+    legacyFields: string[]
+  }
   graphState?: PlannerGraphState
 }
 
@@ -285,28 +295,35 @@ export class FlexPlanner {
 
   async buildPlan(runId: string, envelope: TaskEnvelope, options?: BuildPlanOptions): Promise<FlexPlan> {
     const scenarioInfo = deriveScenario(envelope)
+    const capabilitySnapshot = await this.capabilityRegistry.getSnapshot()
+    const canonicalPolicies = options?.policies ?? parseTaskPolicies(envelope.policies ?? {})
     const variantCount = normalizeVariantCount(
       (envelope.inputs as Record<string, unknown> | undefined)?.variantCount ??
-        (envelope.policies as Record<string, unknown> | undefined)?.variantCount ??
+        canonicalPolicies.planner?.topology?.variantCount ??
         1
     )
-
-    const capabilitySnapshot = await this.capabilityRegistry.getSnapshot()
-    const normalizedPolicies = options?.normalizedPolicies ?? this.normalizePolicies(envelope)
+    const policyMetadata = options?.policyMetadata ?? { legacyNotes: [], legacyFields: [] }
+    const envelopeForPlanner: TaskEnvelope = {
+      ...envelope,
+      policies: canonicalPolicies
+    }
     await options?.onRequest?.({
       runId,
       scenario: scenarioInfo.id,
       variantCount,
-      policies: normalizedPolicies,
+      policies: canonicalPolicies,
+      policyMetadata,
       capabilities: capabilitySnapshot.active
     })
     const graphContext = this.summarizeGraphState(options?.graphState)
     const plannerDraft = await this.plannerService.proposePlan({
-      envelope,
+      envelope: envelopeForPlanner,
       scenario: scenarioInfo.id,
       variantCount,
       capabilities: capabilitySnapshot.active,
-      graphContext
+      graphContext,
+      policies: canonicalPolicies,
+      policyMetadata
     })
     try {
       const draftPretty = JSON.stringify(plannerDraft, null, 2)
@@ -331,7 +348,7 @@ export class FlexPlanner {
       capabilityMap.set(capability.capabilityId, capability)
     }
 
-    const availableFacets = this.collectEnvelopeFacets(envelope)
+    const availableFacets = this.collectEnvelopeFacets(envelope, canonicalPolicies)
     const nodes: FlexPlanNode[] = []
 
     plannerDraft.nodes.forEach((draftNode, index) => {
@@ -367,7 +384,7 @@ export class FlexPlanner {
 
       const bundle = this.buildContextBundle({
         runId,
-        envelope,
+        envelope: envelopeForPlanner,
         kind,
         draftNode,
         capability,
@@ -444,7 +461,12 @@ export class FlexPlanner {
         plannerRuntime: plannerDraft.metadata?.provider ?? 'llm',
         plannerModel: plannerDraft.metadata?.model ?? null,
         plannerDraftNodeCount: plannerDraft.nodes.length,
-        normalizedPolicyKeys: Object.keys(normalizedPolicies),
+        policySummary: {
+          hasPlanner: Boolean(canonicalPolicies.planner),
+          runtimeCount: canonicalPolicies.runtime.length
+        },
+        legacyPolicyNotes: policyMetadata.legacyNotes.length ? policyMetadata.legacyNotes : undefined,
+        legacyPolicyFields: policyMetadata.legacyFields.length ? policyMetadata.legacyFields : undefined,
         plannerDiagnostics: plannerDiagnostics.length ? plannerDiagnostics : undefined,
         planVersionTag: `v${planVersion}.0`,
         normalizationInjected: nodes.some((node) => node.kind === 'transformation'),
@@ -453,14 +475,15 @@ export class FlexPlanner {
     }
   }
 
-  private collectEnvelopeFacets(envelope: TaskEnvelope): Set<string> {
+  private collectEnvelopeFacets(envelope: TaskEnvelope, policies: TaskPolicies): Set<string> {
     const facets = new Set<string>()
     const inputs = (envelope.inputs ?? {}) as Record<string, unknown>
-    const policies = (envelope.policies ?? {}) as Record<string, unknown>
+    const directives = policies.planner?.directives ?? {}
+    const hasDirective = (key: string) => Boolean(directives && Object.prototype.hasOwnProperty.call(directives, key))
 
     facets.add('objectiveBrief')
 
-    if (inputs.toneOfVoice || policies.toneOfVoice || policies.brandVoice) {
+    if (inputs.toneOfVoice || hasDirective('toneOfVoice') || hasDirective('brandVoice')) {
       facets.add('toneOfVoice')
     }
     if (inputs.writerBrief || (inputs as Record<string, unknown>).brief || (inputs as Record<string, unknown>).planBrief) {
@@ -469,10 +492,10 @@ export class FlexPlanner {
     if (inputs.planKnobs) {
       facets.add('planKnobs')
     }
-    if (inputs.audienceProfile || inputs.audience || policies.audienceProfile) {
+    if (inputs.audienceProfile || inputs.audience || hasDirective('audienceProfile')) {
       facets.add('audienceProfile')
     }
-    if (inputs.qaRubric || policies.qaRubric) {
+    if (inputs.qaRubric || hasDirective('qaRubric')) {
       facets.add('qaRubric')
     }
     if (Array.isArray(inputs.contextBundles)) {
@@ -486,17 +509,12 @@ export class FlexPlanner {
     }
 
     this.facetCatalog.list().forEach((definition) => {
-      if (definition.name in inputs || definition.name in policies) {
+      if (definition.name in inputs || hasDirective(definition.name)) {
         facets.add(definition.name)
       }
     })
 
     return facets
-  }
-
-  private normalizePolicies(envelope: TaskEnvelope): Record<string, unknown> {
-    const policies = (envelope.policies ?? {}) as Record<string, unknown>
-    return { ...policies }
   }
 
   private collectBranchRequests(plannerDraft: PlannerDraft, envelope: TaskEnvelope): BranchRequest[] {

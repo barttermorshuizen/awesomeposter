@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import type { FlexEvent, TaskEnvelope, HitlRunState, HitlRequestRecord, HitlRequestPayload } from '@awesomeposter/shared'
+import type { FlexEvent, TaskEnvelope, HitlRunState, HitlRequestRecord, HitlRequestPayload, TaskPolicies } from '@awesomeposter/shared'
+import { parseTaskPolicies } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
 import { FlexPlanner } from '../src/services/flex-planner'
@@ -244,7 +245,7 @@ class StubHitlService {
 function createPlannerServiceStub(options: { firstPlanInvalid?: boolean } = {}): PlannerServiceInterface {
   let callCount = 0
   return {
-    async proposePlan({ scenario }) {
+    async proposePlan({ scenario }: PlannerServiceInput) {
       callCount += 1
       if (options.firstPlanInvalid && callCount === 1) {
         return {
@@ -446,9 +447,74 @@ function createCoordinator(
   }
 }
 
+const mergePolicies = (override?: TaskEnvelope['policies']): TaskPolicies => {
+  const base: TaskPolicies = {
+    planner: {
+      directives: {
+        brandVoice: 'inspiring'
+      },
+      optimisation: {
+        maxTokens: 120
+      }
+    },
+    runtime: []
+  }
+
+  if (!override) return base
+
+  let parsed: TaskPolicies | null = null
+  try {
+    parsed = parseTaskPolicies(override)
+  } catch (error) {
+    console.warn('Test override policies failed validation, falling back to defaults', error)
+    parsed = null
+  }
+
+  if (!parsed) {
+    return base
+  }
+
+  const mergedPlanner =
+    base.planner || parsed.planner
+      ? {
+          topology: {
+            ...base.planner?.topology,
+            ...parsed.planner?.topology
+          },
+          selection: {
+            ...base.planner?.selection,
+            ...parsed.planner?.selection
+          },
+          optimisation: {
+            ...base.planner?.optimisation,
+            ...parsed.planner?.optimisation
+          },
+          directives: {
+            ...(base.planner?.directives ?? {}),
+            ...(parsed.planner?.directives ?? {})
+          }
+        }
+      : undefined
+
+  if (mergedPlanner?.directives && Object.keys(mergedPlanner.directives).length === 0) {
+    mergedPlanner.directives = undefined
+  }
+
+  const plannerEmpty =
+    !mergedPlanner ||
+    (!mergedPlanner.topology && !mergedPlanner.selection && !mergedPlanner.optimisation && !mergedPlanner.directives)
+
+  const runtime = parsed.runtime.length ? parsed.runtime : base.runtime
+
+  return parseTaskPolicies({
+    planner: plannerEmpty ? undefined : mergedPlanner,
+    runtime
+  })
+}
+
 function buildEnvelope(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
   const overrideInputs = (overrides.inputs as Record<string, unknown> | undefined) ?? {}
-  const overridePolicies = (overrides.policies as Record<string, unknown> | undefined) ?? {}
+  const mergedPolicies = mergePolicies(overrides.policies)
   const overrideConstraints = (overrides.constraints as Record<string, unknown> | undefined) ?? {}
   return {
     objective: overrides.objective ?? 'Create LinkedIn variants for AwesomePoster retreat',
@@ -498,11 +564,7 @@ function buildEnvelope(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
       ],
       ...overrideInputs
     },
-    policies: {
-      brandVoice: 'inspiring',
-      maxTokens: 120,
-      ...overridePolicies
-    },
+    policies: mergedPolicies,
     specialInstructions: [
       'Variant A should highlight team culture.',
       'Variant B should highlight career growth opportunities.'
@@ -632,7 +694,7 @@ describe('FlexRunCoordinator', () => {
     let callCount = 0
     const graphContexts: Array<PlannerServiceInput['graphContext'] | undefined> = []
     const plannerService: PlannerServiceInterface = {
-      async proposePlan({ scenario, graphContext }) {
+      async proposePlan({ scenario, graphContext }: PlannerServiceInput) {
         graphContexts.push(graphContext)
         callCount += 1
         const baseNodes = [
@@ -689,7 +751,16 @@ describe('FlexRunCoordinator', () => {
 
     const envelope = buildEnvelope({
       policies: {
-        replanAfter: [{ stage: 'generation', reason: 'policy_delta' }]
+        runtime: [
+          {
+            id: 'policy_delta_replan',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: { '==': [{ var: 'metadata.plannerStage' }, 'generation' ] }
+            },
+            action: { type: 'replan', rationale: 'policy_delta' }
+          }
+        ]
       }
     })
 
@@ -708,7 +779,8 @@ describe('FlexRunCoordinator', () => {
 
     const planUpdatedEvent = events[updateIndex]
     const payload = planUpdatedEvent.payload as any
-    expect(payload?.trigger?.reason).toBe('policy_directive')
+    expect(payload?.trigger?.reason).toBe('policy_runtime_replan')
+    expect(payload?.trigger?.details?.policyId).toBe('policy_delta_replan')
     expect(Array.isArray(payload?.nodes)).toBe(true)
     expect(payload?.metadata?.plannerPhase).toBe('replan')
     expect(persistence.planVersions.get(result.runId)).toBeGreaterThanOrEqual(2)
@@ -865,7 +937,14 @@ describe('FlexRunCoordinator', () => {
 
     const envelope = buildEnvelope({
       policies: {
-        requiresHitlApproval: true
+        planner: {},
+        runtime: [
+          {
+            id: 'qa_hitl_gate',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: { type: 'hitl', rationale: 'Manual QA approval required' }
+          }
+        ]
       }
     })
 
@@ -876,6 +955,10 @@ describe('FlexRunCoordinator', () => {
 
     expect(result.status).toBe('awaiting_hitl')
     expect(result.output).toBeNull()
+    const policyHitlEvent = events.find(
+      (evt) => evt.type === 'policy_triggered' && (evt.payload as any)?.action === 'hitl'
+    )
+    expect(policyHitlEvent).toBeTruthy()
     const hitlEvent = events.find((evt) => evt.type === 'hitl_request')
     expect(hitlEvent).toBeTruthy()
     expect((hitlEvent?.payload as any)?.request?.id).toMatch(/^req_/)
@@ -899,7 +982,16 @@ describe('FlexRunCoordinator', () => {
     }
 
     const resumeEvents: FlexEvent[] = []
-    const resumeEnvelope = buildEnvelope({ policies: { requiresHitlApproval: false } })
+    const resumeEnvelope = buildEnvelope({
+      policies: {
+        planner: {
+          directives: {
+            requiresHitlApproval: false
+          }
+        },
+        runtime: []
+      }
+    })
     resumeEnvelope.constraints = {
       ...(resumeEnvelope.constraints ?? {}),
       resumeRunId: result.runId,
@@ -913,6 +1005,9 @@ describe('FlexRunCoordinator', () => {
 
     expect(resumeResult.status).toBe('completed')
     expect(resumeResult.output?.copyVariants).toHaveLength(2)
+    const resolvedEvent = resumeEvents.find((evt) => evt.type === 'hitl_resolved')
+    expect(resolvedEvent).toBeTruthy()
+    expect((resolvedEvent?.payload as any)?.request?.id).toBe((hitlEvent?.payload as any)?.request?.id)
     expect(resumeEvents.map((evt) => evt.type)).toContain('plan_generated')
     const resumePlanEvent = resumeEvents.find((evt) => evt.type === 'plan_generated')
     const resumeNodes = (resumePlanEvent?.payload as any)?.plan?.nodes ?? []
@@ -945,6 +1040,44 @@ describe('FlexRunCoordinator', () => {
         )
       ).toBe(true)
     }
+  })
+
+  it('emits runtime policy events when action emits custom event', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+    const events: FlexEvent[] = []
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'qa_feedback_emit',
+            trigger: { kind: 'onNodeComplete', selector: { capabilityId: QA_CAPABILITY_ID } },
+            action: {
+              type: 'emit',
+              event: 'qa_feedback_ready',
+              payload: { recordNodeOutput: true }
+            }
+          }
+        ]
+      }
+    })
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_emit',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(result.status).toBe('completed')
+    const triggerEvt = events.find(
+      (evt) => evt.type === 'policy_triggered' && (evt.payload as any)?.event === 'qa_feedback_ready'
+    )
+    expect(triggerEvt).toBeTruthy()
+    const updateEvt = events.find(
+      (evt) => evt.type === 'policy_update' && (evt.payload as any)?.event === 'qa_feedback_ready'
+    )
+    expect(updateEvt).toBeTruthy()
   })
 
   it('starts a fresh run when threadId matches a completed run', async () => {

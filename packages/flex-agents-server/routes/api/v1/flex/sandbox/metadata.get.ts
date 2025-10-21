@@ -7,8 +7,6 @@ import {
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'pathe'
 import { getHeader, setHeader } from 'h3'
-import { getFlexCapabilityRegistryService } from '../../../../../src/services/flex-capability-registry'
-import { getCapabilityRegistry, resolveCapabilityPrompt } from '../../../../../src/services/agents-container'
 import {
   resolveFlexTemplateDir,
   requireFlexSandboxEnabled
@@ -107,6 +105,12 @@ export default defineEventHandler(async (event) => {
   setHeader(event, 'Access-Control-Allow-Methods', 'GET,OPTIONS')
 
   requireFlexSandboxEnabled()
+
+  const [{ getFlexCapabilityRegistryService }, agentsContainer] = await Promise.all([
+    import('../../../../../src/services/flex-capability-registry'),
+    import('../../../../../src/services/agents-container')
+  ])
+  const { getCapabilityRegistry, resolveCapabilityPrompt } = agentsContainer
 
   const facetCatalog = getFacetCatalog()
   const registry = getFlexCapabilityRegistryService()

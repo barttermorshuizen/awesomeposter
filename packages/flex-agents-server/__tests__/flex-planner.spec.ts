@@ -6,7 +6,7 @@ import { FlexPlanner } from '../src/services/flex-planner'
 import { STRATEGY_CAPABILITY_ID } from '../src/agents/strategy-manager'
 import { CONTENT_CAPABILITY_ID } from '../src/agents/content-generator'
 import { QA_CAPABILITY_ID } from '../src/agents/quality-assurance'
-import type { PlannerServiceInterface } from '../src/services/planner-service'
+import type { PlannerServiceInterface, PlannerServiceInput } from '../src/services/planner-service'
 
 const TIMESTAMP = '2025-04-01T12:00:00.000Z'
 
@@ -137,7 +137,7 @@ function buildOutputContract() {
 
 function createPlannerServiceStub(): PlannerServiceInterface {
   return {
-    async proposePlan({ scenario }) {
+    async proposePlan({ scenario }: PlannerServiceInput) {
       const nodes = [
         {
           stage: 'strategy',
@@ -236,8 +236,13 @@ describe('FlexPlanner', () => {
         ]
       },
       policies: {
-        brandVoice: 'inspiring',
-        requiresHitlApproval: false
+        planner: {
+          directives: {
+            brandVoice: 'inspiring',
+            requiresHitlApproval: false
+          }
+        },
+        runtime: []
       },
       specialInstructions: ['Variant A should highlight team culture.', 'Variant B should highlight growth opportunities.'],
       outputContract: buildOutputContract()
@@ -319,7 +324,12 @@ describe('FlexPlanner', () => {
         }
       },
       policies: {
-        branchVariants: ['Product spotlight', 'Culture story']
+        planner: {
+          directives: {
+            branchVariants: ['Product spotlight', 'Culture story']
+          }
+        },
+        runtime: []
       },
       outputContract: buildOutputContract()
     }
@@ -381,7 +391,12 @@ describe('FlexPlanner', () => {
         }
       },
       policies: {
-        requiresHitlApproval: true
+        planner: {
+          directives: {
+            requiresHitlApproval: true
+          }
+        },
+        runtime: []
       },
       outputContract: buildOutputContract()
     }

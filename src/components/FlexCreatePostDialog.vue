@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { TaskEnvelope, HitlRequestPayload } from '@awesomeposter/shared'
+import type { TaskEnvelope, HitlRequestPayload, TaskPolicies } from '@awesomeposter/shared'
+import { parseTaskPolicies } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import HitlPromptPanel from './HitlPromptPanel.vue'
 import { useHitlStore } from '@/stores/hitl'
@@ -76,6 +77,57 @@ const toStringOrUndefined = (value: unknown): string | undefined => (typeof valu
 const stringOrFallback = (record: Record<string, unknown>, key: string, fallback: string): string => {
   const candidate = record[key]
   return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate : fallback
+}
+
+const normalizePolicies = (override?: TaskEnvelope['policies']): TaskPolicies | null => {
+  if (!override) return null
+  try {
+    return parseTaskPolicies(override)
+  } catch (error) {
+    console.warn('Failed to parse overriding policies; falling back to defaults', error)
+    return null
+  }
+}
+
+const mergeTaskPolicies = (base: TaskPolicies, override: TaskPolicies | null): TaskPolicies => {
+  if (!override) return base
+
+  const mergedPlanner =
+    base.planner || override.planner
+      ? {
+          topology: {
+            ...base.planner?.topology,
+            ...override.planner?.topology
+          },
+          selection: {
+            ...base.planner?.selection,
+            ...override.planner?.selection
+          },
+          optimisation: {
+            ...base.planner?.optimisation,
+            ...override.planner?.optimisation
+          },
+          directives: {
+            ...(base.planner?.directives ?? {}),
+            ...(override.planner?.directives ?? {})
+          }
+        }
+      : undefined
+
+  if (mergedPlanner?.directives && Object.keys(mergedPlanner.directives).length === 0) {
+    mergedPlanner.directives = undefined
+  }
+
+  const plannerEmpty =
+    !mergedPlanner ||
+    (!mergedPlanner.topology && !mergedPlanner.selection && !mergedPlanner.optimisation && !mergedPlanner.directives)
+
+  const merged: TaskPolicies = {
+    planner: plannerEmpty ? undefined : mergedPlanner,
+    runtime: override.runtime.length ? override.runtime : base.runtime
+  }
+
+  return parseTaskPolicies(merged)
 }
 
 const isHitlOriginAgent = (value: string | undefined): value is 'strategy' | 'generation' | 'qa' =>
@@ -218,7 +270,7 @@ function buildEnvelope(
   const description = toStringOrUndefined(briefRecord.description) || toStringOrUndefined(props.brief?.description)
   const completeObjective = objective || description
   const overrideInputs = (overrides?.inputs as Record<string, unknown> | undefined) ?? {}
-  const overridePolicies = (overrides?.policies as Record<string, unknown> | undefined) ?? {}
+  const overridePolicies = normalizePolicies(overrides?.policies)
   const baseConstraints: Record<string, unknown> = {}
   if (overrides?.constraints && typeof overrides.constraints === 'object' && !Array.isArray(overrides.constraints)) {
     Object.entries(overrides.constraints as Record<string, unknown>).forEach(([key, value]) => {
@@ -303,12 +355,21 @@ const metadata: { clientId?: string; brandId?: string; campaignId?: string; corr
       assets: context.assets,
       ...overrideInputs
     },
-    policies: {
-      brandVoice: 'inspiring',
-      maxTokens: 120,
-      requiresHitlApproval: FLEX_REQUIRE_HITL,
-      ...overridePolicies
-    },
+    policies: mergeTaskPolicies(
+      {
+        planner: {
+          directives: {
+            brandVoice: 'inspiring',
+            requiresHitlApproval: FLEX_REQUIRE_HITL
+          },
+          optimisation: {
+            maxTokens: 120
+          }
+        },
+        runtime: []
+      },
+      overridePolicies
+    ),
     specialInstructions: normalizedSpecialInstructions,
     metadata,
     constraints: baseConstraints,

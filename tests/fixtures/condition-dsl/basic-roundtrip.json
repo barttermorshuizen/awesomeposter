@@ -1,0 +1,16 @@
+{
+  "and": [
+    {
+      "<": [
+        { "var": "qaFindings.overallScore" },
+        0.6
+      ]
+    },
+    {
+      ">": [
+        { "var": "qaFindings.flagsCount" },
+        2
+      ]
+    }
+  ]
+}

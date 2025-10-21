@@ -1,21 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  evaluateMockCondition,
-  transpileMockConditionDsl,
-  type EvaluateMockConditionResult,
-  type TranspileMockConditionResult,
+  evaluateCondition,
+  parseDsl,
+  type ConditionDslError,
+  type ConditionDslParseResult,
+  type EvaluateConditionResult,
 } from '@awesomeposter/shared'
 import {
   buildVariableLookup,
-  createMockCatalog,
+  getCatalog,
   playgroundSamples,
   playgroundVariables,
 } from '@/lib/conditionPlayground/catalog'
 import VueJsonPretty from 'vue-json-pretty'
 import 'vue-json-pretty/lib/styles.css'
 
-const catalog = createMockCatalog()
+const catalog = getCatalog()
 const variableLookup = buildVariableLookup()
 
 interface VariableOption {
@@ -25,6 +26,7 @@ interface VariableOption {
   type: string
   group: string
   description?: string
+  operators: readonly string[]
 }
 
 const variableOptions: readonly VariableOption[] = playgroundVariables.map((variable) => ({
@@ -32,8 +34,9 @@ const variableOptions: readonly VariableOption[] = playgroundVariables.map((vari
   identifier: variable.path,
   label: variable.label,
   type: variable.type,
-  group: variable.group,
+  group: variable.group ?? 'Ungrouped',
   description: variable.description,
+  operators: variable.allowedOperators,
 }))
 
 const dslExpression = ref('qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2')
@@ -41,8 +44,8 @@ const activeVariableId = ref<string | null>(null)
 const selectedSampleId = ref(playgroundSamples[0]?.id ?? '')
 const editorRef = ref<{ $el: HTMLElement } | null>(null)
 
-const transpileResult = ref<TranspileMockConditionResult | null>(null)
-const evaluationResult = ref<EvaluateMockConditionResult | null>(null)
+const parseResult = ref<ConditionDslParseResult | null>(null)
+const evaluationResult = ref<EvaluateConditionResult | null>(null)
 
 const snackbarOpen = ref(false)
 const snackbarMessage = ref('')
@@ -56,29 +59,25 @@ const activeVariable = computed(() => {
   return activeVariableId.value ? variableLookup.get(activeVariableId.value) ?? null : null
 })
 
-const transpileError = computed(() => {
-  const result = transpileResult.value
+const parseErrors = computed<readonly ConditionDslError[]>(() => {
+  const result = parseResult.value
   if (result && !result.ok) {
-    return result.error
+    return result.errors
   }
-  return null
+  return []
 })
 
-const transpileWarnings = computed(() => {
-  const result = transpileResult.value
+const primaryParseError = computed(() => parseErrors.value[0] ?? null)
+
+const parseWarnings = computed(() => {
+  const result = parseResult.value
   if (result && result.ok) {
     return result.warnings
   }
   return []
 })
 
-const jsonLogicObject = computed(() => {
-  const result = transpileResult.value
-  if (result && result.ok) {
-    return result.jsonLogic
-  }
-  return null
-})
+const jsonLogicObject = ref<any>(null)
 
 const jsonLogicPreview = computed(() => {
   const object = jsonLogicObject.value
@@ -104,12 +103,18 @@ const evaluationSummary = computed(() => {
 })
 
 function runTranspile(): void {
-  const result = transpileMockConditionDsl(dslExpression.value, catalog)
-  transpileResult.value = result
+  const result = parseDsl(dslExpression.value, catalog)
+  parseResult.value = result
+  if (!result.ok) {
+    jsonLogicObject.value = null
+    evaluationResult.value = null
+    return
+  }
   if (result.ok) {
+    jsonLogicObject.value = result.jsonLogic
     const sample = selectedSample.value
     if (sample) {
-      evaluationResult.value = evaluateMockCondition(result.jsonLogic, sample.payload)
+      evaluationResult.value = evaluateCondition(result.jsonLogic, sample.payload)
     } else {
       evaluationResult.value = null
     }
@@ -312,8 +317,11 @@ function formatValue(value: unknown): string {
                 <p class="text-body-2 mb-1" v-if="activeVariable.description">
                   {{ activeVariable.description }}
                 </p>
-                <p class="text-caption text-medium-emphasis mb-0" v-if="activeVariable.example !== undefined">
+                <p class="text-caption text-medium-emphasis mb-1" v-if="activeVariable.example !== undefined">
                   Example value: <code>{{ formatValue(activeVariable.example) }}</code>
+                </p>
+                <p class="text-caption text-medium-emphasis mb-0">
+                  Allowed operators: <code>{{ activeVariable.allowedOperators.join(' ') }}</code>
                 </p>
               </v-sheet>
             </v-expand-transition>
@@ -331,19 +339,26 @@ function formatValue(value: unknown): string {
           </v-card-title>
           <v-card-text>
             <v-alert
-              v-if="transpileError"
+              v-if="primaryParseError"
               type="error"
               class="mb-4"
-              :text="`${transpileError.message}${transpileError.position !== undefined ? ` (at ${transpileError.position})` : ''}`"
-            />
+            >
+              <div class="text-body-2 font-weight-medium">
+                {{ primaryParseError.message }}
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                Line {{ primaryParseError.range.start.line }}, column
+                {{ primaryParseError.range.start.column }}
+              </div>
+            </v-alert>
             <v-alert
-              v-else-if="transpileWarnings.length"
+              v-else-if="parseWarnings.length"
               type="warning"
               class="mb-4"
             >
               <ul class="ma-0 ps-4">
-                <li v-for="warning in transpileWarnings" :key="warning" class="text-body-2">
-                  {{ warning }}
+                <li v-for="(warning, index) in parseWarnings" :key="`${warning.code}-${index}`" class="text-body-2">
+                  {{ warning.message }}
                 </li>
               </ul>
             </v-alert>
@@ -404,6 +419,7 @@ function formatValue(value: unknown): string {
                   <th class="text-left">Path</th>
                   <th class="text-left">Type</th>
                   <th class="text-left">Example</th>
+                  <th class="text-left">Operators</th>
                   <th class="text-left">Notes</th>
                 </tr>
               </thead>
@@ -416,6 +432,7 @@ function formatValue(value: unknown): string {
                     <code v-if="variable.example !== undefined">{{ formatValue(variable.example) }}</code>
                     <span v-else class="text-medium-emphasis">—</span>
                   </td>
+                  <td><code>{{ variable.allowedOperators.join(' ') }}</code></td>
                   <td>{{ variable.description || '—' }}</td>
                 </tr>
               </tbody>

@@ -1,0 +1,26 @@
+{
+  "or": [
+    {
+      "<": [
+        { "var": "qaFindings.overallScore" },
+        0.5
+      ]
+    },
+    {
+      "and": [
+        {
+          "==": [
+            { "var": "qaFindings.containsCritical" },
+            true
+          ]
+        },
+        {
+          "==": [
+            { "var": "run.requiresHitl" },
+            true
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -190,6 +190,16 @@ export const useHitlStore = defineStore('hitl', () => {
     activeRequest.value = null
   }
 
+  function completeRequest(input?: { requestId?: string }) {
+    if (input?.requestId && activeRequest.value && activeRequest.value.id === input.requestId) {
+      activeRequest.value.status = 'submitted'
+    }
+    pendingRun.value.pendingRequestId = null
+    pendingRun.value.isSuspended = false
+    pendingRun.value.status = 'running'
+    activeRequest.value = null
+  }
+
   function handleDenial(reason: string | undefined) {
     denialNotice.value = reason || 'Request denied by orchestrator.'
     pendingRun.value.pendingRequestId = null
@@ -458,6 +468,7 @@ export const useHitlStore = defineStore('hitl', () => {
     startTrackingRequest,
     markAwaiting,
     clearRequest,
+    completeRequest,
     handleDenial,
     hydrateFromPending,
     submitResponse,

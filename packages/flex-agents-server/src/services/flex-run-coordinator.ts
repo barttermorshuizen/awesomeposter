@@ -65,7 +65,8 @@ export class FlexRunCoordinator {
     private readonly planner = new FlexPlanner(),
     private readonly engine = new FlexExecutionEngine(),
     private readonly hitlService: HitlService = getHitlService(),
-    private readonly policyNormalizer = new PolicyNormalizer()
+    private readonly policyNormalizer = new PolicyNormalizer(),
+    private readonly emittedHitlResolutions = new Map<string, Set<string>>()
   ) {}
 
   async run(envelope: TaskEnvelope, opts: RunOptions): Promise<RunResult> {
@@ -96,6 +97,13 @@ export class FlexRunCoordinator {
       ? RunContext.fromSnapshot(resumeCandidate.run.contextSnapshot)
       : new RunContext()
     const schemaHashValue = schemaHash(envelopeToUse.outputContract)
+    const executionEnvelope: TaskEnvelope = {
+      ...envelopeToUse,
+      policies: normalizedPolicies.canonical
+    }
+    if (!this.emittedHitlResolutions.has(runId)) {
+      this.emittedHitlResolutions.set(runId, new Set<string>())
+    }
 
     if (!resumeCandidate) {
       await this.persistence.createOrUpdateRun({
@@ -115,12 +123,53 @@ export class FlexRunCoordinator {
       current: hitlState.requests.filter((r) => r.status !== 'denied').length,
       max: this.hitlService.getMaxRequestsPerRun()
     }
-    const updateHitlState = (state: HitlRunState) => {
+    let hitlAwaiting: HitlRequestRecord | null = hitlState.pendingRequestId
+      ? hitlState.requests.find((req) => req.id === hitlState.pendingRequestId) || null
+      : null
+    const signalHitlResolved = async (record: HitlRequestRecord, state: HitlRunState) => {
+      if (record.status !== 'resolved') return
+      const resolvedSet = this.emittedHitlResolutions.get(runId) ?? new Set<string>()
+      if (resolvedSet.has(record.id)) return
+      resolvedSet.add(record.id)
+      this.emittedHitlResolutions.set(runId, resolvedSet)
+      const responses = state.responses.filter((resp) => resp.requestId === record.id)
+      await opts.onEvent({
+        type: 'hitl_resolved',
+        timestamp: new Date().toISOString(),
+        runId,
+        nodeId: record.stepId ?? undefined,
+        payload: {
+          request: {
+            id: record.id,
+            originAgent: record.originAgent,
+            status: record.status,
+            resolvedAt: record.updatedAt.toISOString(),
+            responses
+          }
+        }
+      })
+    }
+    const updateHitlState = async (state: HitlRunState) => {
+      if (hitlAwaiting && state.pendingRequestId !== hitlAwaiting.id) {
+        const record = state.requests.find((req) => req.id === hitlAwaiting!.id)
+        if (record && record.status !== 'pending') {
+          await signalHitlResolved(record, state)
+        }
+        hitlAwaiting = null
+      }
       hitlState = state
       hitlLimit.current = state.requests.filter((r) => r.status !== 'denied').length
+      hitlAwaiting = state.pendingRequestId ? state.requests.find((req) => req.id === state.pendingRequestId) || null : null
+      const resolvedSet = this.emittedHitlResolutions.get(runId) ?? new Set<string>()
+      for (const request of state.requests) {
+        if (request.status === 'resolved' && !resolvedSet.has(request.id)) {
+          await signalHitlResolved(request, state)
+        }
+      }
+      this.emittedHitlResolutions.set(runId, resolvedSet)
     }
     const signalHitlRequest = async (record: HitlRequestRecord, state: HitlRunState) => {
-      updateHitlState(state)
+      await updateHitlState(state)
       await opts.onEvent({
         type: 'hitl_request',
         timestamp: new Date().toISOString(),
@@ -137,7 +186,7 @@ export class FlexRunCoordinator {
       })
     }
     const signalHitlDenied = async (reason: string, state: HitlRunState) => {
-      updateHitlState(state)
+      await updateHitlState(state)
       await opts.onEvent({
         type: 'log',
         timestamp: new Date().toISOString(),
@@ -145,6 +194,10 @@ export class FlexRunCoordinator {
         payload: { reason },
         runId
       })
+    }
+    await updateHitlState(hitlState)
+    if (hitlAwaiting) {
+      await signalHitlRequest(hitlAwaiting, hitlState)
     }
 
     await opts.onEvent({
@@ -171,7 +224,11 @@ export class FlexRunCoordinator {
         const attemptNumber = plannerAttemptCounter
         try {
           const plan = await this.planner.buildPlan(runId, envelopeToUse, {
-            normalizedPolicies: normalizedPolicies.raw,
+            policies: normalizedPolicies.canonical,
+            policyMetadata: {
+              legacyNotes: normalizedPolicies.legacyNotes,
+              legacyFields: normalizedPolicies.legacyFields
+            },
             graphState: requestOptions.graphState,
             onRequest: async (context) => {
               await opts.onEvent({
@@ -185,9 +242,18 @@ export class FlexRunCoordinator {
                   scenario: context.scenario,
                   variantCount: context.variantCount,
                   policies: context.policies,
-                  normalizedPolicies: {
-                    keys: Object.keys(normalizedPolicies.raw),
-                    replanDirectives: normalizedPolicies.replanDirectives
+                  policyMetadata: {
+                    planner: {
+                      hasTopology: Boolean(normalizedPolicies.planner?.topology),
+                      hasSelection: Boolean(normalizedPolicies.planner?.selection),
+                      optimisation: normalizedPolicies.planner?.optimisation?.objective ?? null
+                    },
+                    runtime: {
+                      count: normalizedPolicies.runtime.length,
+                      actions: normalizedPolicies.runtime.map((policy) => policy.action.type)
+                    },
+                    legacyNotes: normalizedPolicies.legacyNotes,
+                    legacyFields: normalizedPolicies.legacyFields
                   },
                   capabilities: context.capabilities.map((capability) => ({
                     capabilityId: capability.capabilityId,
@@ -229,7 +295,7 @@ export class FlexRunCoordinator {
     }
 
     if (isResume && resumeCandidate) {
-      updateHitlState(hitlState)
+      await updateHitlState(hitlState)
       await this.persistence.updateStatus(runId, 'running')
 
       const latestSnapshot = await this.persistence.loadPlanSnapshot(
@@ -313,6 +379,7 @@ export class FlexRunCoordinator {
         runContext
       })
       await this.persistence.saveRunContext(runId, runContext.snapshot())
+      this.emittedHitlResolutions.delete(runId)
       return { runId, status: 'completed', output: finalOutput }
     }
 
@@ -398,7 +465,7 @@ export class FlexRunCoordinator {
 
       while (!finalOutput) {
         try {
-          const result = await this.engine.execute(runId, envelopeToUse, activePlan, {
+          const result = await this.engine.execute(runId, executionEnvelope, activePlan, {
             onEvent: opts.onEvent,
             correlationId: opts.correlationId,
             hitl: {
@@ -408,13 +475,13 @@ export class FlexRunCoordinator {
               limit: hitlLimit,
               onRequest: signalHitlRequest,
               onDenied: signalHitlDenied,
-            updateState: updateHitlState
-          },
-          onNodeComplete: ({ node }) => this.policyNormalizer.shouldTriggerReplan(normalizedPolicies, node),
-          initialState: pendingState,
-          runContext,
-          schemaHash: schemaHashValue
-        })
+              updateState: updateHitlState
+            },
+          onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
+            initialState: pendingState,
+            runContext,
+            schemaHash: schemaHashValue
+          })
           finalOutput = result
         } catch (error) {
           if (error instanceof ReplanRequestedError) {
@@ -536,6 +603,7 @@ export class FlexRunCoordinator {
 
       await this.persistence.saveRunContext(runId, runContext.snapshot())
       await this.persistence.updateStatus(runId, 'completed')
+      this.emittedHitlResolutions.delete(runId)
       return { runId, status: 'completed', output: finalOutput }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err))
@@ -553,6 +621,7 @@ export class FlexRunCoordinator {
         message: error.message,
         payload: { runId }
       })
+      this.emittedHitlResolutions.delete(runId)
       throw err
     }
   }

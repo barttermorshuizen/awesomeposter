@@ -1,0 +1,9 @@
+schema: 1
+story: '8.9'
+story_title: 'Flex Task Policy Schema Foundation'
+gate: PASS
+status_reason: 'Unit suite passes after router-aware tests and nav filtering; no blocking issues outstanding.'
+reviewer: 'Quinn'
+updated: '2025-10-21T11:33:23Z'
+top_issues: []
+waiver: { active: false }

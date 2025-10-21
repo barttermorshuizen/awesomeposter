@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildVariableLookup,
-  createMockCatalog,
+  getCatalog,
   playgroundSamples,
   playgroundVariables,
 } from '../conditionPlayground/catalog'
 
 describe('condition playground catalog helpers', () => {
-  it('creates a mock catalog compatible with shared transpiler utilities', () => {
-    const catalog = createMockCatalog()
+  it('exposes a shared catalog compatible with parser utilities', () => {
+    const catalog = getCatalog()
     expect(catalog.variables).toHaveLength(playgroundVariables.length)
     const first = catalog.variables[0]
     expect(first).toMatchObject({

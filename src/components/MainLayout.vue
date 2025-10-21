@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { useUiStore } from '@/stores/ui'
 import AppNotifications from '@/components/AppNotifications.vue'
@@ -24,7 +24,7 @@ const baseNavItems = [
   { title: 'Settings', icon: 'mdi-cog-outline', to: { name: 'settings' } },
 ]
 
-const navItems = computed(() => {
+const rawNavItems = computed(() => {
   const items = [...baseNavItems]
   if (flexSandboxEnabled) {
     items.splice(items.length - 1, 0, {
@@ -36,8 +36,21 @@ const navItems = computed(() => {
   return items
 })
 
+const resolveRouteName = (target: RouteLocationRaw): string | null => {
+  try {
+    const resolved = router.resolve(target)
+    return (resolved?.name as string | null) ?? null
+  } catch {
+    return null
+  }
+}
+
+const navItems = computed(() => rawNavItems.value.filter((item) => resolveRouteName(item.to)))
+
+const isNavActive = (target: RouteLocationRaw): boolean => resolveRouteName(target) === route.name
+
 const currentIndex = computed(() => {
-  const idx = navItems.value.findIndex((i) => router.resolve(i.to).name === route.name)
+  const idx = navItems.value.findIndex((item) => isNavActive(item.to))
   return idx === -1 ? 0 : idx
 })
 
@@ -132,7 +145,7 @@ const drawerModel = computed({
         :to="item.to"
         link
         rounded="lg"
-        :active="router.resolve(item.to).name === route.name"
+        :active="isNavActive(item.to)"
         @click="isMobile && (drawerModel = false)"
       >
         <template #prepend>
@@ -162,7 +175,7 @@ const drawerModel = computed({
       :key="item.title"
       :value="i"
       stacked
-      :active="router.resolve(item.to).name === route.name"
+      :active="isNavActive(item.to)"
     >
       <v-icon :icon="item.icon" />
       <span class="text-caption">{{ item.title }}</span>
