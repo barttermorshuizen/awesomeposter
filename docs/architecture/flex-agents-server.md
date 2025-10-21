@@ -53,8 +53,131 @@ Canonical request payload containing `objective`, `inputs`, `constraints`, `outp
 ### 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
 
-### 5.3 RuntimePolicy
-Merged view of envelope `policies` and orchestrator-derived context. Since all directives come from the caller, the orchestrator simply normalizes the payload and propagates requirements such as variant counts, tone packs, or mandatory approvals.
+### 5.3 TaskPolicies
+`TaskEnvelope.policies` carries caller-authored guidance that shapes both the graph the planner proposes and the way the runtime reacts while executing it. The payload is strictly declarative – the orchestrator never infers hidden defaults – and is normalized before any planning begins.
+
+```ts
+export interface TaskPolicies {
+  /** Policies that influence how the plan is generated. */
+  planner?: PlannerPolicy;
+
+  /** Policies that govern runtime behavior after planning. */
+  runtime?: RuntimePolicy[];
+}
+```
+
+All helpers inside `@awesomeposter/shared/flex` import these definitions, keeping the planner, runtime, and UI in lockstep.
+
+#### PlannerPolicy
+Planner policies constrain graph generation (structure, required capabilities, optimisation goals) and surface free-form hints the planner can serialize directly into prompts.
+
+```ts
+export interface PlannerPolicy {
+  /** Structural constraints on the plan itself */
+  topology?: {
+    variantCount?: number;
+    maxDepth?: number;
+    requiredKinds?: string[];
+    forbiddenKinds?: string[];
+  };
+
+  /** Unified capability and node selection preferences */
+  selection?: {
+    require?: string[];
+    forbid?: string[];
+    prefer?: string[];
+    avoid?: string[];
+  };
+
+  /** High-level optimisation intent */
+  optimisation?: {
+    objective?: "speed" | "quality" | "diversity" | "token_efficiency";
+    maxTokens?: number;
+  };
+
+  /** Free-form hints for planner prompt injection */
+  directives?: Record<string, unknown>;
+}
+```
+
+#### RuntimePolicy
+Runtime policies watch execution signals and request a unified `Action` when their trigger criteria match. The orchestrator evaluates these policies deterministically, records the trigger metadata, and hands control to the requested action handler.
+
+```ts
+export type Action =
+  | { type: "goto"; next: string }
+  | { type: "replan"; rationale?: string }
+  | { type: "hitl"; rationale?: string }
+  | { type: "fail"; message?: string }
+  | { type: "pause"; reason?: string }
+  | { type: "emit"; event: string; payload?: Record<string, any> };
+
+export interface RuntimePolicy {
+  id: string;
+  enabled?: boolean;
+  trigger: PolicyTrigger;
+  action: Action;
+}
+
+export type PolicyTrigger =
+  | { kind: "onStart" }
+  | { kind: "onNodeComplete"; selector?: NodeSelector; condition?: Record<string, any> }
+  | { kind: "onValidationFail"; selector?: NodeSelector; condition?: Record<string, any> }
+  | { kind: "onTimeout"; ms: number }
+  | { kind: "onMetricBelow"; metric: string; threshold: number }
+  | { kind: "manual" };
+
+export interface NodeSelector {
+  nodeId?: string;
+  kind?: string;
+  capabilityId?: string;
+}
+```
+
+Example payload:
+
+```json
+{
+  "policies": {
+    "planner": {
+      "topology": { "variantCount": 3 },
+      "selection": {
+        "require": ["QualityAssuranceAgent.contentReview"],
+        "forbid": ["LegacyGeneratorAgent"],
+        "prefer": ["ContentGeneratorAgent.linkedinVariants"]
+      },
+      "optimisation": { "objective": "quality" }
+    },
+    "runtime": [
+      {
+        "id": "low_quality_replan",
+        "trigger": {
+          "kind": "onNodeComplete",
+          "selector": { "kind": "validation" },
+          "condition": { "<": [{ "var": "qaFindings.overallScore" }, 0.6] }
+        },
+        "action": { "type": "replan", "rationale": "Low QA score" }
+      },
+      {
+        "id": "medium_quality_hitl",
+        "trigger": {
+          "kind": "onNodeComplete",
+          "selector": { "kind": "validation" },
+          "condition": {
+            "and": [
+              { ">=": [{ "var": "qaFindings.overallScore" }, 0.6] },
+              { "<": [{ "var": "qaFindings.overallScore" }, 0.9] }
+            ]
+          }
+        },
+        "action": { "type": "hitl", "rationale": "Medium quality requires review" }
+      }
+    ]
+  }
+}
+```
+
+> **Note:** Action verb names (`hitl`, `fail`, `emit`, etc.) reflect the canonical shared enum. Execution stories (8.23, 8.24) will align dispatcher terminology so runtime wiring matches these identifiers.
 
 ### 5.4 PlanGraph
 A DAG generated per run describing specialist tasks, dependencies, and guard conditions. Nodes capture the selected agent/tool, expected `ContextBundle`, and the return contract the orchestrator expects (structured schema or free-form instructions the orchestrator can post-process).

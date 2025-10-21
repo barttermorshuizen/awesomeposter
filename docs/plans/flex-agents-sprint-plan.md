@@ -52,7 +52,7 @@
 - **Persistence**: 8.4 Flex Run Output & Snapshot Persistence (immediately after 8.8/8.14).
 - **Interfaces**: 8.5 Flex Run Resume & Debug Interfaces (follows once 8.4 delivers plan/version storage).
 - **Telemetry**: 8.6 Flex Telemetry & Logging Parity.
-- **Policy Engine**: 8.9 Flex Planner Signals & Policy Overrides (after persistence + telemetry).
+- **Policy Schema Foundation**: 8.9 Flex Task Policy Schema Foundation (after persistence + telemetry; blocks 8.23/8.24/8.25).
 
 ### Sequencing & Owners
 1. Facet catalog & contract compiler (8.12) — Shared types/platform owner; pairs with planner lead for API design.
@@ -62,7 +62,8 @@
 5. Persistence foundations (8.4) — Backend owner; collaborates with planner owner for plan version/snapshot hooks.
 6. Resume/debug interfaces (8.5) — Backend owner once 8.4 persists plan versions and outputs.
 7. Telemetry/logging parity (8.6) — Platform/SRE owner after plan versioning is available.
-8. Policy engine + signals (8.9) — Planner/platform owner once persistence and telemetry stories land.
+8. Policy schema foundation (8.9) — Planner/platform owner once persistence and telemetry stories land; required before any policy action/runtime stories (8.23, 8.24, 8.25).
+9. Follow-on policy action stories (8.23/8.24/8.25) — Defer until 8.9 completes; sequence and staff during Sprint transition review.
 
 ### Capacity Assumptions
 - ~5.5 engineer-weeks (platform/planner 2.7w, backend 1.8w, shared types 0.6w, SRE/observability 0.8w) + 0.5 QA week for integration/policy tests.
@@ -94,11 +95,13 @@
 ### Candidate Stories
 - Follow-up resilience tasks (e.g., dynamic policy conflict handling, planner heuristics refinements).
 - Operator enablement tasks: finalizing feature flag rollout SOP, UI polish for flex popup.
+- Policy action/runtime work (8.23 Flex Policy Action Execution, 8.24 Flex Conditional Action Node, 8.25 Flex Planner Envelope-Driven Context) — all gated on 8.9 completion.
 - Additional capability onboarding or automation stories (e.g., 8.11+ once prioritized).
 
 ### Dependencies & Considerations
 - Capability inventory rounding (new agents) depends on registry endpoint (8.2) and execution stability (8.3/8.10).
 - Dynamic planning (8.8) must be complete before resilience/policy follow-ups; telemetry insights from Sprint 2 inform Sprint 3 heuristics.
+- Policy schema foundation (8.9) is a hard blocker for 8.23/8.24/8.25; do not start those stories until 8.9 is merged and documented.
 - Resume/debug interfaces (8.5) and pilot readiness require persistence (8.4) to be hardened during Sprint 2.
 
 ### Risks & Mitigations
