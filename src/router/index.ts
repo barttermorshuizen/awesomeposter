@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
+import { isConditionPlaygroundEnabledClient, isFlexSandboxEnabledClient } from '@/lib/featureFlags'
 
 const flexSandboxEnabled = isFlexSandboxEnabledClient()
+const conditionPlaygroundEnabled = isConditionPlaygroundEnabledClient()
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -87,6 +88,15 @@ const router = createRouter({
             path: '/flex/sandbox',
             name: 'flex-sandbox',
             component: () => import('@/views/FlexSandboxView.vue'),
+          },
+        ] satisfies RouteRecordRaw[])
+      : []),
+    ...(conditionPlaygroundEnabled
+      ? ([
+          {
+            path: '/dev/condition-playground',
+            name: 'condition-playground',
+            component: () => import('@/views/ConditionPlaygroundView.vue'),
           },
         ] satisfies RouteRecordRaw[])
       : []),

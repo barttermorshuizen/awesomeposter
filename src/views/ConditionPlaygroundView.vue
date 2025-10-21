@@ -12,6 +12,8 @@ import {
   playgroundSamples,
   playgroundVariables,
 } from '@/lib/conditionPlayground/catalog'
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 
 const catalog = createMockCatalog()
 const variableLookup = buildVariableLookup()
@@ -54,14 +56,6 @@ const activeVariable = computed(() => {
   return activeVariableId.value ? variableLookup.get(activeVariableId.value) ?? null : null
 })
 
-const jsonLogicPreview = computed(() => {
-  const result = transpileResult.value
-  if (result && result.ok) {
-    return JSON.stringify(result.jsonLogic, null, 2)
-  }
-  return ''
-})
-
 const transpileError = computed(() => {
   const result = transpileResult.value
   if (result && !result.ok) {
@@ -76,6 +70,19 @@ const transpileWarnings = computed(() => {
     return result.warnings
   }
   return []
+})
+
+const jsonLogicObject = computed(() => {
+  const result = transpileResult.value
+  if (result && result.ok) {
+    return result.jsonLogic
+  }
+  return null
+})
+
+const jsonLogicPreview = computed(() => {
+  const object = jsonLogicObject.value
+  return object ? JSON.stringify(object, null, 2) : ''
 })
 
 const evaluationSummary = computed(() => {
@@ -340,9 +347,16 @@ function formatValue(value: unknown): string {
                 </li>
               </ul>
             </v-alert>
-            <pre class="pa-4 rounded-lg bg-grey-darken-4 text-white text-body-2 overflow-auto">
-{{ jsonLogicPreview || '// Start typing a DSL expression to see JSON-Logic here.' }}
-            </pre>
+            <VueJsonPretty
+              v-if="jsonLogicObject"
+              :data="jsonLogicObject"
+              :deep="2"
+              :show-length="false"
+              class="json-tree pa-2 rounded-lg"
+            />
+            <div v-else class="json-placeholder pa-4 rounded-lg bg-grey-darken-4 text-white text-body-2">
+              // Start typing a DSL expression to see JSON-Logic here.
+            </div>
           </v-card-text>
         </v-card>
 
@@ -418,7 +432,18 @@ function formatValue(value: unknown): string {
 </template>
 
 <style scoped>
-.condition-playground pre {
+.condition-playground .json-tree {
+  background-color: #1e1e1e;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.condition-playground :deep(.vjs-tree__line) {
+  font-size: 0.9rem;
+}
+
+.condition-playground .json-placeholder {
   font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
