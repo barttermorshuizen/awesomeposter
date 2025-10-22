@@ -7,7 +7,10 @@ describe('flexSandboxPlan utils', () => {
       plan: {
         runId: 'run-1',
         version: 1,
-        metadata: { scenario: 'initial' },
+        metadata: {
+          plannerContext: { channel: 'initial', formats: ['initial'], languages: [], audiences: [], tags: [], specialInstructions: [] },
+          variantCount: 1
+        },
         nodes: [
           { id: 'node-1', capabilityId: 'writer.v1', label: 'Writer', status: 'running' },
           { id: 'node-2', capabilityId: 'qa.v1', label: 'QA', status: 'pending' }
@@ -18,7 +21,10 @@ describe('flexSandboxPlan utils', () => {
     const result = extractPlanPayload(payload)
     expect(result?.runId).toBe('run-1')
     expect(result?.version).toBe(1)
-    expect(result?.metadata).toEqual({ scenario: 'initial' })
+    expect(result?.metadata).toEqual({
+      plannerContext: { channel: 'initial', formats: ['initial'], languages: [], audiences: [], tags: [], specialInstructions: [] },
+      variantCount: 1
+    })
     expect(result?.nodes).toHaveLength(2)
     expect(result?.nodes[0]).toMatchObject({ id: 'node-1', status: 'running' })
   })
@@ -32,7 +38,10 @@ describe('flexSandboxPlan utils', () => {
         { id: 'node-1', capabilityId: 'writer.v1', label: 'Writer', status: 'completed' },
         { id: 'node-3', capabilityId: 'editor.v1', label: 'Editor', status: 'pending' }
       ],
-      metadata: { scenario: 'replan' }
+      metadata: {
+        plannerContext: { channel: 'replan', formats: ['replan'], languages: [], audiences: [], tags: [], specialInstructions: [] },
+        variantCount: 1
+      }
     }
 
     const result = extractPlanPayload(payload)

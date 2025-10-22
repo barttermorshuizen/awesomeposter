@@ -231,7 +231,8 @@ export class FlexRunCoordinator {
               legacyFields: normalizedPolicies.legacyFields
             },
             graphState: requestOptions.graphState,
-            onRequest: async (context) => {
+            onRequest: async (requestContext) => {
+              const plannerHints = requestContext.context
               await opts.onEvent({
                 type: 'plan_requested',
                 timestamp: new Date().toISOString(),
@@ -240,9 +241,16 @@ export class FlexRunCoordinator {
                   runId,
                   attempt: attemptNumber,
                   phase,
-                  scenario: context.scenario,
-                  variantCount: context.variantCount,
-                  policies: context.policies,
+                  variantCount: requestContext.variantCount,
+                  plannerContext: {
+                    channel: plannerHints.channel ?? null,
+                    platform: plannerHints.platform ?? null,
+                    formats: plannerHints.formats,
+                    languages: plannerHints.languages,
+                    audiences: plannerHints.audiences,
+                    tags: plannerHints.tags
+                  },
+                  policies: requestContext.policies,
                   policyMetadata: {
                     planner: {
                       hasTopology: Boolean(normalizedPolicies.planner?.topology),
@@ -256,7 +264,7 @@ export class FlexRunCoordinator {
                     legacyNotes: normalizedPolicies.legacyNotes,
                     legacyFields: normalizedPolicies.legacyFields
                   },
-                  capabilities: context.capabilities.map((capability) => ({
+                  capabilities: requestContext.capabilities.map((capability) => ({
                     capabilityId: capability.capabilityId,
                     displayName: capability.displayName,
                     status: capability.status

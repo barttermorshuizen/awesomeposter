@@ -294,7 +294,7 @@ class StubHitlService {
 function createPlannerServiceStub(options: { firstPlanInvalid?: boolean } = {}): PlannerServiceInterface {
   let callCount = 0
   return {
-    async proposePlan({ scenario }: PlannerServiceInput) {
+    async proposePlan({ context }: PlannerServiceInput) {
       callCount += 1
       if (options.firstPlanInvalid && callCount === 1) {
         return {
@@ -326,7 +326,9 @@ function createPlannerServiceStub(options: { firstPlanInvalid?: boolean } = {}):
           capabilityId: CONTENT_CAPABILITY_ID,
           inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
           outputFacets: ['copyVariants'],
-          derived: scenario !== 'linkedin_post_variants',
+          derived: ![context.channel, context.platform, ...context.formats]
+            .filter((value): value is string => Boolean(value))
+            .some((value) => value.toLowerCase().includes('linkedin')),
           rationale: ['planner_recommendation'],
           instructions: ['Generate platform-appropriate copy variants']
         },
@@ -743,9 +745,12 @@ describe('FlexRunCoordinator', () => {
     let callCount = 0
     const graphContexts: Array<PlannerServiceInput['graphContext'] | undefined> = []
     const plannerService: PlannerServiceInterface = {
-      async proposePlan({ scenario, graphContext }: PlannerServiceInput) {
+      async proposePlan({ context, graphContext }: PlannerServiceInput) {
         graphContexts.push(graphContext)
         callCount += 1
+        const hasLinkedinCue = [context.channel, context.platform, ...context.formats]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => value.toLowerCase().includes('linkedin'))
         const baseNodes = [
           {
             stage: 'strategy',
@@ -761,7 +766,7 @@ describe('FlexRunCoordinator', () => {
             capabilityId: CONTENT_CAPABILITY_ID,
             inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
             outputFacets: ['copyVariants'],
-            derived: scenario !== 'linkedin_post_variants'
+            derived: !hasLinkedinCue
           },
           {
             stage: 'qa',

@@ -26,6 +26,19 @@ export type PlannerGraphContext = {
   facetValues: PlannerGraphFacetValue[]
 }
 
+export type PlannerContextHints = {
+  objective: string
+  channel?: string
+  platform?: string
+  formats: string[]
+  languages: string[]
+  audiences: string[]
+  tags: string[]
+  variantCount: number
+  plannerDirectives: Record<string, unknown>
+  specialInstructions: string[]
+}
+
 const MAX_FACET_VALUE_LENGTH = 800
 
 function serializeFacetValue(value: unknown, maxLength = MAX_FACET_VALUE_LENGTH): string {
@@ -41,10 +54,13 @@ function serializeFacetValue(value: unknown, maxLength = MAX_FACET_VALUE_LENGTH)
   }
 }
 
+function normalizeHint(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+}
+
 export type PlannerServiceInput = {
   envelope: TaskEnvelope
-  scenario: string
-  variantCount: number
+  context: PlannerContextHints
   capabilities: CapabilityRecord[]
   graphContext?: PlannerGraphContext
   policies: TaskPolicies
@@ -185,10 +201,29 @@ export class PlannerService implements PlannerServiceInterface {
     capabilities: CapabilityRecord[],
     facets: FacetDefinition[]
   ) {
+    const context = input.context
+    const planningHints = [
+      context.channel ? `Primary channel: ${context.channel}` : null,
+      context.platform ? `Platform: ${context.platform}` : null,
+      context.formats.length ? `Format expectations: ${context.formats.join(', ')}` : null,
+      context.languages.length ? `Languages: ${context.languages.join(', ')}` : null,
+      context.audiences.length ? `Audience descriptors: ${context.audiences.join(', ')}` : null,
+      context.tags.length ? `Tags: ${context.tags.join(', ')}` : null,
+      `Variant count: ${context.variantCount}`
+    ].filter((line): line is string => Boolean(line))
+
+    if (Object.keys(context.plannerDirectives).length) {
+      planningHints.push(`Planner directives: ${JSON.stringify(context.plannerDirectives, null, 2)}`)
+    }
+
+    const planningHintsBlock =
+      planningHints.length ?
+        ['Planning hints:', ...planningHints.map((line) => `  - ${line}`)].join('\n')
+        : null
+
     const envelopeLines = [
-      `Objective: ${input.envelope.objective}`,
-      `Scenario: ${input.scenario}`,
-      `Variant Count: ${input.variantCount}`,
+      `Objective: ${context.objective}`,
+      planningHintsBlock,
       `Policies: ${JSON.stringify(input.policies, null, 2)}`,
       input.policyMetadata?.legacyNotes?.length ? `Policy Notes: ${input.policyMetadata.legacyNotes.join('; ')}` : null,
       input.policyMetadata?.legacyFields?.length
@@ -352,9 +387,24 @@ export class PlannerService implements PlannerServiceInterface {
   }
 
   private buildFallbackDraft(input: PlannerServiceInput): PlannerDraft {
+    const generationCapability = input.capabilities.find(
+      (capability) => capability.capabilityId === 'ContentGeneratorAgent.linkedinVariants'
+    )
+    const normalizedFormats = input.context.formats.map(normalizeHint)
+    const capabilityFormats = generationCapability?.inputTraits?.formats ?? []
+    const capabilityMatchesFormat =
+      normalizedFormats.length && capabilityFormats.length
+        ? capabilityFormats.map(normalizeHint).some((format) => normalizedFormats.includes(format))
+        : false
+
     const baseNodes: PlannerDraftNode[] = [
       { stage: 'strategy', kind: 'structuring', capabilityId: 'StrategyManagerAgent.briefing', derived: true },
-      { stage: 'generation', kind: 'execution', capabilityId: 'ContentGeneratorAgent.linkedinVariants', derived: input.scenario !== 'linkedin_post_variants' },
+      {
+        stage: 'generation',
+        kind: 'execution',
+        capabilityId: 'ContentGeneratorAgent.linkedinVariants',
+        derived: !capabilityMatchesFormat
+      },
       { stage: 'qa', kind: 'validation', capabilityId: 'QualityAssuranceAgent.contentReview', derived: true }
     ]
     return {

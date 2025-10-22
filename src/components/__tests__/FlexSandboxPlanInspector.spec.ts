@@ -44,7 +44,10 @@ describe('FlexSandboxPlanInspector', () => {
     const plan: FlexSandboxPlan = {
       runId: 'run-123',
       version: 2,
-      metadata: { scenario: 'test' },
+      metadata: {
+        plannerContext: { channel: 'test', formats: ['test'], languages: [], audiences: [], tags: [], specialInstructions: [] },
+        variantCount: 2
+      },
       nodes: [
         {
           id: 'node-1',

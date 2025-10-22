@@ -16,7 +16,12 @@ import {
 } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
-import { PlannerService, type PlannerServiceInterface, type PlannerGraphContext } from './planner-service'
+import {
+  PlannerService,
+  type PlannerServiceInterface,
+  type PlannerGraphContext,
+  type PlannerContextHints
+} from './planner-service'
 import type { FacetSnapshot } from './run-context'
 import type { PlannerDraft, PlannerDraftNode, PlannerDiagnostics } from '../planner/planner-types'
 import { PlannerValidationService } from './planner-validation-service'
@@ -96,14 +101,6 @@ export class PlannerDraftRejectedError extends Error {
   }
 }
 
-type ScenarioId = 'linkedin_post_variants' | 'blog_post' | 'generic_copy'
-
-type ScenarioDefinition = {
-  id: ScenarioId
-  description: string
-  matches: (input: { objective: string; channel: string; tags: string[] }) => boolean
-}
-
 type FlexPlannerDependencies = {
   capabilityRegistry?: FlexCapabilityRegistryService
   plannerService?: PlannerServiceInterface
@@ -121,30 +118,12 @@ type BranchRequest = {
   source: 'planner' | 'envelope'
 }
 
-const SCENARIO_DEFINITIONS: ScenarioDefinition[] = [
-  {
-    id: 'linkedin_post_variants',
-    description: 'LinkedIn short-form content with variants and platform optimisation.',
-    matches: ({ channel, objective }) =>
-      channel.includes('linkedin') ||
-      (objective.includes('linkedin') && (objective.includes('variant') || objective.includes('post')))
-  },
-  {
-    id: 'blog_post',
-    description: 'Long-form article or blog post content.',
-    matches: ({ channel, objective, tags }) =>
-      channel.includes('blog') ||
-      channel.includes('article') ||
-      objective.includes('blog') ||
-      objective.includes('long form') ||
-      tags.includes('long_form')
-  },
-  {
-    id: 'generic_copy',
-    description: 'Fallback scenario when no specialised planner template matches.',
-    matches: () => true
-  }
-]
+type PlannerContextInternal = PlannerContextHints & {
+  normalizedFormats: string[]
+  normalizedLanguages: string[]
+  normalizedAudiences: string[]
+  normalizedTags: string[]
+}
 
 function unique<T>(values: Iterable<T>): T[] {
   return Array.from(new Set(values))
@@ -183,8 +162,8 @@ function extractFacetUnion(capability: CapabilityRecord, direction: 'input' | 'o
 
 type PlanRequestContext = {
   runId: string
-  scenario: ScenarioId
   variantCount: number
+  context: PlannerContextHints
   policies: TaskPolicies
   policyMetadata?: {
     legacyNotes: string[]
@@ -294,7 +273,6 @@ export class FlexPlanner {
   }
 
   async buildPlan(runId: string, envelope: TaskEnvelope, options?: BuildPlanOptions): Promise<FlexPlan> {
-    const scenarioInfo = deriveScenario(envelope)
     const capabilitySnapshot = await this.capabilityRegistry.getSnapshot()
     const canonicalPolicies = options?.policies ?? parseTaskPolicies(envelope.policies ?? {})
     const variantCount = normalizeVariantCount(
@@ -307,10 +285,12 @@ export class FlexPlanner {
       ...envelope,
       policies: canonicalPolicies
     }
+    const plannerContextInternal = derivePlannerContext(envelopeForPlanner, canonicalPolicies, variantCount)
+    const plannerContextHints = toPlannerContextHints(plannerContextInternal)
     await options?.onRequest?.({
       runId,
-      scenario: scenarioInfo.id,
       variantCount,
+      context: plannerContextHints,
       policies: canonicalPolicies,
       policyMetadata,
       capabilities: capabilitySnapshot.active
@@ -318,8 +298,7 @@ export class FlexPlanner {
     const graphContext = this.summarizeGraphState(options?.graphState)
     const plannerDraft = await this.plannerService.proposePlan({
       envelope: envelopeForPlanner,
-      scenario: scenarioInfo.id,
-      variantCount,
+      context: plannerContextHints,
       capabilities: capabilitySnapshot.active,
       graphContext,
       policies: canonicalPolicies,
@@ -329,8 +308,10 @@ export class FlexPlanner {
       const draftPretty = JSON.stringify(plannerDraft, null, 2)
       getLogger().debug(`flex_planner_draft_received\n${draftPretty}`, {
         runId,
-        scenario: scenarioInfo.id,
-        variantCount
+        variantCount,
+        channel: plannerContextHints.channel,
+        platform: plannerContextHints.platform,
+        formats: plannerContextHints.formats
       })
     } catch {}
     const validation = this.validationService.validate({
@@ -379,7 +360,11 @@ export class FlexPlanner {
       const compiledContracts = this.compileFacetContracts(facets)
       const outputContract = this.resolveOutputContract(kind, capability, facets, envelope.outputContract, compiledContracts.output)
       const nodeId = sanitizeNodeId(draftNode.capabilityId ?? draftNode.stage ?? draftNode.label ?? 'node', index)
-      const derivedFlag = Boolean(draftNode.derived || (capability ? this.isDerivedCapability(capability) : false))
+      const compatibilityScore = capability ? this.computeCapabilityCompatibility(capability, plannerContextInternal) : undefined
+      const derivedFlag = Boolean(
+        draftNode.derived ??
+          (capability ? this.isDerivedCapability(capability, plannerContextInternal, compatibilityScore) : false)
+      )
       const nodeLabel = draftNode.label ?? capability?.displayName ?? 'Planner node'
 
       const bundle = this.buildContextBundle({
@@ -415,7 +400,7 @@ export class FlexPlanner {
         },
         rationale: draftNode.rationale ?? [],
         metadata: {
-          capabilityScore: capability ? this.computeCapabilityScore(capability, scenarioInfo.id) : undefined,
+          capabilityScore: compatibilityScore,
           derived: derivedFlag,
           plannerDerived: draftNode.derived ?? undefined,
           plannerStage: draftNode.stage ?? undefined,
@@ -447,8 +432,6 @@ export class FlexPlanner {
       nodes,
       edges,
       metadata: {
-        scenario: scenarioInfo.id,
-        scenarioDescription: scenarioInfo.descriptor.description,
         variantCount,
         branchCount: branchRequests.length || nodes.filter((node) => node.kind === 'branch').length,
         branchPolicySources: unique(branchRequests.map((request) => request.source)),
@@ -461,6 +444,15 @@ export class FlexPlanner {
         plannerRuntime: plannerDraft.metadata?.provider ?? 'llm',
         plannerModel: plannerDraft.metadata?.model ?? null,
         plannerDraftNodeCount: plannerDraft.nodes.length,
+        plannerContext: {
+          channel: plannerContextHints.channel ?? null,
+          platform: plannerContextHints.platform ?? null,
+          formats: plannerContextHints.formats,
+          languages: plannerContextHints.languages,
+          audiences: plannerContextHints.audiences,
+          tags: plannerContextHints.tags,
+          specialInstructions: plannerContextHints.specialInstructions.length ? plannerContextHints.specialInstructions : undefined
+        },
         policySummary: {
           hasPlanner: Boolean(canonicalPolicies.planner),
           runtimeCount: canonicalPolicies.runtime.length
@@ -956,14 +948,53 @@ export class FlexPlanner {
     return 1 + branchWeight + derivedWeight + transformationWeight
   }
 
-  private computeCapabilityScore(capability: CapabilityRecord, scenario: ScenarioId): number {
-    const scenarios = extractCapabilityScenarios(capability)
-    return scenarios.includes(scenario) ? 100 : scenarios.length ? 60 : 20
+  private computeCapabilityCompatibility(capability: CapabilityRecord, context: PlannerContextInternal): number {
+    const traits = capability.inputTraits ?? {}
+    let score = 40
+
+    const capabilityFormats = (traits.formats ?? []).map(normalizeHint)
+    const capabilityLanguages = (traits.languages ?? []).map(normalizeHint)
+    const capabilityStrengths = traits.strengths ?? []
+
+    const formatMatches =
+      capabilityFormats.length &&
+      context.normalizedFormats.length &&
+      capabilityFormats.some((format) =>
+        context.normalizedFormats.some((hint) => format.includes(hint) || hint.includes(format))
+      )
+    if (formatMatches) score += 30
+
+    const languageMatches =
+      capabilityLanguages.length &&
+      context.normalizedLanguages.length &&
+      capabilityLanguages.some((language) =>
+        context.normalizedLanguages.some((hint) => language === hint || language.includes(hint) || hint.includes(language))
+      )
+    if (languageMatches) score += 20
+
+    if (context.variantCount > 1) {
+      const variantStrength = capabilityStrengths.some((strength) => /variant|diversity|multi/i.test(strength))
+      if (variantStrength) score += 10
+    }
+
+    const qaStrength = capabilityStrengths.some((strength) => /qa|quality|review|compliance/i.test(strength))
+    if (
+      qaStrength &&
+      context.normalizedTags.some((tag) => ['qa', 'quality', 'compliance'].some((keyword) => tag.includes(keyword)))
+    ) {
+      score += 10
+    }
+
+    return Math.min(100, score)
   }
 
-  private isDerivedCapability(capability: CapabilityRecord): boolean {
-    const scenarios = extractCapabilityScenarios(capability)
-    return scenarios.length === 0
+  private isDerivedCapability(
+    capability: CapabilityRecord,
+    context: PlannerContextInternal,
+    precomputedScore?: number
+  ): boolean {
+    const score = precomputedScore ?? this.computeCapabilityCompatibility(capability, context)
+    return score < 60
   }
 }
 
@@ -1007,19 +1038,206 @@ function collectEnvelopeBranchRequests(envelope: TaskEnvelope): BranchRequest[] 
   return []
 }
 
-function deriveScenario(envelope: TaskEnvelope): { id: ScenarioId; descriptor: ScenarioDefinition } {
-  const objective = (envelope.objective || '').toLowerCase()
+function derivePlannerContext(
+  envelope: TaskEnvelope,
+  policies: TaskPolicies,
+  variantCount: number
+): PlannerContextInternal {
   const inputs = (envelope.inputs ?? {}) as Record<string, unknown>
-  const channel = String(inputs.channel ?? inputs.platform ?? '').toLowerCase()
-  const tags = Array.isArray(inputs.tags) ? (inputs.tags as unknown[]) : []
-  const normalizedTags = tags.map((tag) => String(tag || '').toLowerCase())
+  const formats = new Set<string>()
+  const normalizedFormats = new Set<string>()
+  const languages = new Set<string>()
+  const normalizedLanguages = new Set<string>()
+  const audiences = new Set<string>()
+  const normalizedAudiences = new Set<string>()
+  const tags = new Set<string>()
+  const normalizedTags = new Set<string>()
 
-  for (const descriptor of SCENARIO_DEFINITIONS) {
-    if (descriptor.matches({ objective, channel, tags: normalizedTags })) {
-      return { id: descriptor.id, descriptor }
+  const addFormat = (value: unknown) => addStringToSets(value, formats, normalizedFormats)
+  const addLanguage = (value: unknown) => addStringToSets(value, languages, normalizedLanguages)
+  const addAudience = (value: unknown) => addStringToSets(value, audiences, normalizedAudiences)
+  const addTag = (value: unknown) => addStringToSets(value, tags, normalizedTags)
+
+  const channel = firstString(inputs.channel ?? inputs.primaryChannel ?? inputs.destination)
+  if (channel) addFormat(channel)
+
+  const platform = firstString(inputs.platform ?? inputs.surface)
+  if (platform) addFormat(platform)
+
+  addFormat(inputs.format)
+  addFormat(inputs.contentFormat)
+  addFormat(inputs.medium)
+  collectStringValues(inputs.formats).forEach(addFormat)
+
+  const writerBrief = asRecord(inputs.writerBrief)
+  if (writerBrief) {
+    addFormat(writerBrief.channel)
+    addFormat(writerBrief.platform)
+    addFormat(writerBrief.format)
+    collectStringValues(writerBrief.formats).forEach(addFormat)
+    addLanguage(writerBrief.language)
+    collectStringValues(writerBrief.languages).forEach(addLanguage)
+    addAudience(writerBrief.persona)
+    collectStringValues(writerBrief.audience).forEach(addAudience)
+    const writerAudienceProfile = asRecord(writerBrief.audienceProfile)
+    if (writerAudienceProfile) {
+      addAudience(writerAudienceProfile.persona)
+      addAudience(writerAudienceProfile.role)
+      addAudience(writerAudienceProfile.segment)
+      addAudience(writerAudienceProfile.industry)
+      addAudience(writerAudienceProfile.jobTitle)
+      addAudience(writerAudienceProfile.geo)
+    }
+    collectStringValues(writerBrief.tags).forEach(addTag)
+  }
+
+  addLanguage(inputs.language)
+  collectStringValues(inputs.languages).forEach(addLanguage)
+
+  const planKnobs = asRecord(inputs.planKnobs)
+  if (planKnobs) {
+    addLanguage(planKnobs.language)
+    collectStringValues(planKnobs.languages).forEach(addLanguage)
+    addFormat(planKnobs.format)
+    collectStringValues(planKnobs.formats).forEach(addFormat)
+  }
+
+  const audienceProfile = asRecord(inputs.audienceProfile)
+  if (audienceProfile) {
+    addAudience(audienceProfile.persona)
+    addAudience(audienceProfile.role)
+    addAudience(audienceProfile.segment)
+    addAudience(audienceProfile.industry)
+    addAudience(audienceProfile.jobTitle)
+    addAudience(audienceProfile.geo)
+  }
+
+  collectStringValues(inputs.audience).forEach(addAudience)
+  collectStringValues(inputs.personas).forEach(addAudience)
+
+  collectStringValues(inputs.tags).forEach(addTag)
+
+  const plannerSelection = policies.planner?.selection
+  if (plannerSelection) {
+    collectStringValues(plannerSelection.require).forEach(addTag)
+    collectStringValues(plannerSelection.prefer).forEach(addTag)
+    collectStringValues(plannerSelection.avoid).forEach(addTag)
+  }
+
+  const directives = safeJsonClone(policies.planner?.directives ?? {}) as Record<string, unknown>
+  Object.entries(directives).forEach(([key, value]) => {
+    const normalizedKey = key.toLowerCase()
+    if (normalizedKey.includes('format') || normalizedKey.includes('channel') || normalizedKey.includes('platform')) {
+      collectStringValues(value).forEach(addFormat)
+    }
+    if (normalizedKey.includes('language')) {
+      collectStringValues(value).forEach(addLanguage)
+    }
+    if (normalizedKey.includes('audience')) {
+      collectStringValues(value).forEach(addAudience)
+    }
+    if (normalizedKey.includes('tag') || normalizedKey.includes('keyword')) {
+      collectStringValues(value).forEach(addTag)
+    }
+  })
+
+  return {
+    objective: envelope.objective,
+    channel: channel ?? undefined,
+    platform: platform ?? undefined,
+    formats: Array.from(formats),
+    languages: Array.from(languages),
+    audiences: Array.from(audiences),
+    tags: Array.from(tags),
+    variantCount,
+    plannerDirectives: directives,
+    specialInstructions: [...(envelope.specialInstructions ?? [])],
+    normalizedFormats: Array.from(normalizedFormats),
+    normalizedLanguages: Array.from(normalizedLanguages),
+    normalizedAudiences: Array.from(normalizedAudiences),
+    normalizedTags: Array.from(normalizedTags)
+  }
+}
+
+function toPlannerContextHints(context: PlannerContextInternal): PlannerContextHints {
+  const { normalizedFormats, normalizedLanguages, normalizedAudiences, normalizedTags, ...hints } = context
+  return hints
+}
+
+function addStringToSets(value: unknown, displaySet: Set<string>, normalizedSet: Set<string>) {
+  collectStringValues(value).forEach((entry) => {
+    const trimmed = entry.trim()
+    if (!trimmed) return
+    displaySet.add(trimmed)
+    normalizedSet.add(normalizeHint(trimmed))
+  })
+}
+
+function collectStringValues(value: unknown): string[] {
+  if (value == null) return []
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? [trimmed] : []
+  }
+  if (Array.isArray(value)) {
+    const results: string[] = []
+    value.forEach((entry) => {
+      if (typeof entry === 'string') {
+        const trimmed = entry.trim()
+        if (trimmed) results.push(trimmed)
+      } else if (entry && typeof entry === 'object') {
+        const record = entry as Record<string, unknown>
+        if (typeof record.label === 'string') {
+          const trimmed = record.label.trim()
+          if (trimmed) results.push(trimmed)
+        } else if (typeof record.value === 'string') {
+          const trimmed = record.value.trim()
+          if (trimmed) results.push(trimmed)
+        } else if (typeof record.name === 'string') {
+          const trimmed = record.name.trim()
+          if (trimmed) results.push(trimmed)
+        } else if (typeof record.text === 'string') {
+          const trimmed = record.text.trim()
+          if (trimmed) results.push(trimmed)
+        }
+      }
+    })
+    return results
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (typeof record.label === 'string') {
+      const trimmed = record.label.trim()
+      return trimmed ? [trimmed] : []
+    }
+    if (typeof record.value === 'string') {
+      const trimmed = record.value.trim()
+      return trimmed ? [trimmed] : []
+    }
+    if (typeof record.name === 'string') {
+      const trimmed = record.name.trim()
+      return trimmed ? [trimmed] : []
+    }
+    if (typeof record.text === 'string') {
+      const trimmed = record.text.trim()
+      return trimmed ? [trimmed] : []
     }
   }
-  return { id: 'generic_copy', descriptor: SCENARIO_DEFINITIONS.find((entry) => entry.id === 'generic_copy')! }
+  return []
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function firstString(value: unknown): string | null {
+  const [first] = collectStringValues(value)
+  return first ?? null
+}
+
+function normalizeHint(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
 }
 
 function normalizeVariantCount(raw: unknown): number {
@@ -1034,12 +1252,6 @@ function toJsonSchemaContract(compiled: { schema: JsonSchemaContract['schema']; 
     mode: 'json_schema',
     schema: safeJsonClone(compiled.schema)
   }
-}
-
-function extractCapabilityScenarios(capability: CapabilityRecord): string[] {
-  const metadata = (capability.metadata ?? {}) as Record<string, unknown>
-  const scenarios = Array.isArray(metadata.scenarios) ? metadata.scenarios : []
-  return scenarios.map((value) => String(value || '').toLowerCase()).filter(Boolean)
 }
 
 function safeCapabilityLabel(capability: CapabilityRecord | undefined, fallback?: string): string {

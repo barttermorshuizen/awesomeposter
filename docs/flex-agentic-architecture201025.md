@@ -40,7 +40,7 @@
 - **Contracts**: All request/response payloads validated against Zod schemas from `@awesomeposter/shared/src/flex/types.ts` (TaskEnvelope, OutputContract, FlexEvent, HITL payloads).
 - **Planner lifecycle**: `FlexRunCoordinator` orchestrates runs:
   1. Normalizes policies (`PolicyNormalizer`), resolves thread/resume metadata, and persists run snapshots via `FlexRunPersistence` (Drizzle-backed `flexRuns`, `flexPlanNodes` tables).
-  2. Requests plans from `FlexPlanner`, which composes scenario-aware graphs (LinkedIn, blog, generic) by combining capability metadata, facet contracts, and planner drafts. Validation handled by `PlannerValidationService`.
+ 2. Requests plans from `FlexPlanner`, which now composes envelope-driven graphs by combining capability metadata, facet contracts, TaskEnvelope hints (channel, format, policy directives), and planner drafts. Validation handled by `PlannerValidationService`.
   3. Streams `FlexEvent` frames (`start`, `plan_requested`, `plan_generated`, node lifecycle, HITL events) over SSE with `createSse`.
   4. Executes nodes through `FlexExecutionEngine`, invoking agent runtimes and enforcing HITL pauses (`HitlService`) plus replan triggers (`ReplanRequestedError`).
 - **Capabilities & agents**:
@@ -55,7 +55,7 @@
 
 ### Tests & Reference Implementation
 - Flex has an extensive Vitest suite (`packages/flex-agents-server/__tests__/`) covering planner validation, capability registration, SSE framing, HITL workflows, sandbox metadata, and policy-gated replans. Notable specs:
-  - `flex-planner.spec.ts` and `flex-planner-hybrid.spec.ts` verify scenario matching, facet contracts, and dynamic branching for marketing objectives.
+- `flex-planner.spec.ts` and `flex-planner-hybrid.spec.ts` verify envelope/context matching, facet contracts, and dynamic branching for marketing objectives.
   - `strategy` and `content` tool specs ensure asset analysis and knob planning align with marketing heuristics.
   - Integration specs (`flex-sandbox-run.spec.ts`, `hitl-api.integration.spec.ts`) simulate end-to-end runs, validating event streams against the reference TaskEnvelope shape.
 - Shared package tests (`packages/shared/__tests__/flex/**`) guarantee schema and facet catalog consistency, acting as the canonical reference for downstream teams.
@@ -68,7 +68,7 @@
 
 ## Technical Debt & Risks
 - `WorkflowOrchestrator` (`packages/flex-agents-server/src/services/workflow-orchestrator.ts`) remains mostly a stub, returning echo responses; the orchestrated agent hand-off is still driven by `FlexRunCoordinator`, so duplication/confusion risk exists.
-- Planner scenarios are hard-coded in `FlexPlanner`; adding new campaign types requires code changes instead of registry-driven configuration.
+- Planner context previously relied on hard-coded scenarios in `FlexPlanner`; the planner now derives hints from TaskEnvelope data and canonical planner policies so new campaign types ride through configuration instead of code changes.
 - Capability registry heartbeat metadata is stored per-row; drift between agent prompts and DB entries can break planner assumptions without automated sync jobs.
 - HITL reliance on environment quotas (`HITL_MAX_REQUESTS`) lacks per-client granularity; overflows lead to auto-denials that may surprise operators.
 - SSE concurrency/backlog is enforced in-process only; without horizontal coordination, multi-instance deployments risk overwhelming upstream services.
@@ -82,7 +82,7 @@
 
 ## Next Steps (Recommended)
 1. **Harden WorkflowOrchestrator**: align stub class with real agent phases or remove to avoid divergent orchestration paths.
-2. **Externalize planner scenarios**: persist scenario definitions in the capability registry or config, enabling runtime extensions without redeployments.
+2. **Enrich capability metadata**: ensure registry entries advertise formats/languages/strengths so envelope-driven scoring can select the best capability without bespoke code.
 3. **Distributed concurrency control**: move SSE semaphore state to Redis or database to support multi-instance flex deployments.
 4. **Automated capability sync**: add CI checks or migrations ensuring registry metadata mirrors agent code (prompt files, preferred models).
 5. **HITL analytics**: persist escalation latency and outcomes to `postTelemetry` or dedicated tables, enabling QA on human overrides.
@@ -104,4 +104,3 @@ npm --prefix packages/db run gen && npm --prefix packages/db run push
   - Functional specs (`agentic_ai_social_poster_functional_specs.md`)
   - Shared contracts (`packages/shared/src/flex/types.ts`)
   - Planner tests (`packages/flex-agents-server/__tests__/flex-planner.spec.ts`)
-

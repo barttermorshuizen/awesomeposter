@@ -123,7 +123,19 @@ describe('FlexRunCoordinator sandbox emission', () => {
         }
       ],
       edges: [],
-      metadata: { scenario: 'sandbox' }
+      metadata: {
+        variantCount: 1,
+        plannerContext: {
+          channel: 'sandbox',
+          platform: null,
+          formats: ['sandbox'],
+          languages: [],
+          audiences: [],
+          tags: [],
+          specialInstructions: []
+        },
+        plannerAttempts: 1
+      }
     }
 
     const events: FlexEvent[] = []
@@ -146,7 +158,10 @@ describe('FlexRunCoordinator sandbox emission', () => {
     const planPayload = (generated?.payload as any)?.plan
     expect(planPayload).toBeTruthy()
     expect(planPayload).toMatchObject({
-      metadata: expect.objectContaining({ scenario: 'sandbox', plannerAttempts: 1 }),
+      metadata: expect.objectContaining({
+        plannerAttempts: 1,
+        plannerContext: expect.objectContaining({ channel: 'sandbox' })
+      }),
       nodes: [
         expect.objectContaining({
           id: 'node-1',

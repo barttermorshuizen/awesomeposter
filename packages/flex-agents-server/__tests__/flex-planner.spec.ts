@@ -137,7 +137,19 @@ function buildOutputContract() {
 
 function createPlannerServiceStub(): PlannerServiceInterface {
   return {
-    async proposePlan({ scenario }: PlannerServiceInput) {
+    async proposePlan({ context }: PlannerServiceInput) {
+      const contextValues = [
+        context.channel,
+        context.platform,
+        ...context.formats,
+        ...context.tags
+      ]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.toLowerCase())
+
+      const hasLinkedinCue = contextValues.some((value) => value.includes('linkedin'))
+      const hasBlogCue = contextValues.some((value) => value.includes('blog'))
+
       const nodes = [
         {
           stage: 'strategy',
@@ -152,12 +164,12 @@ function createPlannerServiceStub(): PlannerServiceInterface {
           stage: 'generation',
           kind: 'execution',
           capabilityId: CONTENT_CAPABILITY_ID,
-          derived: scenario !== 'linkedin_post_variants',
+          derived: !hasLinkedinCue,
           inputFacets: ['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'],
           outputFacets: ['copyVariants'],
           rationale: ['planner_recommendation'],
           instructions:
-            scenario === 'blog_post'
+            hasBlogCue
               ? ['Account for long-form outline', 'Address multiple angles if requested']
               : ['Generate platform-appropriate copy']
         },
@@ -173,7 +185,7 @@ function createPlannerServiceStub(): PlannerServiceInterface {
       ]
 
       const branchRequests =
-        scenario === 'blog_post'
+        hasBlogCue
           ? [
               { id: 'planner_branch_1', label: 'Product spotlight', rationale: 'Cover product angle' },
               { id: 'planner_branch_2', label: 'Culture story', rationale: 'Cover culture angle' }
@@ -280,7 +292,10 @@ describe('FlexPlanner', () => {
     }
 
     expect(fallbackNode.bundle.instructions?.some((instruction) => instruction.includes('Escalate'))).toBe(true)
-    expect(plan.metadata.scenario).toBe('linkedin_post_variants')
+    expect(plan.metadata.plannerContext).toMatchObject({
+      channel: 'linkedin',
+      formats: expect.arrayContaining(['linkedin'])
+    })
     expect(plan.metadata.planVersionTag).toBeDefined()
     expect(plan.nodes[plan.nodes.length - 1]?.kind).toBe('fallback')
   })
@@ -349,7 +364,10 @@ describe('FlexPlanner', () => {
     const executionNode = plan.nodes.find((node) => node.kind === 'execution')!
     expect(executionNode.derivedCapability?.fromCapabilityId).toBe(CONTENT_CAPABILITY_ID)
     expect(plan.metadata.derivedCapabilityCount).toBeGreaterThan(0)
-    expect(plan.metadata.scenario).toBe('blog_post')
+    expect(plan.metadata.plannerContext).toMatchObject({
+      channel: 'blog',
+      formats: expect.arrayContaining(['blog'])
+    })
   })
 
   it('falls back gracefully for generic scenarios and retains HITL escape hatch', async () => {
@@ -403,7 +421,10 @@ describe('FlexPlanner', () => {
 
     const plan = await planner.buildPlan('run_generic', envelope)
 
-    expect(plan.metadata.scenario).toBe('generic_copy')
+    expect(plan.metadata.plannerContext).toMatchObject({
+      channel: 'email',
+      formats: expect.arrayContaining(['email'])
+    })
     expect(plan.metadata.derivedCapabilityCount).toBeGreaterThanOrEqual(1)
 
     const executionNode = plan.nodes.find((node) => node.kind === 'execution')!
