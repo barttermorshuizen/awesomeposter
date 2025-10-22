@@ -426,6 +426,328 @@ sequenceDiagram
     end
 ```
 
+## 5.9 Output Contracts, Planner Validation, and Policy Semantics
+
+**Overview**
+
+This section formalizes how the OutputContract, Planner Validation Loop, and Policy Layer interact to ensure all generated plans are provably satisfiable against declared objectives and constraints.
+The goal is to make plan synthesis test-driven, declarative, and orthogonal to runtime guardrails.
+
+
+### 5.9.1 OutputContract Specification
+
+#### Purpose
+
+The OutputContract expresses the conditions of satisfaction for a task.
+It defines the structure, expectations, and thresholds that must hold true for the task to be considered successful.
+It is declarative, never procedural — the planner must infer a plan graph that can satisfy these truths.
+
+#### Schema
+
+export interface OutputContract {
+  /** JSON Schema describing expected output structure. */
+  schema: JSONSchema7
+
+  /** Optional post-processing or rendering hints. */
+  hints?: Record<string, unknown>
+
+  /** Declarative constraints that must hold true at completion. */
+  constraints?: ConstraintSpec[]
+}
+
+export interface ConstraintSpec {
+  /** JSONLogic-style expression referencing output fields. */
+  expr: Record<string, any>
+
+  /** Indicates planner responsibility and enforcement strictness. */
+  level: "hard" | "soft" | "informational"
+
+  /** Optional rationale for planner feedback or telemetry. */
+  rationale?: string
+}
+
+Semantics
+	•	schema defines the shape of a valid output.
+	•	constraints define truth conditions that must hold for the output to be acceptable.
+	•	Constraints never contain actions.
+They are requirements, not instructions.
+	•	Hard constraints are mandatory; soft constraints are optimization hints.
+	•	The planner’s role is to propose a plan graph that can in principle produce outputs satisfying all hard constraints.
+	•	The runtime simply verifies constraint satisfaction during validation.
+
+⸻
+
+### 5.9.2 Planner Validation and Feedback Loop
+
+#### Purpose
+
+Planner validation transforms planning into a deterministic, test-driven loop.
+Each candidate plan is checked against declarative constraints before execution, and the LLM planner refines its proposal based on structured feedback.
+
+#### Lifecycle
+	1.	Plan Drafting. PlannerService (LLM-backed) receives the normalized envelope, including outputContract and its constraints. It emits a PlanGraph containing proposed nodes, capabilities, and dependencies.
+	2.	Structural Validation. PlannerValidationService performs deterministic checks:
+	•	DAG validity and acyclicity
+	•	Node completeness and facet alignment
+	•	Schema compilability via Ajv/Zod
+	•	Presence of required capability types
+	3.	Constraint Satisfaction Testing. PlanSatisfactionTester runs symbolic “unit tests” against the plan, verifying that:
+	•	Each constraint facet is produced by at least one node.
+	•	Each declared condition can be satisfied by some output in the graph.
+	•	No hard constraints remain unsatisfied.
+	•	Optional scoring (satisfactionScore) quantifies coverage.
+	4.	Feedback Emission
+	•	If all hard constraints are satisfiable → emit plan_generated.
+	•	If any fail → emit plan_rejected with structured diagnostics consumable by both the planner and UI.
+
+#### Diagnostic Format
+
+{
+  "status": "rejected",
+  "failures": [
+    {
+      "constraint": "qaFindings.overallScore >= 0.8",
+      "cause": "no node produces qaFindings",
+      "suggestion": "add QualityAssuranceAgent.contentReview before Publish"
+    },
+    {
+      "constraint": "variantCount == 2",
+      "cause": "plan outputs 1 variant",
+      "suggestion": "expand branch node or add generator variant loop"
+    }
+  ]
+}
+
+#### Requirements for Effective Planner Feedback
+
+The validator must:
+	1.	Be deterministic — identical inputs produce identical results.
+	2.	Operate symbolically — reason over node metadata, not runtime data.
+	3.	Emit lineage — reference specific node IDs or capabilities in diagnostics.
+	4.	Provide actionable feedback — phrased as fixable deltas for the LLM.
+	5.	Support composability — multiple validator passes may contribute to a shared failure list.
+	6.	Quantify partial success — surface satisfactionScore to drive planner optimization.
+	7.	Never infer intent — all reasoning must be grounded in contract or facet metadata.
+
+#### Planner Integration
+
+Planner iteration loop:
+
+sequenceDiagram
+    participant Planner as PlannerService (LLM)
+    participant Validator as PlanSatisfactionTester
+    participant Controller as FlexRunController
+
+    Planner->>Validator: Propose PlanGraph
+    Validator-->>Planner: Diagnostics (failures[])
+    Planner->>Validator: Revised PlanGraph (next attempt)
+    Validator-->>Controller: Pass → plan_generated
+
+
+### 5.9.3 Role Separation and Model Collaboration
+
+| Layer	| Responsibility | Determinism
+| --- | --- | --- |
+TaskEnvelope	| Declares objective and desired outcome (OutputContract). |	Declarative
+PlannerService (LLM) |	Synthesizes plan graph that satisfies constraints. |	Probabilistic generation under deterministic validation
+PlannerValidationService / PlanSatisfactionTester |	Validate structure and constraint satisfiability; emit feedback. |	Deterministic
+ExecutionEngine |	Executes only validated plans; enforces schema and constraints. |	Deterministic
+Policies Layer |	Orthogonal runtime guardrails (timeouts, retries, human-in-loop). |	Deterministic but event-driven
+
+
+### 5.9.4 Policies as Orthogonal Guardrails
+
+#### Purpose
+
+Policies operate outside of planning and constraint satisfaction.
+They do not alter topology or structure.
+They monitor runtime telemetry and enforce global safety, compliance, or operator rules.
+
+#### Characteristics
+	•	Reactive, not predictive — triggered by execution events.
+	•	Non-topological — do not add, remove, or rewire plan nodes.
+	•	Guardraily, not generative — prevent damage or violation, not drive logic.
+	•	Orthogonal — independent of planner reasoning.
+
+#### Typical Policy Functions
+	•	Node-level retries and backoff
+	•	Global timeouts or variant limits
+	•	Operator review enforcement (HITL)
+	•	Compliance or safety fallbacks
+	•	Metric-triggered escalation (e.g., “pause if sentiment < threshold”)
+
+Policies ensure runtime robustness but are not a mechanism for conditional routing or logic flow.
+
+### 5.9.5 Conceptual Flow Summary
+
+TaskEnvelope
+  └── OutputContract (schema + constraints)
+        ↓
+    PlannerService (LLM)
+        ↓ proposes
+    PlannerValidationService + PlanSatisfactionTester
+        ↓ validate + emit feedback
+    plan_generated → ExecutionEngine
+        ↓ executes
+    Policies Layer
+        ↳ monitors runtime signals (timeouts, validation failures)
+        ↳ triggers guardrail actions (pause, replan, fail)
+
+#### Design Principle
+
+Contracts define what must be true.
+Planners decide how to make it true.
+Validators prove it could be true.
+Policies ensure nothing breaks while trying.
+
+## Δ Policy Simplification (Remove Flow-Control Actions)
+
+### Background
+
+Earlier versions allowed **runtime policies** to trigger direct flow manipulation via goto actions.
+
+These policies referenced specific NodeSelector criteria (nodeId, kind, capabilityId, etc.) to jump execution to another node.
+
+Example (to be deprecated):
+
+```
+{
+  "id": "hitl_reject_goto_previous",
+  "trigger": { "kind": "manual" },
+  "action": {
+    "type": "goto",
+    "next": { "relation": { "direction": "previous", "filter": { "kind": "execution" } } }
+  }
+}
+```
+
+This approach conflated **control flow** (a planner concern) with **guardrail enforcement** (a runtime concern).
+
+Under the new model, plan topology is immutable once validated; policies may **pause**, **fail**, or **request replanning**, but they never re-route nodes.
+
+### Deprecated Elements
+
+| Type | Name | Replacement | Notes |
+| ----- | ----- | ----- | ----- |
+| **Action** | goto | — | Removed entirely. Flow changes now require replanning. |
+| **Action** | goto.previous, goto.next, etc. | — | Deprecated synonyms; no replacements. |
+| **Action Property** | onEmpty | — | No longer relevant once goto is removed. |
+| **Trigger Kind** | Any trigger relying on node navigation (e.g., selector.relation) | Simplify to direct event-based triggers | Only event detection remains. |
+| **NodeSelector.relation** | previous / next navigation | — | Removed; selectors remain static (by kind or capability only). |
+
+
+### Updated RuntimePolicy Action Union
+
+Replace the previous union:
+
+```
+export type Action =
+  | { type: "goto"; next: NodeSelector; maxAttempts?: number }
+  | { type: "replan"; rationale?: string }
+  | { type: "hitl"; rationale?: string; approveAction?: Action; rejectAction?: Action }
+  | { type: "fail"; message?: string }
+  | { type: "pause"; reason?: string }
+  | { type: "emit"; event: string; payload?: Record<string, any> }
+```
+
+with:
+
+```
+export type Action =
+  | { type: "replan"; rationale?: string }
+  | { type: "hitl"; rationale?: string; approveAction?: Action; rejectAction?: Action }
+  | { type: "fail"; message?: string }
+  | { type: "pause"; reason?: string }
+  | { type: "emit"; event: string; payload?: Record<string, any> }
+```
+
+goto is fully removed.
+
+### Policy Purpose (Post-cleanup)
+
+Policies are now strictly **orthogonal** to plan control flow.
+
+They operate as *guardrails* responding to signals emitted by the execution engine.
+
+| Category | Example | Action |
+| ----- | ----- | ----- |
+| **Safety** | Output validation failed repeatedly | replan |
+| **Compliance** | Detected brand-risk phrase | pause \+ operator HITL |
+| **Operational** | Timeout exceeded | fail or replan |
+| **Observability** | Threshold event or custom metric | emit |
+
+Policies **never** mutate the plan graph or redirect node order.
+
+If control-flow correction is needed, the policy requests a **replan**, prompting the planner to regenerate a graph that satisfies constraints anew.
+
+### Execution Engine Behavior Change
+
+* Execution engine now treats PlanGraph as immutable during runtime.
+
+* Any flow adjustment (skipping, inserting, or reordering nodes) must originate from a new planner revision, not an action.
+
+* When a policy triggers a replan, the engine emits policy\_triggered → plan\_requested → plan\_generated sequence and resumes from the newly validated graph version.
+
+---
+
+### Migration Notes
+
+1. Remove all existing runtime policies using goto or node-relative selectors.
+
+2. Replace them with equivalent declarative triggers \+ replan or hitl.
+
+   * Example:
+
+```
+{
+  "id": "qa_low_score",
+  "trigger": {
+    "kind": "onValidationFail",
+    "selector": { "kind": "validation" },
+    "condition": { "<": [{ "var": "qaFindings.overallScore" }, 0.6] }
+  },
+  "action": { "type": "replan", "rationale": "Low QA score" }
+}
+```
+
+2. 
+
+3. Update tests under \_\_tests\_\_/flex-run-coordinator.spec.ts to drop goto expectations.
+
+4. Update shared Action enum validation in @awesomeposter/shared/flex accordingly.
+
+---
+
+### Rationale
+
+* **Clear semantics:** Plan graphs become the sole representation of flow.
+
+* **Predictable execution:** Runtime never alters topology.
+
+* **Simpler validation:** Plan satisfiability only needs to be proven once.
+
+* **Fewer edge cases:** Eliminates state divergence between planner and runtime.
+
+* **More declarative consistency:** All changes to flow originate from revised planning, not procedural hops.
+
+---
+
+### Summary
+
+| Old Behavior | New Behavior |
+| ----- | ----- |
+| Policies could jump to nodes (goto). | Policies can only pause, replan, fail, or emit. |
+| NodeSelector included relative navigation. | NodeSelector limited to static identifiers (kind, capabilityId). |
+| Execution could mutate plan topology. | Plan topology immutable after validation. |
+| Flow changes procedural. | Flow changes declarative, via new plan graph. |
+
+
+**Design Principle**
+
+*Policies guard the run; planners shape the path.*  
+Once validated, the plan graph is the single source of truth for control flow.  
+
+
 ## 6. Component Responsibilities
 - `FlexRunController`: validates envelopes, seeds correlation IDs, and emits initial SSE frames.
 - `PolicyNormalizer`: validates and normalizes caller-supplied policies (personas, variant counts, compliance rules) before the planner consumes them.

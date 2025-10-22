@@ -1,0 +1,46 @@
+schema: 1
+story: '8.25'
+story_title: 'Flex Planner Envelope-Driven Context'
+gate: PASS
+status_reason: 'Envelope-derived planner hints replace scenario constants and regression coverage confirms fallback telemetry remains stable.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-22T12:48:20Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2025-11-05T00:00:00Z'
+
+evidence:
+  tests_reviewed: 83
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Envelope-only context keeps planner free of embedded marketing data.'
+  performance:
+    status: PASS
+    notes: 'No additional round-trips; planner prompt remains a single LLM call.'
+  reliability:
+    status: PASS
+    notes: 'Fallback builder and sandbox telemetry specs confirm multi-envelope behavior.'
+  maintainability:
+    status: PASS
+    notes: 'Docs and metadata emphasize envelope-driven guidance, reducing scenario sprawl.'
+
+recommendations:
+  immediate: []
+  future:
+    - action: 'Add integration coverage capturing multi-language envelopes in sandbox SSE fixtures.'
+      refs:
+        - packages/flex-agents-server/__tests__/flex-sandbox-run.spec.ts
+    - action: 'Document fallback capability assumptions in the flex operations runbook.'
+      refs:
+        - docs/flex-agentic-architecture201025.md
