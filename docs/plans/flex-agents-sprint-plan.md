@@ -88,23 +88,24 @@
 ## Sprint 3 Outlook
 
 ### Objectives
-- Extend capability coverage to remaining specialist agents or new variants discovered during Sprint 2.
-- Harden resilience (retry policies, failure handling) and prepare for limited pilot rollout.
-- Address feedback from Sprint 2 testing, including policy tuning and operator UX readiness.
+- Close the operator experience gap by delivering HITL resume/debug, enriched payloads, and multi-turn clarifications (Stories 8.5, 8.6, 8.21, 8.28).
+- Finish capability metadata parity by adding the system prompt contract (Story 8.16) and ensuring registry snapshots surface the richer guidance expected in §11.
+- Stabilize pilot readiness with telemetry observability (8.6) and any follow-up resilience/policy work queued behind the above deliverables.
 
-### Candidate Stories
-- Follow-up resilience tasks (e.g., dynamic policy conflict handling, planner heuristics refinements).
-- Operator enablement tasks: finalizing feature flag rollout SOP, UI polish for flex popup.
-- Policy action/runtime work (8.23 Flex Policy Action Execution, 8.25 Flex Planner Envelope-Driven Context) — all gated on 8.9 completion.
-- 8.24 Flex Conditional Action Node — needs refinement to resolve overlap between planner-authored branching and existing runtime policies before scheduling (targeted for Sprint 3 once direction is confirmed).
-- **New:** 8.27 Flex Runtime Node Selector Extension — depends on 8.26 and the policy runtime stories above; expands selector grammar once fallback execution is stable.
-- Additional capability onboarding or automation stories (e.g., 8.11+ once prioritized).
+### Planned Stories
+- **Resume & Debug Interfaces**: 8.5 Flex Run Resume & Debug Interfaces — rolls over from Sprint 2 to unblock HITL parity.
+- **Telemetry & Logging Parity**: 8.6 Flex Telemetry & Logging Parity — required before enabling policy-driven alerts and dashboards.
+- **Capability System Prompt Contract**: 8.16 Flex Capability System Prompt Contract — aligns registry data with architecture §11.
+- **HITL Operator Payloads**: 8.21 Flex HITL Operator Prompt Payloads — delivers contract/prompt enrichment for HITL requests.
+- **HITL Multi-Turn Clarifications**: 8.28 Flex HITL Multi-Turn Clarification Support — new story ensuring operator responses rehydrate paused nodes.
+- **Policy runtime follow-ups**: 8.23 Flex Policy Action Execution & 8.25 Flex Planner Envelope-Driven Context — schedule once 8.5/8.6/8.21/8.28 complete.
+- **Optional stretch** (time permitting): 8.24 Flex Conditional Action Node and 8.27 Flex Runtime Node Selector Extension, contingent on earlier policy groundwork.
 
 ### Dependencies & Considerations
-- Capability inventory rounding (new agents) depends on registry endpoint (8.2) and execution stability (8.3/8.10).
-- Dynamic planning (8.8) must be complete before resilience/policy follow-ups; telemetry insights from Sprint 2 inform Sprint 3 heuristics.
-- Policy schema foundation (8.9) is a hard blocker for 8.23/8.24/8.25; do not start those stories until 8.9 is merged and documented.
-- Resume/debug interfaces (8.5) and pilot readiness require persistence (8.4) to be hardened during Sprint 2.
+- Carry over any incomplete Sprint 2 items (notably 8.4 persistence hardening) before commencing 8.5/8.21/8.28; those stories assume plan snapshots and HITL state storage are production-ready.
+- Capability prompt story 8.16 must update shared schemas and migrations; coordinate with DB team for deployment sequencing and registry auto-registration updates.
+- Telemetry (8.6) should land before or alongside policy runtime stories (8.23/8.25) to avoid blind spots once runtime automation is enabled.
+- Operator UI changes for 8.21/8.28 require coordinated QA with the SPA team; ensure feature flags remain in place until end-to-end verification passes.
 
 ### Risks & Mitigations
 - **Inventory drift**: establish review checklist; consider automated validation script.
