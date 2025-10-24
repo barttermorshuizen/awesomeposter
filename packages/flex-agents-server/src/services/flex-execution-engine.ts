@@ -190,6 +190,16 @@ export type FlexExecutionOptions = {
     onDenied?: (reason: string, state: HitlRunState) => void | Promise<void>
     updateState?: (state: HitlRunState) => void
   }
+  onStart?: (context: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    nextNode: FlexPlanNode | null
+  }) =>
+    | Promise<RuntimePolicyEffect | null | void>
+    | RuntimePolicyEffect
+    | null
+    | void
   onNodeComplete?: (context: {
     node: FlexPlanNode
     output: Record<string, unknown>
@@ -386,6 +396,60 @@ export class FlexExecutionEngine {
     if (startIndex === 0) {
       const firstPendingIndex = plan.nodes.findIndex((node) => !completedNodeIds.has(node.id))
       startIndex = firstPendingIndex >= 0 ? firstPendingIndex : plan.nodes.length
+    }
+
+    if (opts.onStart) {
+      const nextNode = startIndex < plan.nodes.length ? plan.nodes[startIndex] : null
+      const effect = await opts.onStart({
+        runId,
+        envelope,
+        plan,
+        nextNode
+      })
+      if (effect) {
+        if (effect.kind === 'replan') {
+          throw new ReplanRequestedError(effect.trigger, {
+            completedNodeIds: Array.from(completedNodeIds),
+            nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+            facets: runContext.snapshot(),
+            policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
+            policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+          })
+        }
+        if (effect.kind === 'action') {
+          if (!nextNode) {
+            try {
+              getLogger().warn('flex_runtime_startup_policy_missing_node', {
+                runId,
+                policyId: effect.policy.id,
+                action: effect.policy.action.type
+              })
+            } catch {}
+          } else {
+            const actionOutcome = await this.handleRuntimePolicyAction(
+              effect.policy,
+              {
+                runId,
+                envelope,
+                plan,
+                opts,
+                node: nextNode,
+                runContext,
+                nodeOutputs,
+                nodeStatuses,
+                nodeTimings,
+                completedNodeIds,
+                policyActions,
+                policyAttempts
+              },
+              { source: POLICY_ACTION_SOURCE.runtime }
+            )
+            if (actionOutcome?.kind === 'goto' && typeof actionOutcome.nextIndex === 'number') {
+              startIndex = actionOutcome.nextIndex
+            }
+          }
+        }
+      }
     }
 
     for (let index = startIndex; index < plan.nodes.length; ) {

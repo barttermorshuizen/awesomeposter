@@ -1,10 +1,10 @@
-import type { TaskEnvelope, FlexEvent } from '@awesomeposter/shared'
+import type { FlexEvent } from '@awesomeposter/shared'
 
 export type FlexEventWithId = FlexEvent & { id?: string }
 
 export type PostFlexStreamOptions = {
   url: string
-  body: TaskEnvelope
+  body: unknown
   headers?: Record<string, string>
   onEvent: (frame: FlexEventWithId) => void
   signal?: AbortSignal

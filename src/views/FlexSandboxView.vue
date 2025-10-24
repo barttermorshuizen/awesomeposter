@@ -130,7 +130,7 @@ const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
 
 const hitlStore = useHitlStore()
-const { pendingRun, hasActiveRequest } = storeToRefs(hitlStore)
+const { pendingRun, hasActiveRequest, operatorProfile } = storeToRefs(hitlStore)
 
 const backoffNotices = ref<string[]>([])
 const expandedEventIds = ref<Set<string>>(new Set())
@@ -694,46 +694,104 @@ function handleBackoff(info: { retryAfter: number; attempt: number; pending?: nu
   backoffNotices.value = [...backoffNotices.value, `${new Date().toLocaleTimeString()}: ${detail}`]
 }
 
-async function runEnvelope(options?: { envelope?: TaskEnvelope; resumeContext?: { runId?: string | null; threadId?: string | null } }) {
-  let envelope = options?.envelope
-  if (!envelope) {
-    if (!parsedEnvelope.value) {
-      updateValidation()
-      if (!parsedEnvelope.value) return
-    }
-    envelope = parsedEnvelope.value
-  }
+async function runEnvelope(options?: {
+  envelope?: TaskEnvelope
+  resumeContext?: { runId?: string | null; threadId?: string | null }
+  mode?: 'start' | 'resume'
+}) {
   if (runStatus.value === 'running') {
     return
   }
-  resetRunState()
-  if (options?.resumeContext) {
-    const resumeRunId = options.resumeContext.runId ?? null
-    const resumeThreadId = options.resumeContext.threadId ?? null
-    if (resumeRunId) {
-      hitlStore.setRunId(resumeRunId)
-    }
-    if (resumeThreadId) {
-      hitlStore.setThreadId(resumeThreadId)
-    }
-  }
-  runStatus.value = 'running'
+
+  const mode = options?.mode ?? 'start'
   const headers: Record<string, string> = {}
   if (FLEX_AUTH) headers.authorization = `Bearer ${FLEX_AUTH}`
 
-  streamHandle = postFlexEventStream({
-    url: `${FLEX_BASE_URL}/api/v1/flex/run.stream`,
-    body: envelope,
-    headers,
-    onEvent: handleEvent,
-    onCorrelationId: (cid) => {
-      correlationId.value = cid
-    },
-    onBackoff: handleBackoff,
-    maxRetries: 2
-  })
+  if (mode === 'resume') {
+    const resumeRunId =
+      options?.resumeContext?.runId ?? pendingRun.value.runId ?? runId.value ?? null
+    const resumeThreadId = options?.resumeContext?.threadId ?? pendingRun.value.threadId ?? null
+    if (!resumeRunId) {
+      runError.value = 'No flex run is available for resume.'
+      return
+    }
+
+    // Close any existing stream before starting the resume flow
+    abortRun()
+
+    const expectedPlanVersion =
+      typeof plan.value?.version === 'number' ? plan.value.version : undefined
+    const resumePayload: Record<string, unknown> = { runId: resumeRunId }
+    if (typeof expectedPlanVersion === 'number') {
+      resumePayload.expectedPlanVersion = expectedPlanVersion
+    }
+    const profile = operatorProfile.value
+    if (profile && (profile.id || profile.displayName || profile.email)) {
+      resumePayload.operator = {
+        ...(profile.id ? { id: profile.id } : {}),
+        ...(profile.displayName ? { displayName: profile.displayName } : {}),
+        ...(profile.email ? { email: profile.email } : {})
+      }
+    }
+    if (correlationId.value) {
+      resumePayload.correlationId = correlationId.value
+    }
+
+    resetRunState()
+    runStatus.value = 'running'
+    hitlStore.setRunId(resumeRunId)
+    hitlStore.setThreadId(resumeThreadId ?? null)
+
+    streamHandle = postFlexEventStream({
+      url: `${FLEX_BASE_URL}/api/v1/flex/run.resume`,
+      body: resumePayload,
+      headers,
+      onEvent: handleEvent,
+      onCorrelationId: (cid) => {
+        correlationId.value = cid
+      },
+      onBackoff: handleBackoff,
+      maxRetries: 2
+    })
+  } else {
+    // Ensure we don't have a lingering stream from a previous run
+    abortRun()
+    let envelope = options?.envelope
+    if (!envelope) {
+      if (!parsedEnvelope.value) {
+        updateValidation()
+        if (!parsedEnvelope.value) return
+      }
+      envelope = parsedEnvelope.value
+    }
+    resetRunState()
+    if (options?.resumeContext) {
+      const resumeRunId = options.resumeContext.runId ?? null
+      const resumeThreadId = options.resumeContext.threadId ?? null
+      if (resumeRunId) {
+        hitlStore.setRunId(resumeRunId)
+      }
+      if (resumeThreadId) {
+        hitlStore.setThreadId(resumeThreadId)
+      }
+    }
+    runStatus.value = 'running'
+
+    streamHandle = postFlexEventStream({
+      url: `${FLEX_BASE_URL}/api/v1/flex/run.stream`,
+      body: envelope,
+      headers,
+      onEvent: handleEvent,
+      onCorrelationId: (cid) => {
+        correlationId.value = cid
+      },
+      onBackoff: handleBackoff,
+      maxRetries: 2
+    })
+  }
+
   try {
-    await streamHandle.done
+    await streamHandle!.done
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       runStatus.value = 'idle'
@@ -748,29 +806,14 @@ async function runEnvelope(options?: { envelope?: TaskEnvelope; resumeContext?: 
 
 async function handleHitlResume() {
   if (runStatus.value === 'running') return
-  if (!parsedEnvelope.value) {
-    updateValidation()
-    if (!parsedEnvelope.value) return
-  }
-  let resumeEnvelope = cloneEnvelope(parsedEnvelope.value)
   const resumeRunId = pendingRun.value.runId ?? runId.value ?? null
   const threadId = pendingRun.value.threadId ?? null
-  const constraintsSource = isRecord(resumeEnvelope.constraints) ? resumeEnvelope.constraints : {}
-  const nextConstraints: Record<string, unknown> = { ...constraintsSource }
-  if (resumeRunId) {
-    nextConstraints.resumeRunId = resumeRunId
-  }
-  if (threadId) {
-    nextConstraints.threadId = threadId
-  }
-  if (Object.keys(nextConstraints).length > 0) {
-    resumeEnvelope = {
-      ...resumeEnvelope,
-      constraints: nextConstraints
-    }
+  if (!resumeRunId) {
+    runError.value = 'No flex run is available for resume.'
+    return
   }
   await runEnvelope({
-    envelope: resumeEnvelope,
+    mode: 'resume',
     resumeContext: {
       runId: resumeRunId,
       threadId
@@ -876,10 +919,6 @@ function facetDirectionColor(direction?: FacetDirection): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function cloneEnvelope(envelope: TaskEnvelope): TaskEnvelope {
-  return JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
 }
 
 function extractHitlRequest(payload: unknown): {

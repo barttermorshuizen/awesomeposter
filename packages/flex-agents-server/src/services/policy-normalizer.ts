@@ -107,6 +107,24 @@ export class PolicyNormalizer {
     return null
   }
 
+  evaluateRunStartEffect(policies: NormalizedPolicies): RuntimePolicyEffect | null {
+    for (const policy of policies.runtime) {
+      if (!policy.enabled) continue
+      if (policy.trigger.kind !== 'onStart') continue
+      if (policy.action.type === 'replan') {
+        return {
+          kind: 'replan',
+          trigger: this.buildReplanTrigger('policy_runtime_replan', policy)
+        }
+      }
+      return {
+        kind: 'action',
+        policy
+      }
+    }
+    return null
+  }
+
   private matchesNodeSelector(selector: NodeCompleteTrigger['selector'], node: FlexPlanNode): boolean {
     if (!selector) return true
 
@@ -125,18 +143,24 @@ export class PolicyNormalizer {
     return true
   }
 
-  private buildReplanTrigger(reason: string, policy: RuntimePolicy, node: FlexPlanNode): ReplanTrigger {
+  private buildReplanTrigger(reason: string, policy: RuntimePolicy, node?: FlexPlanNode): ReplanTrigger {
+    const details: Record<string, unknown> = {
+      policyId: policy.id,
+      action: policy.action.type,
+      triggerKind: policy.trigger.kind
+    }
+    if (node) {
+      details.node = {
+        id: node.id,
+        capabilityId: node.capabilityId,
+        stage: typeof node.metadata?.plannerStage === 'string' ? node.metadata.plannerStage : undefined
+      }
+    } else {
+      details.phase = 'startup'
+    }
     return {
       reason,
-      details: {
-        policyId: policy.id,
-        action: policy.action.type,
-        node: {
-          id: node.id,
-          capabilityId: node.capabilityId,
-          stage: typeof node.metadata?.plannerStage === 'string' ? node.metadata.plannerStage : undefined
-        }
-      }
+      details
     }
   }
 

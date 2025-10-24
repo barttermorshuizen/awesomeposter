@@ -879,9 +879,9 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 - `plan_requested`: planner handshake has started; payload includes attempt number, normalized policy keys, and capability snapshot metadata.
 - `plan_rejected`: validation failed; payload surfaces structured diagnostics aligned with planner feedback loops.
 - `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
-- `plan_updated`: new plan version persisted after replanning; payload includes `previousVersion`, `version`, and summary node statuses.
+- `plan_updated`: new plan version persisted after replanning or HITL resume; payload includes `previousVersion`, `version`, summary node statuses, and the trigger metadata.
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
-- `policy_triggered`: emitted when runtime policies fire; payload includes canonical `actionDetails` (type, metadata, nested follow-ups) alongside legacy fields so clients can identify the requested behaviour.
+- `policy_triggered`: emitted when runtime policies fire (including during resume); payload includes canonical `actionDetails` (type, metadata, nested follow-ups) alongside legacy fields so clients can identify the requested behaviour.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
 - `complete`: final frame containing `payload.output` that satisfies the caller schema.
@@ -955,6 +955,59 @@ Sample envelope payload (`envelope.json`):
   }
 }
 ```
+
+**Resume example:**
+
+```bash
+curl -N \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "Authorization: Bearer $FLEX_TOKEN" \
+  -d '{"runId":"flex_resume_123","expectedPlanVersion":4}' \
+  http://localhost:3003/api/v1/flex/run.resume
+```
+
+The resume stream rehydrates the latest persisted plan snapshot, validates that the caller provided the current plan version, and emits `plan_updated` + `policy_triggered` frames if the HITL operator responses require replanning. Consumers should handle the same event catalogue as the initial stream and expect the `plan_generated` frame to include `metadata.resumed: true` for traceability.
+
+### 10.1 Flex Run Debugging
+
+`GET /api/v1/flex/runs/:id` returns a redacted snapshot of persisted state for support tooling:
+
+- `run`: envelope metadata, schema hash, plan version, and the most recent facet snapshot (sensitive keys such as `token`, `secret`, `apiKey`, etc. are redacted by default).
+- `output`: latest recorded result plus facet provenance when available.
+- `planVersions`: plan history with timestamps, pending node IDs, and planner metadata.
+- `latestSnapshot`: raw snapshot payload (`nodes`, `edges`, compiled contracts) for visual debuggers.
+- `nodes`: current node ledger (status, context, output, provenance) to diagnose partial executions.
+
+```bash
+curl \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $FLEX_TOKEN" \
+  http://localhost:3003/api/v1/flex/runs/flex_resume_123
+```
+
+Example response excerpt:
+
+```json
+{
+  "ok": true,
+  "run": {
+    "runId": "flex_resume_123",
+    "planVersion": 4,
+    "metadata": { "lastOperator": { "displayName": "HITL Agent" } }
+  },
+  "planVersions": [
+    { "version": 3, "pendingNodeIds": ["node_policy"], "schemaHash": "c0ffee" }
+  ],
+  "latestSnapshot": {
+    "version": 4,
+    "pendingNodeIds": [],
+    "facets": { "copyVariants": { "value": [{ "headline": "Resume complete" }] } }
+  }
+}
+```
+
+Use this endpoint during incident response to validate operator guidance, inspect planner revisions, or export artifacts for external ticketing systems.
 
 ### 10.1 Sample TaskEnvelope
 ```json

@@ -1,5 +1,5 @@
 import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, flexPlanSnapshots, flexRunOutputs, eq, and, isNotNull } from '@awesomeposter/db'
-import { sql, notInArray, desc } from 'drizzle-orm'
+import { sql, notInArray, desc, asc } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
 import type { TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
 import { setOrchestratorPersistence as setLegacyOrchestratorPersistence } from '../../../agents-server/src/services/orchestrator-persistence.js'
@@ -339,6 +339,8 @@ export type FlexRunRecord = {
   result?: Record<string, unknown> | null
   planVersion?: number
   contextSnapshot?: FacetSnapshot | null
+  createdAt?: Date | null
+  updatedAt?: Date | null
 }
 
 type PlanSnapshotState = {
@@ -394,6 +396,16 @@ export type FlexPlanSnapshotRow = {
   pendingNodeIds: string[]
   createdAt: Date | null
   updatedAt: Date | null
+}
+
+export type FlexRunDebugView = {
+  run: FlexRunRecord & {
+    createdAt?: Date | null
+    updatedAt?: Date | null
+  }
+  nodes: FlexPlanNodeSnapshot[]
+  snapshots: Array<FlexPlanSnapshotRow & { metadata?: Record<string, unknown> | null }>
+  output: FlexRunOutputRow | null
 }
 
 export class FlexRunPersistence {
@@ -798,9 +810,127 @@ export class FlexRunPersistence {
         metadata: (row.metadataJson as Record<string, unknown>) ?? null,
         result: (row.resultJson as Record<string, unknown> | null) ?? null,
         planVersion: row.planVersion ?? 0,
-        contextSnapshot: (row.contextSnapshotJson as FacetSnapshot | undefined) ?? undefined
+        contextSnapshot: (row.contextSnapshotJson as FacetSnapshot | undefined) ?? undefined,
+        createdAt: row.createdAt ?? null,
+        updatedAt: row.updatedAt ?? null
       },
       nodes
+    }
+  }
+
+  async listPlanSnapshots(runId: string): Promise<FlexPlanSnapshotRow[]> {
+    const rows = await this.db
+      .select()
+      .from(flexPlanSnapshots)
+      .where(eq(flexPlanSnapshots.runId, runId))
+      .orderBy(asc(flexPlanSnapshots.planVersion))
+
+    return rows.map((row) => ({
+      runId: row.runId,
+      planVersion: row.planVersion ?? 0,
+      snapshot: (row.snapshotJson as Record<string, unknown>) ?? {},
+      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      schemaHash: row.schemaHash ?? null,
+      pendingNodeIds: Array.isArray(row.pendingNodeIds) ? [...row.pendingNodeIds] : [],
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null
+    }))
+  }
+
+  async recordResumeAudit(
+    run: FlexRunRecord,
+    audit: { operator?: Record<string, unknown> | null; note?: string | null }
+  ) {
+    const now = new Date()
+    const metadata = run.metadata ? clone(run.metadata) : {}
+    const auditLog = Array.isArray((metadata as any).auditLog)
+      ? [...((metadata as any).auditLog as Array<Record<string, unknown>>)]
+      : []
+
+    auditLog.push({
+      action: 'resume',
+      at: now.toISOString(),
+      operator: audit.operator ?? null,
+      note: audit.note ?? null
+    })
+
+    ;(metadata as any).auditLog = auditLog
+    ;(metadata as any).lastResumeAt = now.toISOString()
+    if (audit.operator) {
+      ;(metadata as any).lastOperator = audit.operator
+    }
+    if (audit.note) {
+      ;(metadata as any).lastResumeNote = audit.note
+    }
+
+    await this.db
+      .update(flexRuns)
+      .set({ metadataJson: clone(metadata), updatedAt: now })
+      .where(eq(flexRuns.runId, run.runId))
+
+    try {
+      const orchestratorSnapshot = await this.orchestrator.load(run.runId)
+      const runnerMetadata = orchestratorSnapshot.runnerMetadata
+        ? clone(orchestratorSnapshot.runnerMetadata)
+        : {}
+      const runnerAuditLog = Array.isArray((runnerMetadata as any).auditLog)
+        ? [...((runnerMetadata as any).auditLog as Array<Record<string, unknown>>)]
+        : []
+      runnerAuditLog.push({
+        action: 'resume',
+        at: now.toISOString(),
+        operator: audit.operator ?? null,
+        note: audit.note ?? null
+      })
+      ;(runnerMetadata as any).auditLog = runnerAuditLog
+      ;(runnerMetadata as any).lastResumeAt = now.toISOString()
+      if (audit.operator) {
+        ;(runnerMetadata as any).lastOperator = audit.operator
+      }
+      await this.orchestrator.save(run.runId, {
+        runnerMetadata
+      })
+    } catch {}
+
+    run.metadata = metadata
+  }
+
+  async loadFlexRunDebug(runId: string): Promise<FlexRunDebugView | null> {
+    const record = await this.loadFlexRun(runId)
+    if (!record) return null
+    const [snapshots, output] = await Promise.all([
+      this.listPlanSnapshots(runId),
+      this.loadRunOutput(runId)
+    ])
+
+    const snapshotsWithMetadata = snapshots.map((snapshot) => {
+      const snapshotPayload = snapshot.snapshot ?? {}
+      const metadata =
+        snapshotPayload && typeof snapshotPayload === 'object' && !Array.isArray(snapshotPayload)
+          ? ((snapshotPayload as any).metadata && typeof (snapshotPayload as any).metadata === 'object'
+              ? clone((snapshotPayload as any).metadata as Record<string, unknown>)
+              : null)
+          : null
+      return { ...snapshot, metadata }
+    })
+
+    return {
+      run: record.run,
+      nodes: record.nodes,
+      snapshots: snapshotsWithMetadata,
+      output: output ?? (record.run.result
+        ? {
+            runId,
+            planVersion: record.run.planVersion ?? 0,
+            schemaHash: record.run.schemaHash ?? null,
+            status: record.run.status,
+            output: clone(record.run.result),
+            facets: record.run.contextSnapshot ?? null,
+            provenance: null,
+            recordedAt: record.run.updatedAt ?? null,
+            updatedAt: record.run.updatedAt ?? null
+          }
+        : null)
     }
   }
 

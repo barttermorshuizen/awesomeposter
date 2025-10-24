@@ -1,4 +1,4 @@
-import { ZodError, z } from 'zod'
+import { ZodError, z, type ZodTypeAny } from 'zod'
 
 const LooseRecordSchema = z.record(z.unknown())
 
@@ -50,7 +50,7 @@ const LEGACY_ACTION_ALIASES: Record<string, string> = {
   log_only: 'emit'
 }
 
-const ActionSchemaInternal = z.lazy(() =>
+const ActionSchemaInternal = z.lazy((): ZodTypeAny =>
   z.discriminatedUnion('type', [
     z.object({
       type: z.literal('goto'),

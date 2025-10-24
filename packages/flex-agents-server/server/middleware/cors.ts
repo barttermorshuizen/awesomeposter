@@ -20,6 +20,9 @@ export default defineEventHandler((event) => {
   const finalAllowlist = allowlist.length > 0 ? allowlist : defaults
 
   const isAllowed = (o: string) => {
+    if (!usingCustomAllowlist && process.env.NODE_ENV !== 'production') {
+      return true
+    }
     if (!o) return false
     if (finalAllowlist.includes('*')) return true
     if (finalAllowlist.includes(o)) return true
@@ -52,6 +55,8 @@ export default defineEventHandler((event) => {
     'Access-Control-Allow-Headers',
     requestedHeaders || 'accept,content-type,authorization,x-correlation-id'
   )
+  setHeader(event, 'Access-Control-Allow-Credentials', 'true')
+  setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
   setHeader(event, 'Access-Control-Max-Age', '600')
 
   // Short-circuit preflight

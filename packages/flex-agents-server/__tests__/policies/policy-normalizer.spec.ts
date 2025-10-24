@@ -136,4 +136,53 @@ describe('PolicyNormalizer', () => {
     expect(effect?.kind).toBe('action')
     expect(effect && effect.kind === 'action' ? effect.policy.action.type : undefined).toBe('hitl')
   })
+
+  it('evaluates onStart runtime policies for startup actions', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'runtime-start',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'start_hitl_gate',
+            trigger: { kind: 'onStart' },
+            action: { type: 'hitl', rationale: 'Operator must approve run before execution' }
+          }
+        ]
+      }
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const effect = normalizer.evaluateRunStartEffect(normalized)
+
+    expect(effect?.kind).toBe('action')
+    expect(effect && effect.kind === 'action' ? effect.policy.id : undefined).toBe('start_hitl_gate')
+  })
+
+  it('evaluates onStart runtime policies for startup replans', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'runtime-start-replan',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'start_replan',
+            trigger: { kind: 'onStart' },
+            action: { type: 'replan', rationale: 'Planner must refresh before execution' }
+          }
+        ]
+      }
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const effect = normalizer.evaluateRunStartEffect(normalized)
+
+    expect(effect?.kind).toBe('replan')
+    expect(effect && effect.kind === 'replan' ? effect.trigger.details?.policyId : undefined).toBe('start_replan')
+    expect(effect && effect.kind === 'replan' ? effect.trigger.details?.phase : undefined).toBe('startup')
+  })
 })

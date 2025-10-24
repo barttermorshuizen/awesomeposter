@@ -910,6 +910,53 @@ describe('FlexRunCoordinator', () => {
       startedAt: new Date(),
       completedAt: null
     })
+    await persistence.savePlanSnapshot(
+      runId,
+      1,
+      [
+        {
+          nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
+          capabilityId: CONTENT_CAPABILITY_ID,
+          label: 'Copywriter – LinkedIn Variants',
+          status: 'completed',
+          context: null,
+          output: facetSnapshot.copyVariants.value,
+          facets: null,
+          contracts: null,
+          provenance: null,
+          metadata: null,
+          rationale: null
+        },
+        {
+          nodeId: 'fallback_2',
+          capabilityId: null,
+          label: 'HITL fallback path',
+          status: 'awaiting_hitl',
+          context: null,
+          output: null,
+          facets: null,
+          contracts: null,
+          provenance: null,
+          metadata: null,
+          rationale: null
+        }
+      ],
+      {
+        facets: facetSnapshot,
+        schemaHash: null,
+        pendingState: {
+          completedNodeIds: ['ContentGeneratorAgent_linkedinVariants_1'],
+          nodeOutputs: {
+            ContentGeneratorAgent_linkedinVariants_1: {
+              copyVariants: facetSnapshot.copyVariants.value
+            }
+          },
+          policyActions: [],
+          policyAttempts: {},
+          mode: 'hitl'
+        }
+      }
+    )
 
     const resumeEnvelope = buildEnvelope({
       constraints: {
@@ -982,6 +1029,46 @@ describe('FlexRunCoordinator', () => {
     const [frame] = validationFrames
     expect((frame.payload as any)?.scope).toBe('capability_output')
     expect(Array.isArray((frame.payload as any)?.errors)).toBe(true)
+  })
+
+  it('pauses before first node when onStart HITL policy triggers', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createCoordinator(persistence)
+    const events: FlexEvent[] = []
+
+    const envelope = buildEnvelope({
+      policies: {
+        planner: {},
+        runtime: [
+          {
+            id: 'startup_hitl',
+            trigger: { kind: 'onStart' },
+            action: { type: 'hitl', rationale: 'Manual gate before execution' }
+          }
+        ]
+      }
+    })
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_start_hitl',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(result.status).toBe('awaiting_hitl')
+    expect(result.output).toBeNull()
+
+    const policyEvent = events.find(
+      (evt) => evt.type === 'policy_triggered' && (evt.payload as any)?.policyId === 'startup_hitl'
+    )
+    expect(policyEvent).toBeTruthy()
+
+    const nodeStartEvents = events.filter((evt) => evt.type === 'node_start')
+    expect(nodeStartEvents).toHaveLength(0)
+
+    const snapshot = persistence.snapshots.get(result.runId)
+    expect(snapshot?.snapshot?.pendingState?.mode).toBe('hitl')
+    const awaitingNode = snapshot?.snapshot?.nodes?.find((node: any) => node.status === 'awaiting_hitl')
+    expect(awaitingNode).toBeTruthy()
   })
 
   it('pauses for HITL when policies require approval', async () => {

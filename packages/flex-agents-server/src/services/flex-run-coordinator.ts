@@ -102,6 +102,17 @@ export class FlexRunCoordinator {
       ...envelopeToUse,
       policies: normalizedPolicies.canonical
     }
+    let pendingStartupEffect = resumeCandidate
+      ? null
+      : this.policyNormalizer.evaluateRunStartEffect(normalizedPolicies)
+    const consumeStartupEffect = () => {
+      if (!pendingStartupEffect) {
+        return null
+      }
+      const effect = pendingStartupEffect
+      pendingStartupEffect = null
+      return effect
+    }
     if (!this.emittedHitlResolutions.has(runId)) {
       this.emittedHitlResolutions.set(runId, new Set<string>())
     }
@@ -311,15 +322,25 @@ export class FlexRunCoordinator {
         runId,
         resumeCandidate.run.planVersion ?? undefined
       )
-      const plan = this.rehydratePlan(resumeCandidate, envelopeToUse, latestSnapshot)
+      if (!latestSnapshot) {
+        throw new Error('No plan snapshot available for flex HITL resume')
+      }
+      if (
+        typeof resumeCandidate.run.planVersion === 'number' &&
+        latestSnapshot.planVersion !== resumeCandidate.run.planVersion
+      ) {
+        throw new Error('Stale plan snapshot detected for flex HITL resume')
+      }
+
+      let activePlan = this.rehydratePlan(resumeCandidate, envelopeToUse, latestSnapshot)
       await opts.onEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
         payload: {
           plan: {
-            runId: plan.runId,
-            version: plan.version,
-            nodes: plan.nodes.map((node) => {
+            runId: activePlan.runId,
+            version: activePlan.version,
+            nodes: activePlan.nodes.map((node) => {
               const contractSource = node.contracts
               const contracts =
                 contractSource && (contractSource.input || contractSource.output)
@@ -358,10 +379,10 @@ export class FlexRunCoordinator {
       })
 
       const pendingStateSnapshotRaw =
-        latestSnapshot && latestSnapshot.snapshot && typeof latestSnapshot.snapshot === 'object'
+        latestSnapshot.snapshot && typeof latestSnapshot.snapshot === 'object'
           ? (latestSnapshot.snapshot as { pendingState?: unknown }).pendingState ?? null
           : null
-      const resumeInitialState = pendingStateSnapshotRaw
+      let resumeInitialState = pendingStateSnapshotRaw
         ? {
             completedNodeIds: Array.isArray((pendingStateSnapshotRaw as any).completedNodeIds)
               ? ((pendingStateSnapshotRaw as any).completedNodeIds as string[])
@@ -386,48 +407,248 @@ export class FlexRunCoordinator {
           }
         : undefined
 
-      const contextProjection = runContext.composeFinalOutput(envelopeToUse.outputContract, plan)
+      let pendingState:
+        | {
+            completedNodeIds: string[]
+            nodeOutputs: Record<string, Record<string, unknown>>
+            facets: FacetSnapshot
+            policyActions?: PendingPolicyActionState[]
+            policyAttempts?: Record<string, number>
+            mode?: RuntimePolicySnapshotMode
+          }
+        | undefined = resumeInitialState
+        ? {
+            completedNodeIds: [...resumeInitialState.completedNodeIds],
+            nodeOutputs: { ...resumeInitialState.nodeOutputs },
+            facets: runContext.snapshot(),
+            ...(resumeInitialState.policyActions
+              ? { policyActions: [...resumeInitialState.policyActions] }
+              : {}),
+            ...(resumeInitialState.policyAttempts
+              ? { policyAttempts: { ...resumeInitialState.policyAttempts } }
+              : {}),
+            mode: resumeInitialState.mode
+          }
+        : undefined
+
+      const contextProjection = runContext.composeFinalOutput(envelopeToUse.outputContract, activePlan)
       const persistedOutput = resumeCandidate.run.result ?? this.extractFinalOutput(resumeCandidate.nodes) ?? {}
       if (!Object.keys(contextProjection).length && Object.keys(persistedOutput).length) {
         for (const [facet, value] of Object.entries(persistedOutput)) {
           runContext.updateFacet(facet, value, {
-            nodeId: plan.nodes[plan.nodes.length - 1]?.id ?? 'resume_final',
-            capabilityId: plan.nodes[plan.nodes.length - 1]?.capabilityId,
+            nodeId: activePlan.nodes[activePlan.nodes.length - 1]?.id ?? 'resume_final',
+            capabilityId: activePlan.nodes[activePlan.nodes.length - 1]?.capabilityId,
             rationale: 'resume_persisted_output'
           })
         }
       }
-      const finalOutputCandidate =
+
+      let finalOutputSeed =
         Object.keys(contextProjection).length ? contextProjection : persistedOutput
-      if (!finalOutputCandidate || Object.keys(finalOutputCandidate).length === 0) {
+      if (!finalOutputSeed || Object.keys(finalOutputSeed).length === 0) {
         throw new Error('No stored output available for flex HITL resume')
       }
 
-      const finalOutput = await this.engine.resumePending(runId, envelopeToUse, plan, finalOutputCandidate, {
-        onEvent: opts.onEvent,
-        correlationId: opts.correlationId,
-        hitl: {
-          service: this.hitlService,
-          state: hitlState,
-          threadId,
-          limit: hitlLimit,
-          updateState: updateHitlState
-        },
-        schemaHash: schemaHashValue,
-        runContext,
-        initialState: resumeInitialState
-          ? {
-              completedNodeIds: resumeInitialState.completedNodeIds,
-              nodeOutputs: resumeInitialState.nodeOutputs,
-              policyActions: resumeInitialState.policyActions,
-              policyAttempts: resumeInitialState.policyAttempts,
-              mode: resumeInitialState.mode
+      let finalOutput: Record<string, unknown> | null = null
+      let executionMode: 'resume' | 'execute' = 'resume'
+
+      try {
+        while (!finalOutput) {
+          try {
+            if (executionMode === 'resume') {
+              finalOutput = await this.engine.resumePending(runId, envelopeToUse, activePlan, finalOutputSeed, {
+                onEvent: opts.onEvent,
+                correlationId: opts.correlationId,
+                hitl: {
+                  service: this.hitlService,
+                  state: hitlState,
+                  threadId,
+                  limit: hitlLimit,
+                  onRequest: signalHitlRequest,
+                  onDenied: signalHitlDenied,
+                  updateState: updateHitlState
+                },
+                schemaHash: schemaHashValue,
+                runContext,
+                initialState: resumeInitialState
+                  ? {
+                      completedNodeIds: resumeInitialState.completedNodeIds,
+                      nodeOutputs: resumeInitialState.nodeOutputs,
+                      policyActions: resumeInitialState.policyActions,
+                      policyAttempts: resumeInitialState.policyAttempts,
+                      mode: resumeInitialState.mode
+                    }
+                  : undefined
+              })
+            } else {
+              const result = await this.engine.execute(runId, executionEnvelope, activePlan, {
+                onEvent: opts.onEvent,
+                correlationId: opts.correlationId,
+                hitl: {
+                  service: this.hitlService,
+                  state: hitlState,
+                  threadId,
+                  limit: hitlLimit,
+                  onRequest: signalHitlRequest,
+                  onDenied: signalHitlDenied,
+                  updateState: updateHitlState
+                },
+                onStart: pendingStartupEffect ? () => consumeStartupEffect() : undefined,
+                onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
+                initialState: pendingState,
+                runContext,
+                schemaHash: schemaHashValue
+              })
+              finalOutput = result
             }
-          : undefined
-      })
-      await this.persistence.saveRunContext(runId, runContext.snapshot())
-      this.emittedHitlResolutions.delete(runId)
-      return { runId, status: 'completed', output: finalOutput }
+          } catch (error) {
+            if (error instanceof ReplanRequestedError) {
+              const trigger = error.trigger
+              pendingState = {
+                completedNodeIds: error.state.completedNodeIds,
+                nodeOutputs: error.state.nodeOutputs,
+                facets: error.state.facets,
+                ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
+                ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
+              }
+              resumeInitialState = undefined
+              await opts.onEvent({
+                type: 'policy_triggered',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: {
+                  runId,
+                  trigger
+                }
+              })
+
+              const previousVersion = activePlan.version
+              const graphState: PlannerGraphState = {
+                plan: activePlan,
+                completedNodeIds: pendingState!.completedNodeIds,
+                nodeOutputs: pendingState!.nodeOutputs,
+                facets: pendingState!.facets
+              }
+              const { plan: updatedPlan } = await requestPlan('replan', { graphState })
+              if (updatedPlan.version <= previousVersion) {
+                updatedPlan.version = previousVersion + 1
+                updatedPlan.metadata = {
+                  ...updatedPlan.metadata,
+                  versionAdjusted: true
+                }
+              }
+              activePlan = updatedPlan
+
+              const snapshotNodes = activePlan.nodes.map((node) => ({
+                nodeId: node.id,
+                capabilityId: node.capabilityId,
+                label: node.label,
+                status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                context: node.bundle,
+                output: pendingState!.nodeOutputs[node.id] ?? null,
+                facets: node.facets,
+                contracts: node.contracts,
+                provenance: node.provenance,
+                metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
+                rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+              }))
+              pendingState!.completedNodeIds = pendingState!.completedNodeIds.filter((nodeId) =>
+                activePlan.nodes.some((node) => node.id === nodeId)
+              )
+              pendingState!.nodeOutputs = Object.fromEntries(
+                Object.entries(pendingState!.nodeOutputs).filter(([nodeId]) =>
+                  activePlan.nodes.some((node) => node.id === nodeId)
+                )
+              ) as Record<string, Record<string, unknown>>
+              pendingState!.facets = runContext.snapshot()
+              await this.persistence.savePlanSnapshot(runId, activePlan.version, snapshotNodes, {
+                facets: pendingState!.facets,
+                schemaHash: schemaHashValue,
+                edges: activePlan.edges,
+                planMetadata: activePlan.metadata,
+                pendingState: {
+                  completedNodeIds: pendingState!.completedNodeIds,
+                  nodeOutputs: pendingState!.nodeOutputs,
+                  policyActions: pendingState!.policyActions ?? [],
+                  policyAttempts: pendingState!.policyAttempts ?? {},
+                  mode: pendingState!.mode
+                }
+              })
+              await opts.onEvent({
+                type: 'plan_updated',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: {
+                  runId,
+                  previousVersion,
+                  version: activePlan.version,
+                  trigger,
+                  nodes: activePlan.nodes.map((node) => {
+                    const contractSource = node.contracts
+                    const contracts =
+                      contractSource && (contractSource.input || contractSource.output)
+                        ? {
+                            ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                            ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                          }
+                        : undefined
+                    const facetSource = node.facets
+                    const facets =
+                      (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                        ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                        : undefined
+                    const derived =
+                      node.derivedCapability?.fromCapabilityId &&
+                      typeof node.derivedCapability.fromCapabilityId === 'string'
+                        ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                        : undefined
+                    const metadata =
+                      node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                    return {
+                      id: node.id,
+                      capabilityId: node.capabilityId,
+                      label: node.label,
+                      kind: node.kind,
+                      status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                      ...(contracts ? { contracts } : {}),
+                      ...(facets ? { facets } : {}),
+                      ...(derived ? { derivedCapability: derived } : {}),
+                      ...(metadata ? { metadata } : {})
+                    }
+                  }),
+                  metadata: activePlan.metadata
+                }
+              })
+              executionMode = 'execute'
+              finalOutputSeed = null
+              continue
+            }
+            throw error
+          }
+        }
+
+        await this.persistence.saveRunContext(runId, runContext.snapshot())
+        this.emittedHitlResolutions.delete(runId)
+        return { runId, status: 'completed', output: finalOutput }
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        if (err instanceof HitlPauseError || err instanceof RunPausedError) {
+          await this.persistence.saveRunContext(runId, runContext.snapshot())
+          await this.persistence.updateStatus(runId, 'awaiting_hitl')
+          this.emittedHitlResolutions.delete(runId)
+          return { runId, status: 'awaiting_hitl', output: null }
+        }
+        const status: 'failed' | 'cancelled' = err.name === 'AbortError' ? 'cancelled' : 'failed'
+        await this.persistence.updateStatus(runId, status)
+        await opts.onEvent({
+          type: 'log',
+          timestamp: new Date().toISOString(),
+          message: err.message,
+          payload: { runId }
+        })
+        this.emittedHitlResolutions.delete(runId)
+        throw err
+      }
     }
 
     let planSnapshot: FlexPlanNodeSnapshot[] = []
@@ -531,7 +752,8 @@ export class FlexRunCoordinator {
               onDenied: signalHitlDenied,
               updateState: updateHitlState
             },
-          onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
+            onStart: pendingStartupEffect ? () => consumeStartupEffect() : undefined,
+            onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
             initialState: pendingState,
             runContext,
             schemaHash: schemaHashValue
