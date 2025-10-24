@@ -9,6 +9,7 @@ interface CatalogEntryInput {
   id: string
   path: string
   label: string
+  group?: string
   type: ConditionVariableType
   description?: string
   example?: unknown

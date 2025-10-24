@@ -1,5 +1,6 @@
 import {
   type ConditionBinaryOperator,
+  type ConditionComparisonOperator,
   type ConditionDslError,
   type ConditionDslParseFailure,
   type ConditionDslParseResult,
@@ -1078,7 +1079,7 @@ function isAssociative(operator: ConditionBinaryOperator): boolean {
   return operator === '&&' || operator === '||'
 }
 
-function isComparisonOperator(operator: ConditionBinaryOperator): boolean {
+function isComparisonOperator(operator: ConditionBinaryOperator): operator is ConditionComparisonOperator {
   return operator !== '&&' && operator !== '||'
 }
 
@@ -1099,8 +1100,10 @@ function collectVariableDefinitions(
   return Array.from(seen.values())
 }
 
-function collectVariablesForNode(node: ConditionExpressionNode): ConditionExpressionNode[] {
-  const results: ConditionExpressionNode[] = []
+function collectVariablesForNode(
+  node: ConditionExpressionNode,
+): Extract<ConditionExpressionNode, { type: 'variable' }>[] {
+  const results: Extract<ConditionExpressionNode, { type: 'variable' }>[] = []
   walk(node, (n) => {
     if (n.type === 'variable') {
       results.push(n)
@@ -1389,17 +1392,17 @@ function readPath(payload: unknown, path: string): unknown {
 
 export function defaultAllowedOperatorsForType(
   type: ConditionVariableType,
-): readonly ConditionBinaryOperator[] {
+): readonly ConditionComparisonOperator[] {
   switch (type) {
     case 'number':
-      return ['==', '!=', '<', '<=', '>', '>=']
+      return ['==', '!=', '<', '<=', '>', '>='] as const
     case 'boolean':
-      return ['==', '!=']
+      return ['==', '!='] as const
     case 'string':
-      return ['==', '!=']
+      return ['==', '!='] as const
     case 'array':
-      return ['==', '!=']
+      return ['==', '!='] as const
     default:
-      return ['==', '!=']
+      return ['==', '!='] as const
   }
 }
