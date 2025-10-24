@@ -836,6 +836,16 @@ Once validated, the plan graph is the single source of truth for control flow.
 - `PersistenceService`: stores run metadata, plan graphs, and variant outputs to support rehydration, analytics, and audit trails.
 - `TelemetryService`: streams normalized `FlexEvent` frames (`plan_requested`, `plan_rejected`, `plan_generated`, `plan_updated`, `policy_triggered`, `node_*`, `hitl_request`, `validation_error`, `complete`) for UI consumption.
 
+### Telemetry & Metrics Parity
+
+- **Event payloads** now include `planVersion`, `correlationId`, and `facetProvenance` for every planner/node/policy/HITL/validation/complete frame to keep dashboards aligned with the legacy orchestrator. `facetProvenance` mirrors the facet compiler output so operators can trace schema provenance without replaying a run.
+- **Structured logs** emitted alongside the frames use the legacy names (`flex_plan_requested`, `flex_node_complete`, `flex_policy_triggered`, `flex_validation_failed`, etc.) with the expanded fields above. This keeps Loki/Grafana queries working while enabling richer faceting.
+- **Metrics** captured for parity:
+  - Counters: `flex.planner.requests`, `flex.planner.rejections`, `flex.planner.generated`, `flex.planner.updated`, `flex.policy.triggers`, `flex.hitl.requests`, `flex.hitl.resolved`, `flex.validation.retries`, `flex.run.status{status=completed|awaiting_hitl|failed|cancelled}`.
+  - Histogram: `flex.node.duration_ms{capabilityId}` measures per-node runtime.
+- **In-memory stream**: `TelemetryService.subscribeToLifecycle` exposes planner + policy events for future dashboard consumers without touching SSE clients.
+- **Dashboard guidance**: update Grafana panels to use the new `planVersion` field for flex runs, surface `facetProvenance.output[].facet` in node troubleshooting tables, and add alerts on `flex.run.status{status=failed}` using the counters above.
+
 ## 7. Execution Flow
 1. Client submits `TaskEnvelope` to `run.stream`; controller authenticates, normalizes, and persists an initial `flex_runs` record.
 2. `PolicyNormalizer` validates caller-supplied policies (persona defaults, experiment toggles) and injects the result into the execution context.

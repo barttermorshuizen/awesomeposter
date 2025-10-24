@@ -705,6 +705,10 @@ describe('FlexRunCoordinator', () => {
     expect(executionSummary?.contracts?.outputMode).toBe('json_schema')
     expect(executionSummary?.facets?.output).toEqual(expect.arrayContaining(['copyVariants']))
 
+    const nodeComplete = events.find((evt) => evt.type === 'node_complete')
+    expect(nodeComplete?.planVersion).toBeGreaterThan(0)
+    expect(nodeComplete?.facetProvenance?.output?.length ?? 0).toBeGreaterThan(0)
+
     expect(persistence.statuses.get(result.runId)).toBe('completed')
     expect(persistence.results.get(result.runId)?.copyVariants).toHaveLength(2)
   })
@@ -1017,18 +1021,23 @@ describe('FlexRunCoordinator', () => {
       }
     })
 
-    await expect(
-      coordinator.run(envelope, {
-        correlationId: 'cid_fail',
-        onEvent: async (evt) => events.push(evt)
-      })
-    ).rejects.toThrow('capability_output validation failed')
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_fail',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.output).toBeNull()
 
     const validationFrames = events.filter((evt) => evt.type === 'validation_error')
     expect(validationFrames).toHaveLength(1)
     const [frame] = validationFrames
     expect((frame.payload as any)?.scope).toBe('capability_output')
     expect(Array.isArray((frame.payload as any)?.errors)).toBe(true)
+
+    const completionEvent = events.filter((evt) => evt.type === 'complete').pop()
+    expect(completionEvent).toBeTruthy()
+    expect((completionEvent?.payload as any)?.status).toBe('failed')
   })
 
   it('pauses before first node when onStart HITL policy triggers', async () => {
@@ -1102,6 +1111,9 @@ describe('FlexRunCoordinator', () => {
     expect(policyHitlEvent).toBeTruthy()
     const hitlEvent = events.find((evt) => evt.type === 'hitl_request')
     expect(hitlEvent).toBeTruthy()
+    const hitlProvenanceCount =
+      (hitlEvent?.facetProvenance?.input?.length ?? 0) + (hitlEvent?.facetProvenance?.output?.length ?? 0)
+    expect(hitlProvenanceCount).toBeGreaterThan(0)
     expect((hitlEvent?.payload as any)?.request?.id).toMatch(/^req_/)
     expect(persistence.statuses.get(result.runId)).toBe('awaiting_hitl')
     const awaitingSnapshot = persistence.snapshots.get(result.runId)?.snapshot
@@ -1148,6 +1160,9 @@ describe('FlexRunCoordinator', () => {
     expect(resumeResult.output?.copyVariants).toHaveLength(2)
     const resolvedEvent = resumeEvents.find((evt) => evt.type === 'hitl_resolved')
     expect(resolvedEvent).toBeTruthy()
+    const resolvedProvenanceCount =
+      (resolvedEvent?.facetProvenance?.input?.length ?? 0) + (resolvedEvent?.facetProvenance?.output?.length ?? 0)
+    expect(resolvedProvenanceCount).toBeGreaterThan(0)
     expect((resolvedEvent?.payload as any)?.request?.id).toBe((hitlEvent?.payload as any)?.request?.id)
     expect(resumeEvents.map((evt) => evt.type)).toContain('plan_generated')
     const resumePlanEvent = resumeEvents.find((evt) => evt.type === 'plan_generated')
@@ -1258,6 +1273,7 @@ describe('FlexRunCoordinator', () => {
   it('fails run when runtime policy requests failure', async () => {
     const persistence = new MemoryFlexPersistence()
     const { coordinator } = createCoordinator(persistence)
+    const events: FlexEvent[] = []
 
     const envelope = buildEnvelope({
       policies: {
@@ -1272,16 +1288,21 @@ describe('FlexRunCoordinator', () => {
       }
     })
 
-    await expect(
-      coordinator.run(envelope, {
-        correlationId: 'cid_fail_policy',
-        onEvent: async () => {}
-      })
-    ).rejects.toThrow(/policy forced failure/)
+    const result = await coordinator.run(envelope, {
+      correlationId: 'cid_fail_policy',
+      onEvent: async (event) => events.push(event)
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.output).toBeNull()
 
     const recordedRunId = Array.from(persistence.statuses.keys()).pop()
     expect(recordedRunId).toBeTruthy()
     expect(persistence.statuses.get(recordedRunId!)).toBe('failed')
+
+    const completionEvent = events.filter((event) => event.type === 'complete').pop()
+    expect(completionEvent).toBeTruthy()
+    expect((completionEvent?.payload as any)?.status).toBe('failed')
   })
 
   it('pauses run and resumes execution when policy pause triggers', async () => {
@@ -1379,12 +1400,20 @@ describe('FlexRunCoordinator', () => {
       }
     })
 
-    await expect(
-      coordinator.run(resumeEnvelope, {
-        correlationId: 'cid_hitl_reject_resume',
-        onEvent: async () => {}
-      })
-    ).rejects.toThrow(/Runtime policy/)
+    const resumeEvents: FlexEvent[] = []
+    const resumeResult = await coordinator.run(resumeEnvelope, {
+      correlationId: 'cid_hitl_reject_resume',
+      onEvent: async (event) => resumeEvents.push(event)
+    })
+
+    expect(resumeResult.status).toBe('failed')
+    expect(resumeResult.output).toBeNull()
+    expect(persistence.statuses.get(resumeResult.runId)).toBe('failed')
+
+    const completionEvent = resumeEvents.filter((event) => event.type === 'complete').pop()
+    expect(completionEvent).toBeTruthy()
+    expect((completionEvent?.payload as any)?.status).toBe('failed')
+    expect((completionEvent?.planVersion ?? 0) >= 0).toBe(true)
   })
 
   it('starts a fresh run when threadId matches a completed run', async () => {

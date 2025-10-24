@@ -16,7 +16,7 @@ import type {
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
-import type { HitlService } from './hitl-service'
+import { parseHitlDecisionAction, resolveHitlDecision as resolveHitlDecisionDetail, type HitlService } from './hitl-service'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getAgents, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
@@ -1823,6 +1823,46 @@ export class FlexExecutionEngine {
     const completedNodeIds = new Set<string>(
       opts.initialState?.completedNodeIds ?? plan.nodes.map((node) => node.id)
     )
+
+    const hasPendingPolicyActions =
+      Array.isArray(opts.initialState?.policyActions) && opts.initialState.policyActions.length > 0
+    const hitlStateRef = opts.hitl?.state
+    const toEpoch = (value: unknown) => {
+      if (value instanceof Date) return value.getTime()
+      if (typeof value === 'number') return value
+      if (typeof value === 'string') {
+        const parsed = Date.parse(value)
+        return Number.isNaN(parsed) ? 0 : parsed
+      }
+      return 0
+    }
+
+    if (hitlStateRef && !hasPendingPolicyActions) {
+      const resolvedRequests = hitlStateRef.requests.filter((req) => req.status === 'resolved')
+      if (resolvedRequests.length) {
+        resolvedRequests.sort(
+          (a, b) => toEpoch(b.updatedAt ?? b.createdAt) - toEpoch(a.updatedAt ?? a.createdAt)
+        )
+        const latestResolved = resolvedRequests[0]
+        const detail = resolveHitlDecisionDetail(hitlStateRef, latestResolved.id)
+        if (detail && detail.kind === 'reject') {
+          const action = parseHitlDecisionAction(detail.response)
+          const freeform = typeof detail.response.freeformText === 'string' ? detail.response.freeformText.trim() : ''
+          const defaultReason = freeform || `Run rejected by operator (${detail.request.originAgent})`
+          if (!action || action.type === 'fail') {
+            const reason = (action?.message || defaultReason).trim() || defaultReason
+            try {
+              getLogger().warn('flex_hitl_rejection_default_fail', {
+                runId,
+                requestId: detail.request.id,
+                originAgent: detail.request.originAgent
+              })
+            } catch {}
+            throw new RuntimePolicyFailureError('hitl_reject', reason)
+          }
+        }
+      }
+    }
 
     for (const node of plan.nodes) {
       nodeStatuses.set(node.id, completedNodeIds.has(node.id) ? 'completed' : 'pending')

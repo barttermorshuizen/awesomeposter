@@ -166,3 +166,61 @@ export function getHitlService() {
 export function resetHitlService() {
   singleton = null
 }
+
+export type HitlDecision = {
+  kind: 'approve' | 'reject'
+  request: HitlRequestRecord
+  response: HitlResponse
+}
+
+export type HitlDecisionAction =
+  | { type: 'fail'; message?: string }
+  | { type: 'emit'; event?: string; payload?: unknown; message?: string }
+  | { type: 'resume' }
+
+export function resolveHitlDecision(state: HitlRunState, requestId: string): HitlDecision | null {
+  const request = state.requests.find((r) => r.id === requestId)
+  if (!request || request.status !== 'resolved') return null
+  const responses = state.responses.filter((res) => res.requestId === requestId)
+  if (!responses.length) return null
+  const latest = responses[responses.length - 1]
+  let kind: HitlDecision['kind'] | null = null
+  if (typeof latest.approved === 'boolean') {
+    kind = latest.approved ? 'approve' : 'reject'
+  } else if (latest.responseType === 'approval') {
+    kind = 'approve'
+  } else if (latest.responseType === 'rejection') {
+    kind = 'reject'
+  }
+  if (!kind) return null
+  return { kind, request, response: latest }
+}
+
+export function parseHitlDecisionAction(response: HitlResponse): HitlDecisionAction | null {
+  const metadata = response.metadata
+  if (!metadata || typeof metadata !== 'object') return null
+  const action = (metadata as Record<string, unknown>).action
+  if (!action || typeof action !== 'object') return null
+  const actionRecord = action as Record<string, unknown>
+  const typeRaw = typeof actionRecord.type === 'string' ? actionRecord.type.trim().toLowerCase() : ''
+  if (!typeRaw) return null
+  switch (typeRaw) {
+    case 'fail':
+      return {
+        type: 'fail',
+        message: typeof actionRecord.message === 'string' ? actionRecord.message : undefined
+      }
+    case 'emit':
+      return {
+        type: 'emit',
+        event: typeof actionRecord.event === 'string' ? actionRecord.event : undefined,
+        payload: actionRecord.payload,
+        message: typeof actionRecord.message === 'string' ? actionRecord.message : undefined
+      }
+    case 'resume':
+    case 'continue':
+      return { type: 'resume' }
+    default:
+      return null
+  }
+}

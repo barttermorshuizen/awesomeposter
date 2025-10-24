@@ -2,7 +2,7 @@ import { AgentRunRequest, AgentEvent, Plan, PlanPatchSchema, PlanStepStatus, Ste
 import { AgentRuntime } from './agent-runtime';
 import { getCapabilityRegistry } from './agents-container';
 import { Runner } from '@openai/agents';
-import { getHitlService } from './hitl-service';
+import { getHitlService, resolveHitlDecision, parseHitlDecisionAction, type HitlDecision } from './hitl-service';
 import { withHitlContext } from './hitl-context';
 import { genCorrelationId, getLogger } from './logger';
 import { getOrchestratorPersistence, type OrchestratorRunStatus } from './orchestrator-persistence';
@@ -362,6 +362,7 @@ export async function runOrchestratorEngine(
   } = {};
 
   let hitlAwaiting: HitlRequestRecord | null = hitlPending;
+  const processedHitlDecisions = new Set<string>();
 
   const resetArtifactsForCapability = (capabilityId?: string) => {
     switch (capabilityId) {
@@ -463,6 +464,91 @@ export async function runOrchestratorEngine(
     }
   };
 
+  const determineDecisionForRequest = (requestId: string) => resolveHitlDecision(hitlState, requestId);
+
+  const handleHitlRejection = (decision: HitlDecision): { final: any; metrics?: any } | null => {
+    const action = parseHitlDecisionAction(decision.response);
+    const freeform = typeof decision.response.freeformText === 'string' ? decision.response.freeformText.trim() : '';
+    const defaultReason = freeform || `Run rejected by operator (${decision.request.originAgent})`;
+    if (!action || action.type === 'fail') {
+      const reason = (action?.message || defaultReason).trim() || defaultReason;
+      try {
+        getLogger().warn('hitl_rejection_default_fail', {
+          runId,
+          requestId: decision.request.id,
+          originAgent: decision.request.originAgent
+        });
+      } catch {}
+      runnerMetadata.completedAt = new Date().toISOString();
+      writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: 'failed' });
+      onEvent({ type: 'error', message: reason, correlationId: cid });
+      const summary = {
+        status: 'failed',
+        reason,
+        requestId: decision.request.id,
+        originAgent: decision.request.originAgent,
+        decision: 'reject' as const
+      };
+      onEvent({ type: 'complete', data: summary as any, correlationId: cid });
+      return { final: summary, metrics: { hitlRejected: true } };
+    }
+    if (action.type === 'emit') {
+      const eventName = action.event && action.event.trim().length > 0 ? action.event : 'hitl_rejected';
+      const payload = {
+        requestId: decision.request.id,
+        originAgent: decision.request.originAgent,
+        decision: 'reject' as const,
+        payload: action.payload ?? null
+      };
+      try {
+        getLogger().info('hitl_rejection_emit_action', {
+          runId,
+          requestId: decision.request.id,
+          originAgent: decision.request.originAgent,
+          event: eventName
+        });
+      } catch {}
+      runnerMetadata.completedAt = new Date().toISOString();
+      onEvent({ type: 'message', message: eventName, data: payload, correlationId: cid });
+      writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: 'completed' });
+      const summary = {
+        status: 'policy_action',
+        action: { type: 'emit', event: eventName, payload: action.payload ?? null },
+        requestId: decision.request.id,
+        originAgent: decision.request.originAgent,
+        decision: 'reject' as const
+      };
+      onEvent({ type: 'complete', data: summary as any, correlationId: cid });
+      return { final: summary, metrics: { hitlRejected: true } };
+    }
+    if (action.type === 'resume') {
+      try {
+        getLogger().info('hitl_rejection_resume_action', {
+          runId,
+          requestId: decision.request.id,
+          originAgent: decision.request.originAgent
+        });
+      } catch {}
+      return null;
+    }
+    return null;
+  };
+
+  const evaluateResolvedHitlRequests = (): { final: any; metrics?: any } | null => {
+    const resolved = hitlState.requests.filter((req) => req.status === 'resolved');
+    for (const request of resolved) {
+      if (processedHitlDecisions.has(request.id)) continue;
+      processedHitlDecisions.add(request.id);
+      const decision = determineDecisionForRequest(request.id);
+      if (!decision) continue;
+      if (decision.kind === 'reject') {
+        const outcome = handleHitlRejection(decision);
+        if (outcome) return outcome;
+      }
+    }
+    return null;
+  };
+
   const refreshHitlDerivedState = (state: HitlRunState) => {
     hitlState = state;
     hitlAcceptedCount = state.requests.filter((r) => r.status !== 'denied').length;
@@ -498,6 +584,11 @@ export async function runOrchestratorEngine(
 
   refreshHitlDerivedState(hitlState);
   writeResumeSnapshot({ plan, history: [...stepResults], hitl: hitlState, status: hitlPending ? 'awaiting_hitl' : 'running' });
+
+  const initialResolution = evaluateResolvedHitlRequests();
+  if (initialResolution) {
+    return initialResolution;
+  }
 
   if (hitlPending) {
     signalHitlRequest(hitlPending, hitlState);
@@ -974,6 +1065,15 @@ export async function runOrchestratorEngine(
       addRevisionIfNeeded();
       state = 'plan';
     }
+    const postStepResolution = evaluateResolvedHitlRequests();
+    if (postStepResolution) {
+      return postStepResolution;
+    }
+  }
+
+  const finalResolution = evaluateResolvedHitlRequests();
+  if (finalResolution) {
+    return finalResolution;
   }
 
   if (hitlAwaiting) {

@@ -97,6 +97,27 @@ export type CapabilityContract = OutputContract
 export const LooseRecordSchema = z.record(z.unknown())
 export type LooseRecord = z.infer<typeof LooseRecordSchema>
 
+const FlexFacetProvenanceDirectionSchema = z.enum(['input', 'output'])
+
+export const FlexFacetProvenanceSchema = z.object({
+  facet: z.string().min(1),
+  title: z.string().min(1),
+  direction: FlexFacetProvenanceDirectionSchema,
+  pointer: z.string().min(1)
+})
+
+export const FlexFacetProvenanceMapSchema = z
+  .object({
+    input: z.array(FlexFacetProvenanceSchema).optional(),
+    output: z.array(FlexFacetProvenanceSchema).optional()
+  })
+  .optional()
+
+export type FlexFacetProvenanceMap = {
+  input?: import('./facets/contract-compiler.js').FacetProvenance[]
+  output?: import('./facets/contract-compiler.js').FacetProvenance[]
+}
+
 /**
  * Contract describing expectations attached to a specific plan node.
  */
@@ -194,7 +215,9 @@ export const FlexEventSchema = z.object({
   correlationId: z.string().optional(),
   nodeId: z.string().optional(),
   runId: z.string().optional(),
-  message: z.string().optional()
+  message: z.string().optional(),
+  planVersion: z.number().int().nonnegative().optional(),
+  facetProvenance: FlexFacetProvenanceMapSchema
 })
 export type FlexEvent = z.infer<typeof FlexEventSchema>
 

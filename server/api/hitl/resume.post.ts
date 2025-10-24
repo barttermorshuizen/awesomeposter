@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { HitlResponseInputSchema } from '@awesomeposter/shared'
 import { requireApiAuth } from '../../utils/api-auth'
-import { getOrchestratorPersistence } from '../../../packages/agents-server/src/services/orchestrator-persistence'
-import { getHitlService } from '../../../packages/agents-server/src/services/hitl-service'
+import { getOrchestratorPersistence, type OrchestratorRunStatus } from '../../../packages/agents-server/src/services/orchestrator-persistence'
+import { getHitlService, resolveHitlDecision, parseHitlDecisionAction } from '../../../packages/agents-server/src/services/hitl-service'
 import { createError } from 'h3'
 import { getLogger } from '../../../packages/agents-server/src/services/logger'
 
@@ -66,6 +66,18 @@ export default defineEventHandler(async (event) => {
   // Record responses and refresh HITL state
   const hitlService = getHitlService()
   const updatedState = await hitlService.applyResponses(resolvedRunId, payload.responses)
+  const decision = resolveHitlDecision(updatedState, payload.requestId)
+  const decisionAction = decision ? parseHitlDecisionAction(decision.response) : null
+  let nextStatus: OrchestratorRunStatus = updatedState.pendingRequestId ? 'awaiting_hitl' : 'running'
+  if (decision?.kind === 'reject') {
+    if (!decisionAction || decisionAction.type === 'fail') {
+      nextStatus = 'failed'
+    } else if (decisionAction.type === 'emit') {
+      nextStatus = 'completed'
+    } else if (decisionAction.type === 'resume') {
+      nextStatus = updatedState.pendingRequestId ? 'awaiting_hitl' : 'running'
+    }
+  }
 
   const refreshed = await persistence.load(resolvedRunId)
   const metadata = (refreshed.runnerMetadata as Record<string, unknown>) || {}
@@ -87,7 +99,7 @@ export default defineEventHandler(async (event) => {
 
   await persistence.save(resolvedRunId, {
     pendingRequestId: updatedState.pendingRequestId ?? null,
-    status: 'running',
+    status: nextStatus,
     runnerMetadata
   })
 
@@ -102,9 +114,11 @@ export default defineEventHandler(async (event) => {
   return {
     ok: true,
     runId: resolvedRunId,
-    status: 'running',
+    status: nextStatus,
     pendingRequestId: updatedState.pendingRequestId ?? null,
     requests: updatedState.requests,
-    responses: updatedState.responses
+    responses: updatedState.responses,
+    decision: decision ? { kind: decision.kind, requestId: decision.request.id } : null,
+    action: decisionAction
   }
 })

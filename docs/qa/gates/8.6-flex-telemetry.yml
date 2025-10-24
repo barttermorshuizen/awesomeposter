@@ -1,0 +1,37 @@
+schema: 1
+story: '8.6'
+story_title: 'Flex Telemetry & Logging Parity'
+gate: PASS
+status_reason: 'Telemetry emits facet provenance and completion status for HITL flows; parity confirmed across SSE/logs.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-24T08:55:46Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 80
+expires: '2025-11-07T07:57:52Z'
+evidence:
+  tests_reviewed: 15
+  risks_identified: 1
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: Logging changes stay within existing Winston transport configuration.
+  performance:
+    status: PASS
+    notes: In-memory metrics and emitter add negligible overhead.
+  reliability:
+    status: PASS
+    notes: HITL request/resolution events now include facetProvenance and plan version metadata.
+  maintainability:
+    status: PASS
+    notes: New telemetry service is modular with reset hooks for tests.
+recommendations:
+  immediate: []
+  future:
+    - action: Add an integration-style test that drives a HITL pause and asserts telemetry enrichment end-to-end.
+      refs:
+        - packages/flex-agents-server/__tests__/flex-run-coordinator.spec.ts
