@@ -1156,3 +1156,76 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - Policy conflicts: inconsistent caller-supplied directives (for example variant counts versus schema `minItems`) can break runs; conflict resolution rules must be explicit.
 - Validation cost: Ajv on large schemas may slow runs; consider caching compiled schemas and streaming partial validation errors.
 - Capability drift: registry metadata must stay synchronized with actual agent prompts to avoid mismatched expectations.
+
+## 15. Supporting Human Agents (to be implemented)
+
+### 15.1 Concept Overview
+- HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds.
+- Human Agents extend the CapabilityRegistry with `agentType: "human"` entries so the planner can emit plan nodes that resolve to human-executed capabilities. The ExecutionEngine dispatches them like any other capability node.
+- These nodes target work that demands human judgment, clarification, or creative input. They are deterministic plan graph nodes with explicit inputs/outputs, not ad-hoc runtime pauses.
+- Pause/resume semantics, schema compilation, and validation operate identically across AI and human nodes, preserving deterministic execution and a complete audit trail.
+
+### 15.2 Design Principles
+- HITL governs; agents perform. Runtime policies still gate plan progress, while agent nodes (AI or human) fulfill structured work.
+- Human agents adopt the same capability model—`capabilityId`, `inputContract`, `outputContract`, and facet metadata—ensuring registry, planner, and execution code paths stay uniform.
+- Governance events continue to route through HITL flows; Human Agent nodes execute structured tasks under the planner’s control.
+- Plan topology is immutable. Once compiled, Human Agent nodes resume deterministically after output validation, just like AI nodes.
+- All human interaction uses structured schema contracts defined by facets; no untyped or freeform fields are accepted.
+
+### 15.3 Implementation Alignment
+- Register human operators in the CapabilityRegistry with `agentType: "human"`, facet-driven contracts, and instruction templates that mirror AI entries.
+- When the planner emits `HumanAgent.*` nodes, the ExecutionEngine raises the standard node lifecycle events (`node_start`, `node_complete`, `node_error`); no HITL-specific events are produced for these nodes.
+- `node_start` payloads include `executorType: "human"` plus the compiled node contract: node ID, capability ID, input/output facets, schemas, and instruction text.
+- The SPA or operator UI subscribes to these lifecycle events to render a facet-driven task surface whenever a human node begins execution.
+- On submission, the UI POSTs structured JSON to `/api/v1/flex/run.resume`; the orchestrator validates against the node’s `outputContract` and emits `node_complete` when validation passes.
+- Resume handling and contract validation reuse the same deterministic pipeline that already powers AI agent nodes.
+
+### 15.4 Facet-Driven Task Surfaces
+- Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
+- A facet widget registry (for example `ToneOfVoiceWidget`, `ObjectiveBriefWidget`, `CopyVariantsWidget`) maps facet names to reusable UI components that assemble into the task surface.
+- Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
+- Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
+- Example facet/widget mappings:
+
+| Facet | Example Widget | User Role |
+| --- | --- | --- |
+| `toneOfVoice` | Dropdown tone selector | Strategist |
+| `objectiveBrief` | Structured brief editor | Strategist |
+| `copyVariants` | Variant card editor | Writer |
+| `qaFindings` | Score table/checklist | QA |
+
+### 15.5 Notification and Assignment Model
+- `node_start` events for human-executed nodes include assignment metadata such as `assignedTo`, `role`, and `dueAt` so downstream tooling can route work.
+- The SPA or a notification service subscribes to these events and surfaces tasks via in-app queues, email, or chat integrations.
+- Operators query their backlog with `GET /api/v1/flex/hitl/tasks?assignedTo=me` (or equivalent filters) and launch the facet-driven task surface to work the node.
+- Once structured output is submitted, the orchestrator validates it, marks the node resolved, and the plan continues.
+- This approach adds traceability and role-based routing without altering the orchestrator’s core execution loop.
+
+### 15.6 Planner Behavior
+- The planner can inject `HumanAgent.*` nodes explicitly when replanning requires human clarification (for example rationale: “Need clarification on objective”).
+- Validator and runtime treat these nodes the same as AI capabilities—facet coverage, schema compilation, and dependency checks all run through the shared pathways.
+
+### 15.7 Benefits and Alignment
+- Unified participation model for human and AI agents—both live in the CapabilityRegistry and execute under the same lifecycle semantics.
+- Facet-aware, schema-driven UIs evolve automatically with the facet catalog, reducing bespoke form work.
+- Governance boundaries stay clear: HITL handles policy-triggered approvals, while Human Agents execute planned work.
+- Deterministic pause/resume semantics and full audit trails persist across human participation.
+- Minimal new infrastructure: reuse existing HITL persistence, telemetry streams, and validation plumbing.
+
+### 15.8 Example
+
+```mermaid
+graph LR
+  A[StrategyManager] --> B[HumanAgent.clarifyBrief]
+  B --> C[ContentGeneratorAgent.linkedinVariants]
+  C --> D[QualityAssuranceAgent.contentReview]
+  D -->|policy: qa_low_score| E[[HITL Approval]]
+```
+
+### 15.9 Offline and Notification Semantics
+- If no operator UI is connected, execution suspends deterministically when a Human Agent node starts; the run enters an `awaiting_human` state persisted in `flex_plan_nodes`.
+- Telemetry frames (`node_start`, `executorType: "human"`) still emit, but live delivery is optional; durable state in the database keeps the run recoverable.
+- Pending tasks remain discoverable through APIs such as `GET /api/v1/flex/hitl/tasks?status=pending` or via services monitoring `flex_plan_nodes`.
+- The orchestrator does not require active SSE listeners—it idles safely until `/api/v1/flex/run.resume` receives valid output.
+- Optional runtime policies (for example `onTimeout`, `onMetricBelow`) can detect long-idle human tasks and trigger replanning or escalation actions.
+- Persistent execution plus eventual UI delivery keeps the system resilient to operator downtime and ensures safe resumption once human input arrives.
