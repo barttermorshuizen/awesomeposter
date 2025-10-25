@@ -14,10 +14,14 @@ import {
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import FlexSandboxPlanInspector from '@/components/FlexSandboxPlanInspector.vue'
 import HitlPromptPanel from '@/components/HitlPromptPanel.vue'
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 import type { FlexSandboxPlan, FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode } from '@/lib/flexSandboxTypes'
 import { appendHistoryEntry, extractPlanPayload } from '@/lib/flexSandboxPlan'
 import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
 import { useHitlStore } from '@/stores/hitl'
+import { useNotificationsStore } from '@/stores/notifications'
+import { useFlexEnvelopeBuilderStore } from '@/stores/flexEnvelopeBuilder'
 
 type FacetMetadataDescriptor = {
   direction?: FacetDirection
@@ -120,6 +124,7 @@ const draftText = ref('')
 const parseError = ref<string | null>(null)
 const validationIssues = ref<string[]>([])
 const validationWarnings = ref<string[]>([])
+const conversationMissingFields = ref<string[]>([])
 const parsedEnvelope = ref<TaskEnvelope | null>(null)
 
 const eventLog = ref<FlexEventWithId[]>([])
@@ -128,6 +133,8 @@ const runError = ref<string | null>(null)
 const correlationId = ref<string | undefined>()
 const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
+const notifications = useNotificationsStore()
+const envelopeBuilder = useFlexEnvelopeBuilderStore()
 
 const hitlStore = useHitlStore()
 const { pendingRun, hasActiveRequest, operatorProfile } = storeToRefs(hitlStore)
@@ -137,6 +144,11 @@ const expandedEventIds = ref<Set<string>>(new Set())
 const showCapabilitySnapshot = ref(true)
 const showFacetSnapshot = ref(true)
 const showCatalogSnapshot = ref(false)
+const rawEditorOpen = ref(false)
+const rawEditorText = ref('')
+const rawEditorParseError = ref<string | null>(null)
+const rawEditorValidationErrors = ref<string[]>([])
+const builderInput = ref('')
 
 const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRun.value.pendingRequestId))
 
@@ -201,7 +213,13 @@ const selectedDraftEntry = computed<StoredDraft | null>(() => {
 })
 
 const currentTemplateError = computed(() => selectedTemplate.value?.error ?? null)
-const runDisabled = computed(() => !parsedEnvelope.value || Boolean(parseError.value) || validationIssues.value.length > 0)
+const runDisabled = computed(
+  () =>
+    !parsedEnvelope.value ||
+    Boolean(parseError.value) ||
+    validationIssues.value.length > 0 ||
+    conversationMissingFields.value.length > 0
+)
 
 function loadDrafts(): DraftStore {
   if (typeof window === 'undefined') return {}
@@ -345,6 +363,154 @@ function formatDraft() {
   updateValidation()
 }
 
+function openRawJsonEditor() {
+  rawEditorText.value = draftText.value
+  rawEditorParseError.value = null
+  rawEditorValidationErrors.value = []
+  rawEditorOpen.value = true
+}
+
+function closeRawJsonEditor() {
+  rawEditorOpen.value = false
+}
+
+function applyRawJsonEditor() {
+  rawEditorParseError.value = null
+  rawEditorValidationErrors.value = []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawEditorText.value)
+  } catch (error) {
+    rawEditorParseError.value = error instanceof Error ? error.message : 'Invalid JSON payload'
+    return
+  }
+  const result = TaskEnvelopeSchema.safeParse(parsed)
+  if (!result.success) {
+    rawEditorValidationErrors.value = result.error.issues.map((issue) => {
+      const path = issue.path?.join('.') ?? ''
+      return path ? `${path}: ${issue.message}` : issue.message
+    })
+    return
+  }
+  draftText.value = JSON.stringify(result.data, null, 2)
+  rawEditorOpen.value = false
+  notifications.notifySuccess('TaskEnvelope updated from raw JSON.')
+}
+
+async function copyEnvelopeJson() {
+  const envelope = parsedEnvelope.value
+  if (!envelope) {
+    notifications.enqueue({ message: 'Nothing to copy yet — envelope is not valid.', kind: 'warning' })
+    return
+  }
+  const serialized = JSON.stringify(envelope, null, 2)
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(serialized)
+    } else {
+      fallbackCopy(serialized)
+    }
+    notifications.notifySuccess('TaskEnvelope JSON copied to clipboard.')
+  } catch (error) {
+    console.warn('[Flex Sandbox] Failed to copy envelope JSON', error)
+    notifications.notifyError('Unable to copy TaskEnvelope JSON on this browser.')
+  }
+}
+
+function fallbackCopy(text: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'absolute'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
+}
+
+function resolveCurrentEnvelope(): TaskEnvelope | null {
+  if (parsedEnvelope.value) {
+    return parsedEnvelope.value
+  }
+  try {
+    const raw = JSON.parse(draftText.value)
+    const result = TaskEnvelopeSchema.safeParse(raw)
+    return result.success ? result.data : null
+  } catch {
+    return null
+  }
+}
+
+function formatConversationRole(role: 'assistant' | 'user' | 'system'): string {
+  switch (role) {
+    case 'assistant':
+      return 'Assistant'
+    case 'user':
+      return 'You'
+    case 'system':
+      return 'System'
+    default:
+      return role
+  }
+}
+
+async function startEnvelopeConversation() {
+  if (envelopeBuilder.pending) return
+  try {
+    const envelope = resolveCurrentEnvelope()
+    const updated = await envelopeBuilder.startConversation({
+      baseUrl: FLEX_BASE_URL,
+      authToken: FLEX_AUTH,
+      envelope: envelope ?? undefined
+    })
+    if (updated) {
+      draftText.value = JSON.stringify(updated, null, 2)
+    }
+    builderInput.value = ''
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to start conversational builder.'
+    notifications.notifyError(message)
+  }
+}
+
+async function sendEnvelopeBuilderMessage() {
+  const trimmed = builderInput.value.trim()
+  if (!trimmed) return
+  if (envelopeBuilder.pending) return
+  try {
+    const envelope = resolveCurrentEnvelope()
+    const delta = await envelopeBuilder.sendOperatorResponse({
+      baseUrl: FLEX_BASE_URL,
+      authToken: FLEX_AUTH,
+      envelope: envelope ?? undefined,
+      message: trimmed
+    })
+    if (delta?.envelope) {
+      draftText.value = JSON.stringify(delta.envelope, null, 2)
+    }
+    builderInput.value = ''
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Conversation request failed.'
+    notifications.notifyError(message)
+  }
+}
+
+function undoLastBuilderDelta() {
+  const snapshot = envelopeBuilder.undoLastDelta()
+  if (snapshot) {
+    draftText.value = JSON.stringify(snapshot, null, 2)
+    builderInput.value = ''
+    notifications.notifyInfo('Reverted the last assistant change.')
+  }
+}
+
+function resetEnvelopeConversation() {
+  envelopeBuilder.reset()
+  builderInput.value = ''
+  conversationMissingFields.value = []
+}
+
 function updateValidation() {
   parseError.value = null
   validationIssues.value = []
@@ -378,6 +544,10 @@ function updateValidation() {
   const results = runDomainValidation(parsed.data)
   validationIssues.value = results.errors
   validationWarnings.value = results.warnings
+  if (validationIssues.value.length === 0) {
+    conversationMissingFields.value = []
+    envelopeBuilder.acknowledgeEnvelopeValidity()
+  }
 }
 
 function runDomainValidation(envelope: TaskEnvelope): { errors: string[]; warnings: string[] } {
@@ -982,6 +1152,14 @@ onBeforeUnmount(() => {
   abortRun()
 })
 
+watch(
+  () => envelopeBuilder.lastMissingFields,
+  (fields) => {
+    conversationMissingFields.value = [...fields]
+  },
+  { deep: true }
+)
+
 watch(draftText, () => {
   updateValidation()
   schedulePersist()
@@ -1208,6 +1386,12 @@ watch(
             <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
               <span>TaskEnvelope Editor</span>
               <div class="d-flex ga-2">
+                <v-btn icon="mdi-code-braces" variant="text" @click="openRawJsonEditor">
+                  <v-icon icon="mdi-code-braces" />
+                </v-btn>
+                <v-btn icon="mdi-content-copy" variant="text" @click="copyEnvelopeJson">
+                  <v-icon icon="mdi-content-copy" />
+                </v-btn>
                 <v-btn icon="mdi-format-align-justify" variant="text" @click="formatDraft" :disabled="!parsedEnvelope">
                   <v-icon icon="mdi-code-tags" />
                 </v-btn>
@@ -1241,6 +1425,18 @@ watch(
                 :text="warning"
               />
               <v-alert
+                v-for="field in conversationMissingFields"
+                :key="`missing-${field}`"
+                type="warning"
+                variant="tonal"
+                border="start"
+                class="mb-2"
+              >
+                <div class="text-body-2">
+                  Missing required field: <span class="font-mono">{{ field }}</span>
+                </div>
+              </v-alert>
+              <v-alert
                 v-if="currentTemplateError"
                 type="warning"
                 variant="tonal"
@@ -1248,20 +1444,28 @@ watch(
                 class="mb-2"
                 :text="`Template parsing error: ${currentTemplateError}`"
               />
-              <v-textarea
-                v-model="draftText"
-                class="font-mono sandbox-editor flex-grow-1"
-                variant="outlined"
-                :no-resize="true"
-                row-height="18"
-                rows="22"
-                spellcheck="false"
-                placeholder="Edit TaskEnvelope JSON here"
-              />
+              <div class="envelope-preview flex-grow-1">
+                <VueJsonPretty
+                  v-if="parsedEnvelope"
+                  :data="parsedEnvelope"
+                  :deep="2"
+                  :show-length="false"
+                  class="envelope-json-tree font-mono"
+                />
+                <div v-else class="envelope-preview-placeholder font-mono">
+                  // Provide inputs via the conversational builder or raw JSON editor to render an envelope preview.
+                </div>
+              </div>
             </v-card-text>
             <v-divider />
             <v-card-actions>
-              <v-btn color="primary" prepend-icon="mdi-play" @click="runEnvelope" :disabled="runDisabled">
+              <v-btn
+                color="primary"
+                prepend-icon="mdi-play"
+                data-testid="flex-run-button"
+                @click="runEnvelope"
+                :disabled="runDisabled"
+              >
                 Run plan
               </v-btn>
               <v-btn
@@ -1286,6 +1490,151 @@ watch(
                 <span v-if="runError" class="text-error">Error: {{ runError }}</span>
                 <span v-if="correlationId">CID: {{ correlationId }}</span>
               </div>
+            </v-card-actions>
+          </v-card>
+
+          <v-card class="conversation-card">
+            <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
+              <span>Conversational Builder</span>
+              <div class="d-flex ga-2">
+                <v-btn
+                  icon="mdi-undo"
+                  variant="text"
+                  :disabled="!envelopeBuilder.canUndo"
+                  @click="undoLastBuilderDelta"
+                  :title="envelopeBuilder.canUndo ? 'Undo last assistant change' : 'No changes to undo'"
+                >
+                  <v-icon icon="mdi-undo" />
+                </v-btn>
+                <v-btn
+                  icon="mdi-refresh"
+                  variant="text"
+                  :disabled="envelopeBuilder.pending"
+                  @click="resetEnvelopeConversation"
+                  title="Reset conversation"
+                >
+                  <v-icon icon="mdi-refresh" />
+                </v-btn>
+              </div>
+            </v-card-title>
+            <v-card-subtitle>Guide GPT-5 to refine TaskEnvelope fields one response at a time.</v-card-subtitle>
+            <v-divider />
+            <v-card-text class="conversation-card__body d-flex flex-column ga-3">
+              <v-alert
+                v-if="envelopeBuilder.error"
+                type="error"
+                variant="tonal"
+                border="start"
+              >
+                {{ envelopeBuilder.error }}
+              </v-alert>
+
+              <div v-if="envelopeBuilder.messages.length" class="conversation-history">
+                <div
+                  v-for="message in envelopeBuilder.messages"
+                  :key="message.id"
+                  :class="[
+                    'conversation-entry',
+                    `conversation-entry--${message.role}`,
+                    { 'conversation-entry--error': message.error }
+                  ]"
+                >
+                  <div class="conversation-entry__meta">
+                    <span class="conversation-entry__role">{{ formatConversationRole(message.role) }}</span>
+                    <span class="conversation-entry__timestamp">{{ formatTimestamp(message.timestamp) }}</span>
+                  </div>
+                  <div class="conversation-entry__content">{{ message.content }}</div>
+                </div>
+              </div>
+              <div v-else class="conversation-placeholder text-body-2 text-medium-emphasis">
+                Start a guided conversation to collect objectives, knobs, and policies without hand-editing JSON.
+              </div>
+
+              <div v-if="envelopeBuilder.lastDeltaSummary.length" class="conversation-delta">
+                <div class="text-caption text-medium-emphasis mb-1">Recent updates</div>
+                <ul class="ma-0 ps-4 text-body-2">
+                  <li v-for="item in envelopeBuilder.lastDeltaSummary" :key="item">{{ item }}</li>
+                </ul>
+              </div>
+
+              <div v-if="envelopeBuilder.lastWarnings.length" class="conversation-warnings">
+                <v-alert
+                  v-for="warning in envelopeBuilder.lastWarnings"
+                  :key="warning"
+                  type="warning"
+                  variant="tonal"
+                  border="start"
+                  class="mb-2"
+                >
+                  {{ warning }}
+                </v-alert>
+              </div>
+
+              <div v-if="envelopeBuilder.hasConversation" class="conversation-input">
+                <v-textarea
+                  v-model="builderInput"
+                  variant="outlined"
+                  class="font-mono"
+                  auto-grow
+                  rows="3"
+                  :disabled="envelopeBuilder.pending"
+                  label="Your response"
+                  placeholder="Describe objectives, constraints, or adjustments..."
+                  @keydown.enter.exact.prevent="sendEnvelopeBuilderMessage"
+                  @keydown.enter.shift.stop
+                />
+                <div class="d-flex justify-end mt-2 ga-2">
+                  <v-btn
+                    variant="text"
+                    @click="builderInput = ''"
+                    :disabled="!builderInput"
+                  >
+                    Clear
+                  </v-btn>
+                  <v-btn
+                    color="primary"
+                    prepend-icon="mdi-send"
+                    :loading="envelopeBuilder.pending"
+                    :disabled="!builderInput.trim() || envelopeBuilder.pending"
+                    @click="sendEnvelopeBuilderMessage"
+                  >
+                    Send
+                  </v-btn>
+                </div>
+              </div>
+              <div v-else class="conversation-start">
+                <v-btn
+                  color="primary"
+                  prepend-icon="mdi-message-plus"
+                  :loading="envelopeBuilder.pending"
+                  @click="startEnvelopeConversation"
+                >
+                  Start guided builder
+                </v-btn>
+              </div>
+            </v-card-text>
+            <v-divider />
+            <v-card-actions class="d-flex align-center">
+              <div class="text-caption text-medium-emphasis" v-if="envelopeBuilder.conversationId">
+                Conversation ID: {{ envelopeBuilder.conversationId }}
+              </div>
+              <v-spacer />
+              <v-btn
+                variant="text"
+                prepend-icon="mdi-refresh"
+                :disabled="envelopeBuilder.pending"
+                @click="resetEnvelopeConversation"
+              >
+                Reset
+              </v-btn>
+              <v-btn
+                variant="text"
+                prepend-icon="mdi-undo"
+                :disabled="!envelopeBuilder.canUndo"
+                @click="undoLastBuilderDelta"
+              >
+                Undo change
+              </v-btn>
             </v-card-actions>
           </v-card>
 
@@ -1370,6 +1719,44 @@ watch(
       </v-card-actions>
     </v-card>
   </v-dialog>
+
+  <v-dialog v-model="rawEditorOpen" max-width="720">
+    <v-card>
+      <v-card-title class="text-subtitle-1">Raw JSON Editor</v-card-title>
+      <v-card-subtitle>Advanced tweaks validate against TaskEnvelopeSchema</v-card-subtitle>
+      <v-card-text class="d-flex flex-column ga-3">
+        <v-alert
+          v-if="rawEditorParseError"
+          type="error"
+          variant="tonal"
+          border="start"
+          :text="rawEditorParseError"
+        />
+        <v-alert
+          v-for="issue in rawEditorValidationErrors"
+          :key="issue"
+          type="error"
+          variant="tonal"
+          border="start"
+          :text="issue"
+        />
+        <v-textarea
+          v-model="rawEditorText"
+          class="font-mono"
+          variant="outlined"
+          rows="18"
+          auto-grow
+          spellcheck="false"
+          hint="Ensure the payload remains valid TaskEnvelope JSON."
+        />
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="closeRawJsonEditor">Cancel</v-btn>
+        <v-btn color="primary" @click="applyRawJsonEditor">Apply changes</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <style scoped>
@@ -1402,24 +1789,108 @@ watch(
   max-height: 0;
   opacity: 0;
 }
-.sandbox-editor {
+.envelope-preview {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 260px;
+}
+.envelope-json-tree {
+  flex: 1 1 auto;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  overflow: auto;
+}
+.envelope-json-tree :deep(.vjs-tree__node) {
+  font-size: 13px;
+}
+.envelope-preview-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.24);
+  background-color: rgba(255, 255, 255, 0.02);
+  padding: 24px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+}
+.conversation-card {
   display: flex;
   flex-direction: column;
 }
-.sandbox-editor :deep(.v-field) {
+.conversation-card__body {
   flex: 1 1 auto;
-  display: flex;
+  min-height: 260px;
 }
-.sandbox-editor :deep(.v-field__field) {
-  flex: 1 1 auto;
-  display: flex;
+.conversation-history {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: rgba(255, 255, 255, 0.04);
 }
-.sandbox-editor :deep(textarea) {
-  flex: 1 1 auto;
-  height: 100%;
-  min-height: 240px;
-  overflow-y: auto !important;
-  resize: none !important;
+.conversation-entry {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 10px;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+.conversation-entry + .conversation-entry {
+  margin-top: 10px;
+}
+.conversation-entry--assistant {
+  background-color: rgba(103, 80, 164, 0.12);
+  border-color: rgba(103, 80, 164, 0.24);
+}
+.conversation-entry--user {
+  background-color: rgba(33, 150, 243, 0.12);
+  border-color: rgba(33, 150, 243, 0.24);
+}
+.conversation-entry--system {
+  border-style: dashed;
+  color: rgba(255, 255, 255, 0.65);
+}
+.conversation-entry--error {
+  border-color: rgba(244, 67, 54, 0.5);
+}
+.conversation-entry__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.conversation-entry__role {
+  font-weight: 600;
+}
+.conversation-entry__timestamp {
+  color: rgba(255, 255, 255, 0.55);
+}
+.conversation-entry__content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+.conversation-placeholder {
+  border: 1px dashed rgba(255, 255, 255, 0.24);
+  border-radius: 6px;
+  padding: 16px;
+}
+.conversation-delta {
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+  padding-left: 12px;
+}
+.conversation-warnings {
+  display: flex;
+  flex-direction: column;
+}
+.conversation-input :deep(textarea) {
+  font-size: 14px;
 }
 .registry-overview-list {
   background-color: transparent;

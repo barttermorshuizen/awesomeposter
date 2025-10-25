@@ -1,5 +1,5 @@
 import { resolve } from 'pathe'
-import { createError } from 'h3'
+import { createError, getHeader, setHeader } from 'h3'
 
 const FLAG_NAME = 'USE_FLEX_DEV_SANDBOX'
 const DEFAULT_TEMPLATE_DIR = 'tmp'
@@ -26,4 +26,15 @@ export function resolveFlexTemplateDir(): string {
   const configured = process.env.FLEX_SANDBOX_TEMPLATE_DIR
   const base = configured && configured.trim().length > 0 ? configured.trim() : DEFAULT_TEMPLATE_DIR
   return resolve(process.cwd(), base)
+}
+
+export function applySandboxCors(event: Parameters<typeof setHeader>[0]): void {
+  const origin = getHeader(event, 'origin')
+  if (origin) {
+    setHeader(event, 'Vary', 'Origin')
+    setHeader(event, 'Access-Control-Allow-Origin', origin)
+    setHeader(event, 'Access-Control-Allow-Credentials', 'true')
+  }
+  setHeader(event, 'Access-Control-Allow-Headers', 'accept,authorization,content-type')
+  setHeader(event, 'Access-Control-Allow-Methods', 'POST,OPTIONS')
 }

@@ -182,6 +182,29 @@ export const ContextBundleSchema = z.object({
 })
 export type ContextBundle = z.infer<typeof ContextBundleSchema>
 
+export const FlexEnvelopeConversationMessageSchema = z.object({
+  id: z.string().min(1),
+  role: z.enum(['assistant', 'user', 'system']),
+  content: z.string(),
+  timestamp: z.string().min(1)
+})
+export type FlexEnvelopeConversationMessage = z.infer<typeof FlexEnvelopeConversationMessageSchema>
+
+export const FlexEnvelopeConversationDeltaSchema = z.object({
+  summary: z.array(z.string()).default([]),
+  missingFields: z.array(z.string()).default([]),
+  warnings: z.array(z.string()).default([]),
+  envelope: TaskEnvelopeSchema
+})
+export type FlexEnvelopeConversationDelta = z.infer<typeof FlexEnvelopeConversationDeltaSchema>
+
+export const FlexEnvelopeConversationResponseSchema = z.object({
+  conversationId: z.string().min(1),
+  messages: z.array(FlexEnvelopeConversationMessageSchema).default([]),
+  delta: FlexEnvelopeConversationDeltaSchema.optional()
+})
+export type FlexEnvelopeConversationResponse = z.infer<typeof FlexEnvelopeConversationResponseSchema>
+
 /**
  * Core set of event types emitted by the flex orchestrator over SSE.
  */

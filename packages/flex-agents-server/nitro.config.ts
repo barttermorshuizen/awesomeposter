@@ -12,7 +12,7 @@ for (const dir of [repoRoot, currentDir]) {
 }
 
 const rawDefaultModel =
-  process.env.FLEX_OPENAI_DEFAULT_MODEL || process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o'
+  process.env.FLEX_OPENAI_DEFAULT_MODEL || process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || 'gpt-5'
 const RESOLVED_DEFAULT_MODEL = rawDefaultModel.trim()
 const DATABASE_URL = process.env.FLEX_DATABASE_URL || process.env.DATABASE_URL
 const OPENAI_API_KEY = process.env.FLEX_OPENAI_API_KEY || process.env.OPENAI_API_KEY

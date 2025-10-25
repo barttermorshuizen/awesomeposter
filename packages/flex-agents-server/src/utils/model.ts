@@ -4,9 +4,9 @@
  * Precedence:
  *  1) OPENAI_DEFAULT_MODEL (preferred; aligns with @openai/agents-core)
  *  2) OPENAI_MODEL (legacy)
- *  3) 'gpt-4o' fallback
+ *  3) 'gpt-5' fallback
  */
-export const DEFAULT_MODEL_FALLBACK = 'gpt-4o'
+export const DEFAULT_MODEL_FALLBACK = 'gpt-5'
 
 export function getDefaultModelName(): string {
   const m =
