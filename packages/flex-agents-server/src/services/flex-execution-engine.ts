@@ -12,7 +12,8 @@ import type {
   CapabilityContract,
   JsonSchemaShape,
   RuntimePolicy,
-  Action
+  Action,
+  HitlContractSummary
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -1106,11 +1107,17 @@ export class FlexExecutionEngine {
     return plan.nodes[plan.nodes.length - 1]
   }
 
-  private buildHitlPayload(
+  private buildHitlRequestDetails(
     envelope: TaskEnvelope,
     finalOutput: Record<string, unknown>,
-    overrides?: { question?: string | null; policyId?: string; nodeLabel?: string }
-  ): HitlRequestPayload {
+    context: {
+      question?: string | null
+      policyId?: string
+      nodeLabel?: string
+      plan: FlexPlan
+      node: FlexPlanNode
+    }
+  ): { payload: HitlRequestPayload; operatorPrompt: string; contractSummary?: HitlContractSummary } {
     const variants = Array.isArray((finalOutput as any)?.copyVariants) ? (finalOutput as any).copyVariants : []
     const objective = (envelope.objective || '').trim()
     const summaryLines = [
@@ -1120,17 +1127,17 @@ export class FlexExecutionEngine {
         : 'No structured variants detected.'
     ].filter(Boolean) as string[]
 
-    if (overrides?.policyId) {
-      summaryLines.push(`Runtime policy: ${overrides.policyId}`)
+    if (context.policyId) {
+      summaryLines.push(`Runtime policy: ${context.policyId}`)
     }
-    if (overrides?.nodeLabel) {
-      summaryLines.push(`Triggered by node: ${overrides.nodeLabel}`)
+    if (context.nodeLabel) {
+      summaryLines.push(`Triggered by node: ${context.nodeLabel}`)
     }
 
     const defaultQuestion = 'Review generated flex run output and approve before completing the request.'
-    const question = overrides?.question?.trim() ? overrides.question.trim() : defaultQuestion
+    const question = context.question?.trim() ? context.question.trim() : defaultQuestion
 
-    return {
+    const payload: HitlRequestPayload = {
       question,
       kind: 'approval',
       options: [
@@ -1140,6 +1147,61 @@ export class FlexExecutionEngine {
       allowFreeForm: true,
       urgency: 'normal',
       additionalContext: summaryLines.join(' ')
+    }
+
+    const node = context.node
+    const outputFacets = node.provenance.output?.map((entry) => entry.title) ?? []
+    const inputFacets = node.provenance.input?.map((entry) => entry.title) ?? []
+    const cloneJson = <T>(value: T): T => {
+      if (value == null) return value
+      try {
+        return JSON.parse(JSON.stringify(value)) as T
+      } catch {
+        return value
+      }
+    }
+
+    const contractSummary: HitlContractSummary = {
+      nodeId: node.id,
+      nodeLabel: node.label,
+      capabilityId: node.capabilityId ?? undefined,
+      capabilityLabel: node.capabilityLabel,
+      planVersion: context.plan.version,
+      contract: {
+        ...(node.contracts.input ? { input: cloneJson(node.contracts.input) } : {}),
+        output: cloneJson(node.contracts.output)
+      },
+      facets:
+        inputFacets.length || outputFacets.length
+          ? {
+              ...(inputFacets.length ? { input: cloneJson(node.provenance.input) } : {}),
+              ...(outputFacets.length ? { output: cloneJson(node.provenance.output) } : {})
+            }
+          : undefined
+    }
+
+    const promptLines: string[] = []
+    promptLines.push(
+      `Plan v${context.plan.version}: pause on "${node.label}" (${node.capabilityLabel}${node.capabilityId ? ` :: ${node.capabilityId}` : ''}).`
+    )
+    if (outputFacets.length) {
+      promptLines.push(`Ensure outputs satisfy: ${outputFacets.join(', ')}.`)
+    }
+    if (inputFacets.length) {
+      promptLines.push(`Inputs considered: ${inputFacets.join(', ')}.`)
+    }
+    if (context.policyId) {
+      promptLines.push(`Policy trigger: ${context.policyId}.`)
+    }
+    promptLines.push(`Recommended action: ${question}`)
+    if (summaryLines.length) {
+      promptLines.push(summaryLines.join(' '))
+    }
+
+    return {
+      payload,
+      operatorPrompt: promptLines.join('\n'),
+      contractSummary
     }
   }
 
@@ -1576,12 +1638,18 @@ export class FlexExecutionEngine {
         snapshot: hitl.state
       },
       async () => {
-        const payload = this.buildHitlPayload(envelope, finalOutput, {
+        const hitlDetails = this.buildHitlRequestDetails(envelope, finalOutput, {
           question: rationale,
           policyId,
-          nodeLabel: targetNode.label
+          nodeLabel: targetNode.label,
+          plan,
+          node: targetNode
         })
-        const result = await hitl.service.raiseRequest(payload)
+        const result = await hitl.service.raiseRequest(hitlDetails.payload, {
+          pendingNodeId: targetNode.id,
+          operatorPrompt: hitlDetails.operatorPrompt,
+          contractSummary: hitlDetails.contractSummary
+        })
         if (result.status === 'denied') {
           throw new Error(result.reason || 'HITL request denied')
         }

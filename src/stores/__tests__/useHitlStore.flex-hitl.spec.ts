@@ -11,6 +11,27 @@ const basePayload = {
   urgency: 'normal' as const
 }
 
+const baseContractSummary = {
+  nodeId: 'node_alpha',
+  capabilityLabel: 'Strategy Manager',
+  contract: {
+    output: {
+      mode: 'freeform' as const,
+      instructions: 'Confirm approval outcome.'
+    }
+  },
+  facets: {
+    output: [
+      {
+        facet: 'copyVariants',
+        title: 'Copy Variants',
+        direction: 'output' as const,
+        pointer: '/copyVariants'
+      }
+    ]
+  }
+}
+
 describe('useHitlStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -27,7 +48,10 @@ describe('useHitlStore', () => {
       payload: basePayload,
       originAgent: 'strategy',
       receivedAt,
-      threadId: 'thread-123'
+      threadId: 'thread-123',
+      pendingNodeId: 'node_alpha',
+      operatorPrompt: 'Initial prompt',
+      contractSummary: baseContractSummary
     })
 
     const fetchMock = vi.spyOn(global, 'fetch' as any).mockResolvedValue({
@@ -48,7 +72,35 @@ describe('useHitlStore', () => {
                 ...basePayload,
                 question: 'Updated question'
               },
-              originAgent: 'qa'
+              originAgent: 'qa',
+              pendingNodeId: 'node_pending',
+              operatorPrompt: 'Review node details before approving.',
+              contractSummary: {
+                nodeId: 'node_pending',
+                capabilityLabel: 'Quality Assurance',
+                planVersion: 3,
+                contract: {
+                  output: {
+                    mode: 'json_schema',
+                    schema: {
+                      type: 'object',
+                      properties: {
+                        qaFindings: { type: 'array' }
+                      }
+                    }
+                  }
+                },
+                facets: {
+                  output: [
+                    {
+                      facet: 'qaFindings',
+                      title: 'QA Findings',
+                      direction: 'output',
+                      pointer: '/qaFindings'
+                    }
+                  ]
+                }
+              }
             }
           }
         ]
@@ -69,6 +121,10 @@ describe('useHitlStore', () => {
     expect(store.activeRequest?.createdAt?.toISOString()).toBe('2025-01-01T01:00:00.000Z')
     expect(store.activeRequest?.originAgent).toBe('qa')
     expect(store.activeRequest?.question).toBe('Updated question')
+    expect(store.activeRequest?.pendingNodeId).toBe('node_pending')
+    expect(store.activeRequest?.operatorPrompt).toBe('Review node details before approving.')
+    expect(store.activeRequest?.contractSummary?.nodeId).toBe('node_pending')
+    expect(store.activeRequest?.contractSummary?.planVersion).toBe(3)
   })
 
   it('submits response payload to resume endpoint', async () => {
@@ -85,7 +141,10 @@ describe('useHitlStore', () => {
       },
       originAgent: 'strategy',
       receivedAt: new Date('2025-02-01T00:00:00Z'),
-      threadId: 'thread-456'
+      threadId: 'thread-456',
+      pendingNodeId: null,
+      operatorPrompt: null,
+      contractSummary: null
     })
     pendingRun.value.runId = 'run_xyz'
 

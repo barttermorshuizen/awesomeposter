@@ -859,6 +859,7 @@ Once validated, the plan graph is the single source of truth for control flow.
 - Maintain existing HITL tables (`hitl_requests`, `hitl_events`) while persisting plan checkpoints to `flex_plan_snapshots` so every pause captures outstanding nodes, facet snapshots, and pending node IDs.
 - When a HITL request fires, the execution engine writes a transactional snapshot pairing the paused node’s bundle, compiled input/output schemas, and provenance metadata with the current facet state so operators have full context.
 - Rehydration reconstructs the `PlanGraph` from the latest `flex_plan_snapshots` row plus persisted outputs. Pending node IDs and stored facet provenance restore execution deterministically before policy refresh and resume.
+- HITL request rows now persist `pending_node_id`, `contract_summary_json`, and `operator_prompt`, allowing the coordinator to replay the exact node contract (facets + schema expectations) and the orchestrator-authored guidance string without recomputing metadata during resume.
 
 ## 9. Data Model & Persistence
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`).
@@ -893,6 +894,7 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
 - `policy_triggered`: emitted when runtime policies fire (including during resume); payload includes canonical `actionDetails` (type, metadata, nested follow-ups) alongside legacy fields so clients can identify the requested behaviour.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
+-  `hitl_request` payloads include `pendingNodeId`, `contractSummary` (compiled facets + contracts), and `operatorPrompt` so clients can render enriched approval context. Resume streams emit the same structure until the request resolves.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
 - `complete`: final frame containing `payload.output` that satisfies the caller schema.
 - `log`: informational/debug messages.
@@ -1144,6 +1146,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - The popup constructs `TaskEnvelope`s from existing brief forms, plus any marketing persona defaults resolved by the SPA.
 - SSE frames preserve the current envelope signature (`type`, `id`, `timestamp`, `payload`), so the existing `useHitlStore` wiring continues to parse events; only the event `type` values expand to cover new planner states (`FlexEvent` namespace).
 - Upon HITL prompts, the UI redirects operators to the same approval modal, now carrying the node artifact contract so reviewers see exactly what is pending.
+- The approval modal surfaces the orchestrator-authored operator guidance string and the serialized contract summary (capability label, plan version, facet provenance). Operators can review the pending node contract without additional lookups before approving or rejecting the run.
 
 ## 13. Migration & Rollout Strategy
 - Phase 0: clone repository package, share utilities via `packages/shared`, and stub the new endpoint returning mocked events for UI integration.

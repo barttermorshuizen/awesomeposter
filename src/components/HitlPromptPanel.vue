@@ -29,6 +29,27 @@ const showFreeform = computed(() => {
   return false
 })
 
+const operatorPrompt = computed(() => {
+  const prompt = activeRequest.value?.operatorPrompt
+  if (!prompt) return null
+  const trimmed = prompt.trim()
+  return trimmed.length ? trimmed : null
+})
+
+const contractSummary = computed(() => activeRequest.value?.contractSummary ?? null)
+
+const contractNodeLabel = computed(() => {
+  const summary = contractSummary.value
+  if (!summary) return null
+  if (summary.nodeLabel && summary.nodeLabel !== summary.nodeId) return summary.nodeLabel
+  return summary.nodeId
+})
+
+const contractInputFacets = computed(() => contractSummary.value?.facets?.input?.map((entry) => entry.title) ?? [])
+const contractOutputFacets = computed(() => contractSummary.value?.facets?.output?.map((entry) => entry.title) ?? [])
+const contractOutputMode = computed(() => contractSummary.value?.contract?.output?.mode ?? null)
+const contractInputMode = computed(() => contractSummary.value?.contract?.input?.mode ?? null)
+
 const receivedTimestamp = computed(() => {
   const created = activeRequest.value?.createdAt ?? activeRequest.value?.receivedAt
   return created ? new Intl.DateTimeFormat(undefined, {
@@ -183,6 +204,55 @@ function urgencyColor(urgency: string) {
         <div class="hitl-question">
           <span class="text-subtitle-1">{{ activeRequest.question }}</span>
         </div>
+
+        <v-alert
+          v-if="operatorPrompt"
+          type="info"
+          variant="tonal"
+          border="start"
+          density="comfortable"
+          class="mb-2"
+        >
+          <div class="text-subtitle-2 mb-1">Operator Guidance</div>
+          <div class="text-body-2" style="white-space: pre-wrap;">{{ operatorPrompt }}</div>
+        </v-alert>
+
+        <v-sheet
+          v-if="contractSummary"
+          class="pa-3 rounded border-sm bg-surface-light"
+          border
+          color="surface-variant"
+        >
+          <div class="text-subtitle-2 mb-2">Pending Node Details</div>
+          <div class="text-body-2 mb-1">
+            <strong>Node:</strong>
+            {{ contractNodeLabel ?? contractSummary.nodeId }}
+            <span v-if="contractSummary.capabilityLabel">
+              · {{ contractSummary.capabilityLabel }}
+            </span>
+          </div>
+          <div v-if="activeRequest.pendingNodeId" class="text-body-2 mb-1">
+            <strong>Pending ID:</strong> {{ activeRequest.pendingNodeId }}
+          </div>
+          <div v-if="contractSummary.capabilityId" class="text-body-2 mb-1">
+            <strong>Capability ID:</strong> {{ contractSummary.capabilityId }}
+          </div>
+          <div v-if="contractSummary.planVersion !== undefined" class="text-body-2 mb-1">
+            <strong>Plan version:</strong> {{ contractSummary.planVersion }}
+          </div>
+          <div v-if="contractOutputMode" class="text-body-2 mb-1">
+            <strong>Output contract:</strong> {{ contractOutputMode }}
+          </div>
+          <div v-if="contractInputMode" class="text-body-2 mb-1">
+            <strong>Input contract:</strong> {{ contractInputMode }}
+          </div>
+          <div v-if="contractInputFacets.length" class="text-body-2 mb-1">
+            <strong>Input facets:</strong> {{ contractInputFacets.join(', ') }}
+          </div>
+          <div v-if="contractOutputFacets.length" class="text-body-2">
+            <strong>Output facets:</strong> {{ contractOutputFacets.join(', ') }}
+          </div>
+        </v-sheet>
 
         <v-alert
           v-if="activeRequest.additionalContext"

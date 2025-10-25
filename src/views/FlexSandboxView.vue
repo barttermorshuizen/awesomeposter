@@ -5,11 +5,13 @@ import {
   TaskEnvelopeSchema,
   HitlOriginAgentEnum,
   HitlRequestPayloadSchema,
+  HitlContractSummarySchema,
   type TaskEnvelope,
   type CapabilityRecord,
   type FacetDirection,
   type HitlOriginAgent,
-  type HitlRequestPayload
+  type HitlRequestPayload,
+  type HitlContractSummary
 } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import FlexSandboxPlanInspector from '@/components/FlexSandboxPlanInspector.vue'
@@ -793,7 +795,10 @@ function handleEvent(evt: FlexEventWithId) {
             payload: request.requestPayload,
             originAgent: request.originAgent,
             receivedAt,
-            threadId: threadHint
+            threadId: threadHint,
+            pendingNodeId: request.pendingNodeId ?? null,
+            operatorPrompt: request.operatorPrompt ?? null,
+            contractSummary: request.contractSummary ?? null
           })
           hitlStore.markAwaiting(request.id)
         }
@@ -1096,6 +1101,9 @@ function extractHitlRequest(payload: unknown): {
   originAgent: HitlOriginAgent
   requestPayload: HitlRequestPayload
   createdAt?: string
+  pendingNodeId?: string | null
+  operatorPrompt?: string | null
+  contractSummary?: HitlContractSummary | null
 } | null {
   if (!isRecord(payload)) return null
   const request = payload.request
@@ -1122,11 +1130,29 @@ function extractHitlRequest(payload: unknown): {
       : createdRaw instanceof Date
       ? createdRaw.toISOString()
       : undefined
+  const pendingNodeId =
+    typeof request.pendingNodeId === 'string' && request.pendingNodeId.trim().length
+      ? request.pendingNodeId
+      : null
+  const operatorPrompt =
+    typeof request.operatorPrompt === 'string' && request.operatorPrompt.trim().length
+      ? request.operatorPrompt
+      : null
+  let contractSummary: HitlContractSummary | null = null
+  if (request.contractSummary) {
+    const contractResult = HitlContractSummarySchema.safeParse(request.contractSummary)
+    if (contractResult.success) {
+      contractSummary = contractResult.data
+    }
+  }
   return {
     id,
     originAgent,
     requestPayload: payloadResult.data,
-    createdAt
+    createdAt,
+    pendingNodeId,
+    operatorPrompt,
+    contractSummary
   }
 }
 

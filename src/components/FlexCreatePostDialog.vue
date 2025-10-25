@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { TaskEnvelope, HitlRequestPayload, TaskPolicies } from '@awesomeposter/shared'
-import { parseTaskPolicies } from '@awesomeposter/shared'
+import type { TaskEnvelope, HitlRequestPayload, TaskPolicies, HitlContractSummary } from '@awesomeposter/shared'
+import { parseTaskPolicies, HitlContractSummarySchema } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import HitlPromptPanel from './HitlPromptPanel.vue'
 import { useHitlStore } from '@/stores/hitl'
@@ -67,6 +67,9 @@ type HitlRequestEventPayload = {
     originAgent: 'strategy' | 'generation' | 'qa'
     payload: HitlRequestPayload
     createdAt?: string
+    pendingNodeId?: string | null
+    operatorPrompt?: string | null
+    contractSummary?: HitlContractSummary | null
   }
 }
 
@@ -427,12 +430,25 @@ const parseHitlRequestPayload = (payload: unknown): HitlRequestEventPayload | nu
     ...(additionalContext ? { additionalContext } : {})
   }
 
+  const pendingNodeId = toStringOrUndefined(requestValue.pendingNodeId) ?? null
+  const operatorPrompt = toStringOrUndefined(requestValue.operatorPrompt) ?? null
+  let contractSummary: HitlContractSummary | null = null
+  if (requestValue.contractSummary) {
+    const summaryResult = HitlContractSummarySchema.safeParse(requestValue.contractSummary)
+    if (summaryResult.success) {
+      contractSummary = summaryResult.data
+    }
+  }
+
   return {
     request: {
       id,
       originAgent,
       payload: parsedPayload,
-      createdAt: toStringOrUndefined(requestValue.createdAt)
+      createdAt: toStringOrUndefined(requestValue.createdAt),
+      pendingNodeId,
+      operatorPrompt,
+      contractSummary
     }
   }
 }
@@ -506,7 +522,10 @@ function handleEvent(evt: FlexEventWithId) {
           payload: request.payload,
           originAgent: request.originAgent,
           receivedAt: request.createdAt ? new Date(request.createdAt) : new Date(),
-          threadId: threadForRequest
+          threadId: threadForRequest,
+          pendingNodeId: request.pendingNodeId ?? null,
+          operatorPrompt: request.operatorPrompt ?? null,
+          contractSummary: request.contractSummary ?? null
         })
         hitlStore.markAwaiting(request.id)
       }

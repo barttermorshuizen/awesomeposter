@@ -318,12 +318,16 @@ export class FlexRunCoordinator {
         timestamp: new Date().toISOString(),
         runId,
         nodeId: record.stepId ?? undefined,
+        facetProvenance: record.contractSummary?.facets,
         payload: {
           request: {
             id: record.id,
             originAgent: record.originAgent,
             payload: record.payload,
-            createdAt: record.createdAt
+            createdAt: record.createdAt,
+            pendingNodeId: record.pendingNodeId ?? null,
+            operatorPrompt: record.operatorPrompt ?? null,
+            contractSummary: record.contractSummary ?? null
           }
         }
       })
@@ -588,12 +592,13 @@ export class FlexRunCoordinator {
 
       let finalOutputSeed =
         Object.keys(contextProjection).length ? contextProjection : persistedOutput
+      let executionMode: 'resume' | 'execute' = 'resume'
       if (!finalOutputSeed || Object.keys(finalOutputSeed).length === 0) {
-        throw new Error('No stored output available for flex HITL resume')
+        executionMode = 'execute'
+        finalOutputSeed = {}
       }
 
       let finalOutput: Record<string, unknown> | null = null
-      let executionMode: 'resume' | 'execute' = 'resume'
 
       try {
         while (!finalOutput) {

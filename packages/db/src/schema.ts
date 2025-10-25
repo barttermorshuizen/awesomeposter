@@ -433,9 +433,14 @@ export const hitlRequests = pgTable('hitl_requests', {
   briefId: uuid('brief_id').references(() => briefs.id, { onDelete: 'set null' }),
   threadId: text('thread_id'),
   stepId: text('step_id'),
+  pendingNodeId: text('pending_node_id'),
   originAgent: text('origin_agent').$type<'strategy' | 'generation' | 'qa'>(),
   status: text('status').$type<'pending' | 'resolved' | 'denied'>().default('pending'),
   payloadJson: jsonb('payload_json').$type<Record<string, unknown>>().notNull(),
+  contractSummaryJson: jsonb('contract_summary_json')
+    .$type<Record<string, unknown> | null>()
+    .default(null),
+  operatorPrompt: text('operator_prompt'),
   denialReason: text('denial_reason'),
   metricsJson: jsonb('metrics_json').$type<Record<string, unknown>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),

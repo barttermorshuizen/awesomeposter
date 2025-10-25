@@ -14,6 +14,7 @@ GET /api/hitl/pending
 Authorization: Bearer <API_KEY>
 ```
 Response includes `runId`, `threadId`, `pendingRequestId`, and execution context. Use this to confirm the target run before taking action.
+- Each pending request exposes `operatorPrompt`, `pendingNodeId`, and a serialized `contractSummary` (facets + capability contract). Surface these to operators so they can review the orchestrator-provided guidance and the exact node expectations before resuming or cancelling the run.
 
 ## Resume a paused run
 ```http

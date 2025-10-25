@@ -6,7 +6,8 @@ import {
   HitlResponseInput,
   HitlResponseInputSchema,
   HitlOriginAgent,
-  HitlStateEnvelopeSchema
+  HitlStateEnvelopeSchema,
+  HitlRequestMetadata
 } from '@awesomeposter/shared'
 import type { HitlStateEnvelope } from '@awesomeposter/shared'
 import { getHitlRepository } from './hitl-repository'
@@ -35,7 +36,7 @@ export class HitlService {
     await this.repo.setRunState(runId, state)
   }
 
-  async raiseRequest(rawPayload: unknown): Promise<HitlRequestResult> {
+  async raiseRequest(rawPayload: unknown, metadata?: HitlRequestMetadata): Promise<HitlRequestResult> {
     const ctx = getHitlContext()
     if (!ctx) {
       throw new Error('HITL context unavailable for request')
@@ -52,6 +53,7 @@ export class HitlService {
     const reasonTooMany = 'Too many HITL requests'
 
     const now = new Date()
+    const pendingNodeId = metadata?.pendingNodeId ?? ctx.stepId
     const request: HitlRequestRecord = {
       id: genCorrelationId(),
       runId: ctx.runId,
@@ -63,7 +65,10 @@ export class HitlService {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
-      metrics: { attempt: currentAccepted + 1 }
+      metrics: { attempt: currentAccepted + 1 },
+      pendingNodeId: pendingNodeId ?? undefined,
+      operatorPrompt: metadata?.operatorPrompt ?? undefined,
+      contractSummary: metadata?.contractSummary
     }
 
     if (currentAccepted >= limitMax) {

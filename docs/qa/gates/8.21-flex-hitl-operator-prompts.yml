@@ -1,0 +1,38 @@
+schema: 1
+story: '8.21'
+story_title: 'Story 8.21: Flex HITL Operator Prompt Payloads'
+gate: PASS
+status_reason: 'Flex HITL requests persist operator guidance and contract summaries end-to-end; SSE/pending APIs surface metadata and resume flows rehydrate successfully. No blocking gaps identified.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-03-27T00:00:00Z'
+
+top_issues: []
+waiver:
+  active: false
+
+quality_score: 100
+
+evidence:
+  tests_reviewed: 5
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new external integrations; metadata stays inside existing HITL storage.'
+  performance:
+    status: PASS
+    notes: 'Adds only JSON columns and cloned payloads; negligible overhead.'
+  reliability:
+    status: PASS
+    notes: 'Persistence + resume tests cover approval/rejection/stale snapshots.'
+  maintainability:
+    status: PASS
+    notes: 'Code follows shared repository patterns; documentation updated for operator workflows.'
+
+recommendations:
+  immediate: []
+  future: []

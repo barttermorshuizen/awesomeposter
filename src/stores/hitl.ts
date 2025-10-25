@@ -1,6 +1,11 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { HitlOriginAgent, HitlRequestPayload, HitlResponseType } from '@awesomeposter/shared'
+import type {
+  HitlContractSummary,
+  HitlOriginAgent,
+  HitlRequestPayload,
+  HitlResponseType
+} from '@awesomeposter/shared'
 
 type SubmissionState = 'idle' | 'submitting' | 'success' | 'error'
 
@@ -22,6 +27,9 @@ export interface HitlRequestView {
   receivedAt: Date
   createdAt?: Date
   status: 'pending' | 'submitted'
+  pendingNodeId?: string | null
+  operatorPrompt?: string | null
+  contractSummary?: HitlContractSummary | null
 }
 
 type OrchestratorStatus =
@@ -144,6 +152,9 @@ export const useHitlStore = defineStore('hitl', () => {
     originAgent: HitlOriginAgent
     receivedAt?: Date
     threadId?: string | null
+    pendingNodeId?: string | null
+    operatorPrompt?: string | null
+    contractSummary?: HitlContractSummary | null
   }) {
     const receivedAt = input.receivedAt ?? new Date()
     pendingRun.value.pendingRequestId = input.requestId
@@ -168,7 +179,10 @@ export const useHitlStore = defineStore('hitl', () => {
       urgency,
       additionalContext,
       receivedAt,
-      status: 'pending'
+      status: 'pending',
+      pendingNodeId: input.pendingNodeId ?? null,
+      operatorPrompt: input.operatorPrompt ?? null,
+      contractSummary: input.contractSummary ?? null
     }
   }
 
@@ -231,6 +245,9 @@ export const useHitlStore = defineStore('hitl', () => {
           createdAt?: string
           payload?: HitlRequestPayload
           originAgent?: HitlOriginAgent
+          pendingNodeId?: string | null
+          operatorPrompt?: string | null
+          contractSummary?: HitlContractSummary | null
         }
       }> = Array.isArray(payload?.runs) ? payload.runs : []
 
@@ -295,7 +312,10 @@ export const useHitlStore = defineStore('hitl', () => {
             additionalContext: payload?.additionalContext,
             receivedAt: createdAtValue ?? new Date(),
             createdAt: createdAtValue,
-            status: preserveSubmission ? 'submitted' : 'pending'
+            status: preserveSubmission ? 'submitted' : 'pending',
+            pendingNodeId: match.pendingRequest.pendingNodeId ?? existing?.pendingNodeId ?? null,
+            operatorPrompt: match.pendingRequest.operatorPrompt ?? existing?.operatorPrompt ?? null,
+            contractSummary: match.pendingRequest.contractSummary ?? existing?.contractSummary ?? null
           }
         } else {
           if (createdAtValue) {
@@ -311,6 +331,15 @@ export const useHitlStore = defineStore('hitl', () => {
           }
           if (match.pendingRequest.originAgent) {
             existing.originAgent = match.pendingRequest.originAgent
+          }
+          if (match.pendingRequest.pendingNodeId !== undefined) {
+            existing.pendingNodeId = match.pendingRequest.pendingNodeId ?? null
+          }
+          if (match.pendingRequest.operatorPrompt !== undefined) {
+            existing.operatorPrompt = match.pendingRequest.operatorPrompt ?? null
+          }
+          if (match.pendingRequest.contractSummary !== undefined) {
+            existing.contractSummary = match.pendingRequest.contractSummary ?? null
           }
           existing.status = preserveSubmission ? 'submitted' : 'pending'
         }

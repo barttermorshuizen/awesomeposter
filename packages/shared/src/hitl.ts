@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { PlanStepStatusEnum } from './agent-run.js'
+import { FlexFacetProvenanceSchema, JsonSchemaContractSchema, OutputContractSchema } from './flex/types.js'
 
 export const HitlUrgencyEnum = z.enum(['low', 'normal', 'high'])
 export type HitlUrgency = z.infer<typeof HitlUrgencyEnum>
@@ -47,6 +48,34 @@ export const HitlResponseSchema = z.object({
 })
 export type HitlResponse = z.infer<typeof HitlResponseSchema>
 
+export const HitlContractSummarySchema = z.object({
+  nodeId: z.string(),
+  nodeLabel: z.string().optional(),
+  capabilityId: z.string().optional(),
+  capabilityLabel: z.string().optional(),
+  planVersion: z.number().int().nonnegative().optional(),
+  contract: z
+    .object({
+      input: JsonSchemaContractSchema.optional(),
+      output: OutputContractSchema.optional()
+    })
+    .optional(),
+  facets: z
+    .object({
+      input: z.array(FlexFacetProvenanceSchema).optional(),
+      output: z.array(FlexFacetProvenanceSchema).optional()
+    })
+    .optional()
+})
+export type HitlContractSummary = z.infer<typeof HitlContractSummarySchema>
+
+export const HitlRequestMetadataSchema = z.object({
+  pendingNodeId: z.string().optional(),
+  operatorPrompt: z.string().optional(),
+  contractSummary: HitlContractSummarySchema.optional()
+})
+export type HitlRequestMetadata = z.infer<typeof HitlRequestMetadataSchema>
+
 export const HitlRequestRecordSchema = z.object({
   id: z.string(),
   runId: z.string(),
@@ -59,6 +88,9 @@ export const HitlRequestRecordSchema = z.object({
   denialReason: z.string().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
+  pendingNodeId: z.string().optional(),
+  operatorPrompt: z.string().optional(),
+  contractSummary: HitlContractSummarySchema.optional(),
   metrics: z
     .object({
       attempt: z.number().int().nonnegative().optional()

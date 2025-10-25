@@ -1114,7 +1114,14 @@ describe('FlexRunCoordinator', () => {
     const hitlProvenanceCount =
       (hitlEvent?.facetProvenance?.input?.length ?? 0) + (hitlEvent?.facetProvenance?.output?.length ?? 0)
     expect(hitlProvenanceCount).toBeGreaterThan(0)
-    expect((hitlEvent?.payload as any)?.request?.id).toMatch(/^req_/)
+    const hitlRequestPayload = (hitlEvent?.payload as any)?.request
+    expect(hitlRequestPayload?.id).toMatch(/^req_/)
+    expect(typeof hitlRequestPayload?.operatorPrompt).toBe('string')
+    expect(hitlRequestPayload?.operatorPrompt?.length).toBeGreaterThan(0)
+    expect(typeof hitlRequestPayload?.pendingNodeId).toBe('string')
+    expect(hitlRequestPayload?.contractSummary?.nodeId).toBe(hitlRequestPayload?.pendingNodeId)
+    expect(hitlRequestPayload?.contractSummary?.contract?.output).toBeTruthy()
+    expect(Array.isArray(hitlRequestPayload?.contractSummary?.facets?.output)).toBe(true)
     expect(persistence.statuses.get(result.runId)).toBe('awaiting_hitl')
     const awaitingSnapshot = persistence.snapshots.get(result.runId)?.snapshot
     expect(awaitingSnapshot).toBeDefined()

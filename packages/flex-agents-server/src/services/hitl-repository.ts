@@ -51,8 +51,11 @@ export class DatabaseHitlRepository implements HitlRepository {
         threadId: request.threadId ?? null,
         stepId: request.stepId ?? null,
         originAgent: request.originAgent,
+        pendingNodeId: request.pendingNodeId ?? null,
         status: request.status,
         payloadJson: clone(request.payload),
+        contractSummaryJson: request.contractSummary ? clone(request.contractSummary) : null,
+        operatorPrompt: request.operatorPrompt ?? null,
         denialReason: request.denialReason ?? null,
         metricsJson: request.metrics ? clone(request.metrics) : {},
         createdAt: request.createdAt,
@@ -63,6 +66,9 @@ export class DatabaseHitlRepository implements HitlRepository {
         set: {
           status: request.status,
           payloadJson: clone(request.payload),
+          contractSummaryJson: request.contractSummary ? clone(request.contractSummary) : null,
+          operatorPrompt: request.operatorPrompt ?? null,
+          pendingNodeId: request.pendingNodeId ?? null,
           denialReason: request.denialReason ?? null,
           metricsJson: request.metrics ? clone(request.metrics) : {},
           updatedAt: request.updatedAt
@@ -198,6 +204,11 @@ export class DatabaseHitlRepository implements HitlRepository {
       denialReason: row.denialReason ?? undefined,
       createdAt: new Date(row.createdAt),
       updatedAt: new Date(row.updatedAt),
+      pendingNodeId: row.pendingNodeId ?? undefined,
+      operatorPrompt: row.operatorPrompt ?? undefined,
+      contractSummary: row.contractSummaryJson
+        ? ((clone(row.contractSummaryJson) ?? null) as HitlRequestRecord['contractSummary'])
+        : undefined,
       metrics: metrics && Object.keys(metrics).length > 0 ? metrics : undefined
     }
   }

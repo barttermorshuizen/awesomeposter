@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import type { AgentRunRequest, AgentEvent, Asset, FinalBundle, FinalQuality } from '@awesomeposter/shared'
+import type {
+  AgentRunRequest,
+  AgentEvent,
+  Asset,
+  FinalBundle,
+  FinalQuality,
+  HitlContractSummary
+} from '@awesomeposter/shared'
+import { HitlRequestPayloadSchema, HitlContractSummarySchema } from '@awesomeposter/shared'
 import { postEventStream, type AgentEventWithId } from '@/lib/agent-sse'
 import KnobSettingsDisplay from './KnobSettingsDisplay.vue'
 import QualityReportDisplay from './QualityReportDisplay.vue'
@@ -381,15 +389,34 @@ async function startRun() {
             if (evt.message === 'hitl_request' && evt.data) {
               const data = evt.data as Record<string, unknown>
               const requestId = typeof data?.requestId === 'string' ? data.requestId : undefined
-              const payload = data?.payload as any
+              const payload = data?.payload as unknown
               const originAgent = data?.originAgent as any
-              if (requestId && payload && originAgent) {
+              const payloadResult = HitlRequestPayloadSchema.safeParse(payload)
+              const pendingNodeId =
+                typeof data?.pendingNodeId === 'string' && data.pendingNodeId.trim().length
+                  ? data.pendingNodeId
+                  : null
+              const operatorPrompt =
+                typeof data?.operatorPrompt === 'string' && data.operatorPrompt.trim().length
+                  ? data.operatorPrompt
+                  : null
+              let contractSummary: HitlContractSummary | null = null
+              if (data?.contractSummary) {
+                const summaryResult = HitlContractSummarySchema.safeParse(data.contractSummary)
+                if (summaryResult.success) {
+                  contractSummary = summaryResult.data
+                }
+              }
+              if (requestId && payloadResult.success && originAgent) {
                 hitlStore.startTrackingRequest({
                   requestId,
-                  payload,
+                  payload: payloadResult.data,
                   originAgent,
                   receivedAt: new Date(),
-                  threadId: runThreadId.value ?? pendingRun.value.threadId ?? null
+                  threadId: runThreadId.value ?? pendingRun.value.threadId ?? null,
+                  pendingNodeId,
+                  operatorPrompt,
+                  contractSummary
                 })
                 void hitlStore.hydrateFromPending()
                 recoveryNotice.value = 'HITL response required to continue.'

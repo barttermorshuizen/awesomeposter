@@ -76,4 +76,62 @@ describe('HitlService', () => {
     expect(denied).toHaveLength(1)
     expect(state.deniedCount).toBe(1)
   })
+
+  it('persists pending node metadata and operator guidance on HITL requests', async () => {
+    const service = getHitlService()
+    const runId = 'run_hitl_metadata'
+    let snapshot = await service.loadRunState(runId)
+    const metadata = {
+      pendingNodeId: 'node_42',
+      operatorPrompt: 'Review node_42 output before resuming.',
+      contractSummary: {
+        nodeId: 'node_42',
+        capabilityLabel: 'Strategy Manager',
+        planVersion: 7,
+        contract: {
+          output: {
+            mode: 'freeform',
+            instructions: 'Confirm the generated brief is complete.'
+          }
+        },
+        facets: {
+          output: [
+            {
+              facet: 'writerBrief',
+              title: 'Writer Brief',
+              direction: 'output',
+              pointer: '/writerBrief'
+            }
+          ]
+        }
+      }
+    }
+
+    await withHitlContext(
+      {
+        runId,
+        threadId: 'thread-hitl',
+        stepId: 'strategy_1',
+        capabilityId: 'strategy',
+        hitlService: service,
+        limit: { current: 0, max: 5 },
+        onRequest: () => {},
+        onDenied: () => {},
+        snapshot
+      },
+      async () => {
+        await service.raiseRequest({ ...basePayload }, metadata)
+      }
+    )
+
+    const state = await service.loadRunState(runId)
+    expect(state.requests).toHaveLength(1)
+    const [record] = state.requests
+    expect(record.pendingNodeId).toBe('node_42')
+    expect(record.operatorPrompt).toBe('Review node_42 output before resuming.')
+    expect(record.contractSummary?.nodeId).toBe('node_42')
+    expect(record.contractSummary?.planVersion).toBe(7)
+    expect(record.contractSummary?.contract?.output?.mode).toBe('freeform')
+    expect(record.contractSummary?.facets?.output?.[0]?.facet).toBe('writerBrief')
+  })
 })
