@@ -4,8 +4,10 @@ import { storeToRefs } from 'pinia'
 import type { TaskEnvelope, HitlRequestPayload, TaskPolicies, HitlContractSummary } from '@awesomeposter/shared'
 import { parseTaskPolicies, HitlContractSummarySchema } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
+import FlexTaskPanel from '@/components/flex-tasks/FlexTaskPanel.vue'
 import HitlPromptPanel from './HitlPromptPanel.vue'
 import { useHitlStore } from '@/stores/hitl'
+import { useFlexTasksStore } from '@/stores/flexTasks'
 
 type BriefInput = {
   id: string
@@ -33,6 +35,15 @@ const isOpen = computed({
   set: (v: boolean) => emit('update:modelValue', v)
 })
 
+watch(
+  () => isOpen.value,
+  (open) => {
+    if (open) {
+      void flexTasksStore.hydrateFromBacklog({ syncLegacyHitl: false })
+    }
+  }
+)
+
 const FLEX_BASE_URL =
   import.meta.env.VITE_FLEX_AGENTS_BASE_URL ||
   import.meta.env.VITE_AGENTS_BASE_URL ||
@@ -54,6 +65,9 @@ const runId = ref<string | null>(null)
 
 const hitlStore = useHitlStore()
 const { pendingRun, hasActiveRequest } = storeToRefs(hitlStore)
+
+const flexTasksStore = useFlexTasksStore()
+const { hasPendingTasks: hasFlexTasks, loading: flexTasksLoading } = storeToRefs(flexTasksStore)
 
 type EnvelopeContext = {
   profile: Record<string, unknown> | null
@@ -480,6 +494,7 @@ function handleEvent(evt: FlexEventWithId) {
         hitlStore.setBriefId(props.brief.id)
       }
       void hitlStore.hydrateFromPending({ threadId: thread, briefId: props.brief?.id ?? null, force: false })
+      void flexTasksStore.hydrateFromBacklog({ syncLegacyHitl: false })
       status.value = 'running'
       break
     }
@@ -500,7 +515,16 @@ function handleEvent(evt: FlexEventWithId) {
       }
       break
     }
+    case 'node_start': {
+      flexTasksStore.handleNodeStart(evt)
+      break
+    }
     case 'node_complete': {
+      flexTasksStore.handleNodeComplete(evt)
+      break
+    }
+    case 'node_error': {
+      flexTasksStore.handleNodeError(evt)
       break
     }
     case 'validation_error': {
@@ -618,6 +642,11 @@ function close() {
             </v-col>
           </v-row>
         </div>
+
+        <FlexTaskPanel
+          v-if="hasFlexTasks || flexTasksLoading"
+          class="mb-6"
+        />
 
         <HitlPromptPanel v-if="showHitlPanel" class="mb-6" @resume="handleHitlResume" />
 

@@ -879,9 +879,8 @@ Once validated, the plan graph is the single source of truth for control flow.
 ## 10. API Surface (Initial)
 - `POST /api/v1/flex/run.stream`: primary SSE entry point; accepts `TaskEnvelope`, streams `FlexEvent` frames, and enforces output schema validation.
 - `POST /api/v1/flex/run.resume`: resumes paused runs after HITL resolution; accepts the run ID and operator payload.
-- `GET /api/v1/flex/tasks`: lists pending flex human assignments with filter support (`assignedTo`, `status`, `role`).
+- `GET /api/v1/flex/tasks`: lists pending flex human assignments with filter support (`capabilityId`, `status`).
 - `POST /api/v1/flex/tasks/:taskId/decline`: records a structured decline for a flex task, ending the run according to policy.
-- `POST /api/v1/flex/tasks/:taskId/reassign`: updates assignment metadata (for example new assignee, due date) without closing the task.
 - `POST /api/v1/flex/hitl/resolve`: records operator decisions that originate from the SPA; reuses existing auth model.
 - `POST /api/v1/flex/capabilities/register`: agents call this on boot to advertise or refresh their `CapabilityRegistration`; orchestrator updates the registry and acknowledges health status.
 - `GET /api/v1/flex/runs/:id`: debugging endpoint returning persisted envelope, plan graph, and outputs (auth-gated).
@@ -1235,12 +1234,12 @@ interface ClarificationEntry {
 | `qaFindings` | Score table/checklist | QA |
 
 ### 15.5 Notification and Assignment Model
-- `node_start` events for human-executed nodes include assignment metadata such as `assignedTo`, `role`, and `dueAt` so downstream tooling can route work.
+- `node_start` events for human-executed nodes include capability metadata (`capabilityId`, `kind`, `inputFacets`, `outputFacets`, `rationale`) plus optional `dueAt` hints so downstream tooling can route work using information already present in the plan graph.
 - The SPA or a notification service subscribes to these events and surfaces tasks via in-app queues, email, or chat integrations.
-- Operators query their backlog with `GET /api/v1/flex/tasks?assignedTo=me` (or equivalent filters) and launch the facet-driven task surface to work the node.
+- Operators query their backlog with `GET /api/v1/flex/tasks?capabilityId=HumanAgent.clarifyBrief` (or status-only filters) and launch the facet-driven task surface to work the node.
 - Once structured output is submitted, the orchestrator validates it, marks the node resolved, and the plan continues.
-- Declines call `POST /api/v1/flex/tasks/:taskId/decline` with structured reason codes, triggering policy-driven failure paths; reassignments use `POST /api/v1/flex/tasks/:taskId/reassign` to update assignee metadata without altering node contracts.
-- This approach adds traceability and role-based routing without altering the orchestrator’s core execution loop.
+- Declines call `POST /api/v1/flex/tasks/:taskId/decline` with structured reason codes, triggering policy-driven failure paths without altering node contracts or assignment metadata.
+- This approach adds traceability and capability-aligned routing without altering the orchestrator’s core execution loop.
 
 > **Endpoint Boundary:** `/api/v1/flex/tasks` serves the human work queue. Legacy `/api/hitl/*` endpoints remain reserved for policy approvals/declines; if compatibility is required, they may proxy into the flex task APIs without exposing HITL semantics to routine human work.
 
@@ -1270,7 +1269,7 @@ graph LR
 - Telemetry frames (`node_start`, `executorType: "human"`) still emit, but live delivery is optional; durable state in the database keeps the run recoverable.
 - Pending tasks remain discoverable through APIs such as `GET /api/v1/flex/tasks?status=pending` or via services monitoring `flex_plan_nodes`.
 - The orchestrator does not require active SSE listeners—it idles safely until `/api/v1/flex/run.resume` receives valid output.
-- Optional runtime policies (for example `onTimeout`, `onMetricBelow`) can detect long-idle human tasks and trigger replanning or escalation actions; reassignments via `/api/v1/flex/tasks/:taskId/reassign` update task metadata without duplicating records.
+- Optional runtime policies (for example `onTimeout`, `onMetricBelow`) can detect long-idle human tasks and trigger replanning or escalation actions without duplicating records.
 - Persistent execution plus eventual UI delivery keeps the system resilient to operator downtime and ensures safe resumption once human input arrives.
 
 ### 15.10 Registration & Governance Notes

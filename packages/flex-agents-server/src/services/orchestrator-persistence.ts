@@ -877,13 +877,35 @@ export class FlexRunPersistence {
         typeof assignment?.status === 'string' && assignment.status
           ? (assignment.status as string)
           : 'awaiting_submission'
+      const facets = (context as any)?.facets
+      const facetProvenance = (context as any)?.facetProvenance
+      const contracts = (context as any)?.contracts
+      const runContextSnapshot = (context as any)?.runContextSnapshot
+      const currentInputs =
+        (context as any)?.currentInputs ?? (context as any)?.inputs ?? null
+      const priorOutputs =
+        (context as any)?.currentOutput ?? (context as any)?.priorOutputs ?? null
+      const contextExtras: Record<string, unknown> = {}
+      if (currentInputs) {
+        contextExtras.currentInputs = clone(currentInputs)
+      }
+      if (priorOutputs) {
+        contextExtras.currentOutput = clone(priorOutputs)
+      }
+      if (runContextSnapshot) {
+        contextExtras.runContextSnapshot = clone(runContextSnapshot)
+      }
       const assignedTo = assignment?.assignedTo ?? null
       const role = assignment?.role ?? null
       const dueAt = assignment?.dueAt ?? null
       const priority = assignment?.priority ?? null
       const instructions = assignment?.instructions ?? null
+      const metadata = assignment?.metadata
+        ? { ...clone(assignment.metadata), ...contextExtras }
+        : Object.keys(contextExtras).length
+        ? contextExtras
+        : null
       const defaults = assignment?.defaults ? clone(assignment.defaults) : null
-      const metadata = assignment?.metadata ? clone(assignment.metadata) : null
       const timeoutSeconds = assignment?.timeoutSeconds ?? null
       const maxNotifications = assignment?.maxNotifications ?? null
       const notifyChannels = assignment?.notifyChannels ?? null
@@ -914,6 +936,9 @@ export class FlexRunPersistence {
         notifyChannels,
         createdAt,
         updatedAt,
+        contracts: contracts ? clone(contracts) : null,
+        facets: facets ? clone(facets) : null,
+        facetProvenance: facetProvenance ? clone(facetProvenance) : null,
         runStatus: row.runStatus ?? null,
         runUpdatedAt: row.runUpdatedAt ? row.runUpdatedAt.toISOString() : null
       }

@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto'
-import type { TaskEnvelope, FlexEvent, HitlRunState, HitlRequestRecord, OutputContract, ContextBundle, NodeContract } from '@awesomeposter/shared'
+import type {
+  TaskEnvelope,
+  FlexEvent,
+  HitlRunState,
+  HitlRequestRecord,
+  OutputContract,
+  ContextBundle,
+  NodeContract,
+  FlexFacetProvenanceMap,
+  HitlContractSummary
+} from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
 import {
   FlexRunPersistence,
@@ -23,7 +33,9 @@ import {
   HitlPauseError,
   AwaitingHumanInputError,
   ReplanRequestedError,
-  RunPausedError
+  RunPausedError,
+  RuntimePolicyFailureError,
+  FlexValidationError
 } from './flex-execution-engine'
 import { getHitlService, parseHitlDecisionAction, resolveHitlDecision, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
@@ -36,7 +48,11 @@ type RunOptions = {
   correlationId?: string
   resumeSubmission?: {
     nodeId: string
-    output: Record<string, unknown>
+    output?: Record<string, unknown>
+    decline?: {
+      reason: string
+      note?: string | null
+    }
     submittedAt?: string
     note?: string | null
   }
@@ -71,6 +87,59 @@ type RunResult = {
   runId: string
   status: 'completed' | 'awaiting_hitl' | 'awaiting_human' | 'failed'
   output: Record<string, unknown> | null
+}
+
+const isRuntimePolicyFailureError = (error: unknown): error is RuntimePolicyFailureError => {
+  if (error instanceof RuntimePolicyFailureError) return true
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as { name?: unknown; policyId?: unknown; message?: unknown }
+  return (
+    typeof candidate.policyId === 'string' &&
+    typeof candidate.message === 'string' &&
+    (candidate.name === 'RuntimePolicyFailureError' || candidate.name === 'RuntimePolicyError')
+  )
+}
+
+const isFlexValidationError = (error: unknown): error is FlexValidationError => {
+  if (error instanceof FlexValidationError) return true
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as { name?: unknown; scope?: unknown; errors?: unknown }
+  return (
+    (candidate.name === 'FlexValidationError' || candidate.name === 'ValidationError') &&
+    typeof candidate.scope === 'string' &&
+    Array.isArray(candidate.errors)
+  )
+}
+
+const formatFacetTitle = (value: string, fallback: string): string => {
+  if (!value) return fallback
+  const words = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_\-]+/g, ' ')
+    .trim()
+  if (!words) return fallback
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+type FacetProvenanceEntry = {
+  facet: string
+  title: string
+  direction: 'input' | 'output'
+  pointer: string
+}
+
+const normalizeFacetPointer = (pointer: string, facet: string): string => {
+  if (!pointer) {
+    return `#/${facet}`
+  }
+  if (pointer.startsWith('#')) {
+    return pointer
+  }
+  const trimmed = pointer.replace(/^\/+/, '')
+  if (!trimmed) {
+    return `#/${facet}`
+  }
+  return `#/${trimmed}`
 }
 
 export class FlexRunCoordinator {
@@ -120,6 +189,18 @@ export class FlexRunCoordinator {
     let resolvedDecisionResult: RunResult | null = null
     let activePlan: FlexPlan | undefined
     let activePlanVersion: number | null = resumeCandidate?.run.planVersion ?? null
+    const emitEvent = async (event: FlexEvent) => {
+      const enriched: FlexEvent = {
+        ...event,
+        planVersion:
+          typeof event.planVersion === 'number'
+            ? event.planVersion
+            : typeof activePlanVersion === 'number'
+            ? activePlanVersion
+            : event.planVersion
+      }
+      await opts.onEvent(enriched)
+    }
     let pendingStartupEffect = resumeCandidate
       ? null
       : this.policyNormalizer.evaluateRunStartEffect(normalizedPolicies)
@@ -183,7 +264,7 @@ export class FlexRunCoordinator {
           reason: payload.error ?? null
         })
         await this.persistence.updateStatus(runId, 'failed')
-        await opts.onEvent({
+        await emitEvent({
           type: 'complete',
           timestamp: new Date().toISOString(),
           runId,
@@ -202,7 +283,7 @@ export class FlexRunCoordinator {
           planVersion
         })
         await this.persistence.updateStatus(runId, 'completed')
-        await opts.onEvent({
+        await emitEvent({
           type: 'complete',
           timestamp: new Date().toISOString(),
           runId,
@@ -236,7 +317,7 @@ export class FlexRunCoordinator {
               originAgent: decision.request.originAgent
             })
           } catch {}
-          await opts.onEvent({
+          await emitEvent({
             type: 'log',
             timestamp: new Date().toISOString(),
             message: 'hitl_rejected',
@@ -252,7 +333,7 @@ export class FlexRunCoordinator {
         }
         if (action.type === 'emit') {
           const eventName = action.event && action.event.trim().length > 0 ? action.event : 'hitl_rejected'
-          await opts.onEvent({
+          await emitEvent({
             type: 'log',
             timestamp: new Date().toISOString(),
             message: eventName,
@@ -286,18 +367,31 @@ export class FlexRunCoordinator {
       resolvedSet.add(record.id)
       this.emittedHitlResolutions.set(runId, resolvedSet)
       const responses = state.responses.filter((resp) => resp.requestId === record.id)
-      await opts.onEvent({
+      const planNode = resolvePlanNodeForRecord(record)
+      const facetProvenance = computeFacetProvenance(record, planNode)
+      const contractSummary = buildContractSummary(record, planNode, facetProvenance ?? undefined)
+      if (process.env.DEBUG_FLEX_HITL === '1') {
+        // eslint-disable-next-line no-console
+        console.log('debug:flex.hitl_resolved.facets', {
+          facets: facetProvenance,
+          stepId: record.stepId,
+          resolvedNodeId: planNode?.id
+        })
+      }
+      await emitEvent({
         type: 'hitl_resolved',
         timestamp: new Date().toISOString(),
         runId,
         nodeId: record.stepId ?? undefined,
+        facetProvenance,
         payload: {
           request: {
             id: record.id,
             originAgent: record.originAgent,
             status: record.status,
             resolvedAt: record.updatedAt.toISOString(),
-            responses
+            responses,
+            contractSummary: contractSummary ?? null
           }
         }
       })
@@ -323,30 +417,189 @@ export class FlexRunCoordinator {
       this.emittedHitlResolutions.set(runId, resolvedSet)
       await checkResolvedHitlOutcome()
     }
+    const findPlanNodeByHint = (hint?: string | null): FlexPlan['nodes'][number] | undefined => {
+      if (!activePlan || !hint) return undefined
+      const direct = activePlan.nodes.find((node) => node.id === hint)
+      if (direct) return direct
+      const normalized = hint.replace(/\./g, '_')
+      const byNormalized = activePlan.nodes.find((node) => node.id === normalized)
+      if (byNormalized) return byNormalized
+      const capabilityHint = hint.split('_')[0]
+      if (capabilityHint) {
+        const capabilityId = capabilityHint.replace(/_/g, '.')
+        const byCapability = activePlan.nodes.find((node) => node.capabilityId === capabilityId)
+        if (byCapability) return byCapability
+      }
+      return undefined
+    }
+
+    const resolvePlanNodeForRecord = (record: HitlRequestRecord): FlexPlan['nodes'][number] | undefined => {
+      const hints = [record.pendingNodeId ?? null, record.stepId ?? null, record.contractSummary?.nodeId ?? null]
+      for (const hint of hints) {
+        const node = findPlanNodeByHint(hint)
+        if (node) return node
+      }
+      return undefined
+    }
+
+    const buildFacetEntries = (facets: string[] | undefined, direction: 'input' | 'output'): FacetProvenanceEntry[] => {
+      if (!facets?.length) return []
+      return facets.map((facet) => ({
+        facet,
+        title: formatFacetTitle(facet, direction === 'input' ? 'Input Facet' : 'Output Facet'),
+        direction,
+        pointer: `#/${facet}`
+      }))
+    }
+
+    const mergeFacetEntries = (
+      direction: 'input' | 'output',
+      sources: Array<FacetProvenanceEntry[] | undefined>
+    ): FacetProvenanceEntry[] => {
+      const seen = new Set<string>()
+      const merged: FacetProvenanceEntry[] = []
+      for (const source of sources) {
+        for (const entry of source ?? []) {
+          if (!entry || typeof entry !== 'object') continue
+          const facet = typeof entry.facet === 'string' && entry.facet.length ? entry.facet : null
+          if (!facet) continue
+          const pointer = normalizeFacetPointer(typeof entry.pointer === 'string' ? entry.pointer : '', facet)
+          const title =
+            typeof entry.title === 'string' && entry.title.trim().length
+              ? entry.title
+              : formatFacetTitle(facet, direction === 'input' ? 'Input Facet' : 'Output Facet')
+          const key = `${direction}:${facet}:${pointer}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          merged.push({
+            facet,
+            title,
+            direction,
+            pointer
+          })
+        }
+      }
+      return merged
+    }
+
+    const computeFacetProvenance = (
+      record: HitlRequestRecord,
+      planNode: FlexPlan['nodes'][number] | undefined
+    ): FlexFacetProvenanceMap | undefined => {
+      const contractFacets = (record.contractSummary?.facets as FlexFacetProvenanceMap | undefined) ?? undefined
+      const planProvenance = planNode?.provenance as FlexFacetProvenanceMap | undefined
+      const planFacets = planNode?.facets
+      const input = mergeFacetEntries('input', [
+        contractFacets?.input as FacetProvenanceEntry[] | undefined,
+        planProvenance?.input as FacetProvenanceEntry[] | undefined,
+        buildFacetEntries(planFacets?.input, 'input')
+      ])
+      const output = mergeFacetEntries('output', [
+        contractFacets?.output as FacetProvenanceEntry[] | undefined,
+        planProvenance?.output as FacetProvenanceEntry[] | undefined,
+        buildFacetEntries(planFacets?.output, 'output')
+      ])
+      if (!input.length && !output.length) {
+        return undefined
+      }
+      const combined: FlexFacetProvenanceMap = {}
+      if (input.length) combined.input = input
+      if (output.length) combined.output = output
+      return combined
+    }
+
+    const cloneValue = <T>(value: T): T => {
+      if (value == null) return value
+      try {
+        return JSON.parse(JSON.stringify(value)) as T
+      } catch {
+        return value
+      }
+    }
+
+    const buildContractSummary = (
+      record: HitlRequestRecord,
+      planNode: FlexPlan['nodes'][number] | undefined,
+      facets: FlexFacetProvenanceMap | undefined
+    ): HitlContractSummary | null => {
+      if (record.contractSummary) return record.contractSummary
+      if (!planNode) return null
+      const outputContract =
+        planNode.contracts?.output ?? (executionEnvelope.outputContract as OutputContract | undefined) ?? null
+      if (!outputContract) return null
+      const contract: HitlContractSummary['contract'] = {
+        ...(planNode.contracts?.input ? { input: cloneValue(planNode.contracts.input) } : {}),
+        output: cloneValue(outputContract)
+      }
+      return {
+        nodeId: planNode.id,
+        nodeLabel: planNode.label,
+        capabilityId: planNode.capabilityId ?? undefined,
+        capabilityLabel: planNode.capabilityLabel ?? planNode.label,
+        planVersion: activePlan?.version ?? undefined,
+        contract,
+        facets: facets ?? undefined
+      }
+    }
+
     const signalHitlRequest = async (record: HitlRequestRecord, state: HitlRunState) => {
       await updateHitlState(state)
-      await opts.onEvent({
+      const planNode = resolvePlanNodeForRecord(record)
+      const facetProvenance = computeFacetProvenance(record, planNode)
+      const contractSummary = buildContractSummary(record, planNode, facetProvenance ?? undefined)
+      if (!record.pendingNodeId && planNode) {
+        record.pendingNodeId = planNode.id
+      }
+      if (!record.contractSummary && contractSummary) {
+        record.contractSummary = contractSummary
+      }
+      if (process.env.DEBUG_FLEX_HITL === '1') {
+        // eslint-disable-next-line no-console
+        console.log('debug:flex.hitl_request.facets', {
+          facets: facetProvenance,
+          stepId: record.stepId,
+          pendingNodeId: record.pendingNodeId,
+          resolvedNodeId: planNode?.id
+        })
+      }
+      const operatorPrompt =
+        typeof record.operatorPrompt === 'string' && record.operatorPrompt.trim().length
+          ? record.operatorPrompt
+          : (() => {
+              if (!planNode) {
+                return 'Review pending flex run output and approve before resuming execution.'
+              }
+              const summary: string[] = [
+                `Review "${planNode.label}" (${planNode.capabilityLabel ?? planNode.capabilityId ?? planNode.id}).`
+              ]
+              const outputFacets = planNode.provenance?.output ?? []
+              if (outputFacets.length) {
+                summary.push(`Focus on facets: ${outputFacets.map((entry) => entry.title || entry.facet).join(', ')}.`)
+              }
+              return summary.join(' ')
+            })()
+      await emitEvent({
         type: 'hitl_request',
         timestamp: new Date().toISOString(),
         runId,
         nodeId: record.stepId ?? undefined,
-        facetProvenance: record.contractSummary?.facets,
+        facetProvenance,
         payload: {
           request: {
             id: record.id,
             originAgent: record.originAgent,
             payload: record.payload,
             createdAt: record.createdAt,
-            pendingNodeId: record.pendingNodeId ?? null,
-            operatorPrompt: record.operatorPrompt ?? null,
-            contractSummary: record.contractSummary ?? null
+            pendingNodeId: record.pendingNodeId ?? planNode?.id ?? null,
+            operatorPrompt,
+            contractSummary: contractSummary ?? null
           }
         }
       })
     }
     const signalHitlDenied = async (reason: string, state: HitlRunState) => {
       await updateHitlState(state)
-      await opts.onEvent({
+      await emitEvent({
         type: 'log',
         timestamp: new Date().toISOString(),
         message: 'hitl_request_denied',
@@ -370,7 +623,7 @@ export class FlexRunCoordinator {
       }
     }
 
-    await opts.onEvent({
+    await emitEvent({
       type: 'start',
       timestamp: new Date().toISOString(),
       payload: {
@@ -402,7 +655,7 @@ export class FlexRunCoordinator {
             graphState: requestOptions.graphState,
             onRequest: async (requestContext) => {
               const plannerHints = requestContext.context
-              await opts.onEvent({
+              await emitEvent({
                 type: 'plan_requested',
                 timestamp: new Date().toISOString(),
                 runId,
@@ -450,7 +703,7 @@ export class FlexRunCoordinator {
           return { plan, attempt: attemptNumber }
         } catch (error) {
           if (error instanceof PlannerDraftRejectedError) {
-            await opts.onEvent({
+            await emitEvent({
               type: 'plan_rejected',
               timestamp: new Date().toISOString(),
               runId,
@@ -491,7 +744,7 @@ export class FlexRunCoordinator {
 
       activePlan = this.rehydratePlan(resumeCandidate, envelopeToUse, latestSnapshot)
       activePlanVersion = activePlan.version
-      await opts.onEvent({
+      await emitEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
         payload: {
@@ -638,8 +891,82 @@ export class FlexRunCoordinator {
           schemaHash: schemaHashValue
         }
 
+        if (submission.decline) {
+          const declineTimestamp = new Date(submission.submittedAt ?? Date.now())
+          const declineNote = submission.decline.note ?? submission.note ?? null
+          const action =
+            humanNode.bundle.assignment?.defaults?.onDecline ??
+            humanNode.executor?.assignment?.defaults?.onDecline ??
+            'fail_run'
+
+          const contextBundle = (humanNode.context && typeof humanNode.context === 'object'
+            ? JSON.parse(JSON.stringify(humanNode.context))
+            : { runId, nodeId: humanNode.id }) as ContextBundle & Record<string, unknown>
+
+          if (!contextBundle.assignment || typeof contextBundle.assignment !== 'object') {
+            contextBundle.assignment = {}
+          }
+          contextBundle.assignment.status = 'completed'
+          contextBundle.assignment.submittedAt = declineTimestamp.toISOString()
+          contextBundle.assignment.updatedAt = declineTimestamp.toISOString()
+          const assignmentMetadata =
+            contextBundle.assignment.metadata && typeof contextBundle.assignment.metadata === 'object'
+              ? { ...(contextBundle.assignment.metadata as Record<string, unknown>) }
+              : {}
+          assignmentMetadata.decline = {
+            reason: submission.decline.reason,
+            note: declineNote,
+            action
+          }
+          contextBundle.assignment.metadata = assignmentMetadata
+
+          await this.persistence.markNode(runId, humanNode.id, {
+            status: 'completed',
+            output: null,
+            context: contextBundle as ContextBundle,
+            error: {
+              code: 'human_task_declined',
+              message: submission.decline.reason,
+              note: declineNote,
+              action
+            },
+            completedAt: declineTimestamp
+          })
+
+          await emitEvent({
+            type: 'node_complete',
+            timestamp: declineTimestamp.toISOString(),
+            runId,
+            nodeId: humanNode.id,
+            payload: {
+              capabilityId: humanNode.capabilityId,
+              label: humanNode.label,
+              completedAt: declineTimestamp.toISOString(),
+              executorType: 'human',
+              outcome: 'declined',
+              decline: {
+                reason: submission.decline.reason,
+                note: declineNote,
+                action
+              }
+            }
+          })
+
+          await registerOutcome('failed', {
+            error: submission.decline.reason,
+            nodeId: humanNode.id ?? null
+          })
+
+          return { runId, status: 'failed', output: null }
+        }
+
+        const submissionOutput = submission.output
+        if (!submissionOutput) {
+          throw new Error('flex_resume_missing_submission_payload')
+        }
+
         try {
-          await this.engine.validateNodeOutput(humanNode, submission.output, runId, validationOptions)
+          await this.engine.validateNodeOutput(humanNode, submissionOutput, runId, validationOptions)
         } catch (error) {
           const serialized =
             error && typeof error === 'object'
@@ -663,7 +990,7 @@ export class FlexRunCoordinator {
           await this.persistence.updateStatus(runId, 'awaiting_human')
 
           const errorTimestamp = new Date().toISOString()
-          await opts.onEvent({
+          await emitEvent({
             type: 'node_error',
             timestamp: errorTimestamp,
             runId,
@@ -679,7 +1006,7 @@ export class FlexRunCoordinator {
           return { runId, status: 'awaiting_human', output: null }
         }
 
-        runContext.updateFromNode(humanNode, submission.output)
+        runContext.updateFromNode(humanNode, submissionOutput)
         if (!pendingState) {
           pendingState = {
             completedNodeIds: [],
@@ -691,7 +1018,7 @@ export class FlexRunCoordinator {
 
         pendingState.nodeOutputs = {
           ...pendingState.nodeOutputs,
-          [humanNode.id]: submission.output
+          [humanNode.id]: submissionOutput
         }
         if (!pendingState.completedNodeIds.includes(humanNode.id)) {
           pendingState.completedNodeIds = [...pendingState.completedNodeIds, humanNode.id]
@@ -710,12 +1037,12 @@ export class FlexRunCoordinator {
         const completionInstant = new Date(submission.submittedAt ?? Date.now())
         await this.persistence.markNode(runId, humanNode.id, {
           status: 'completed',
-          output: submission.output,
+          output: submissionOutput,
           completedAt: completionInstant
         })
         await this.persistence.updateStatus(runId, 'running')
         resumeStatusUpdated = true
-        await opts.onEvent({
+        await emitEvent({
           type: 'node_complete',
           timestamp: completionInstant.toISOString(),
           runId,
@@ -724,7 +1051,7 @@ export class FlexRunCoordinator {
             capabilityId: humanNode.capabilityId,
             label: humanNode.label,
             completedAt: completionInstant.toISOString(),
-            output: submission.output,
+            output: submissionOutput,
             executorType: 'human'
           }
         })
@@ -740,8 +1067,7 @@ export class FlexRunCoordinator {
 
       let finalOutput: Record<string, unknown> | null = null
 
-      try {
-        while (!finalOutput) {
+      while (!finalOutput) {
           if (resolvedDecisionResult) {
             return resolvedDecisionResult
           }
@@ -772,8 +1098,8 @@ export class FlexRunCoordinator {
                   : undefined
               })
             } else {
-              const result = await this.engine.execute(runId, executionEnvelope, activePlan, {
-                onEvent: opts.onEvent,
+          const result = await this.engine.execute(runId, executionEnvelope, activePlan, {
+            onEvent: emitEvent,
                 correlationId: opts.correlationId,
                 hitl: {
                   service: this.hitlService,
@@ -803,7 +1129,7 @@ export class FlexRunCoordinator {
                 ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
               }
               resumeInitialState = undefined
-              await opts.onEvent({
+              await emitEvent({
                 type: 'policy_triggered',
                 timestamp: new Date().toISOString(),
                 runId,
@@ -866,7 +1192,7 @@ export class FlexRunCoordinator {
                   mode: pendingState!.mode
                 }
               })
-              await opts.onEvent({
+              await emitEvent({
                 type: 'plan_updated',
                 timestamp: new Date().toISOString(),
                 runId,
@@ -915,41 +1241,74 @@ export class FlexRunCoordinator {
               finalOutputSeed = null
               continue
             }
+
+            if (error instanceof AwaitingHumanInputError) {
+              await this.persistence.saveRunContext(runId, runContext.snapshot())
+              await this.persistence.updateStatus(runId, 'awaiting_human')
+              this.emittedHitlResolutions.delete(runId)
+              return { runId, status: 'awaiting_human', output: null }
+            }
+
+            if (error instanceof HitlPauseError || error instanceof RunPausedError) {
+              await this.persistence.saveRunContext(runId, runContext.snapshot())
+              await this.persistence.updateStatus(runId, 'awaiting_hitl')
+              this.emittedHitlResolutions.delete(runId)
+              return { runId, status: 'awaiting_hitl', output: null }
+            }
+
+            if (isRuntimePolicyFailureError(error)) {
+              await this.persistence.saveRunContext(runId, runContext.snapshot())
+              await this.persistence.updateStatus(runId, 'failed')
+              await emitEvent({
+                type: 'complete',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: {
+                  status: 'failed',
+                  error: error.message,
+                  policyId: error.policyId
+                }
+              })
+              this.emittedHitlResolutions.delete(runId)
+              return { runId, status: 'failed', output: null }
+            }
+
+            if (isFlexValidationError(error)) {
+              await this.persistence.saveRunContext(runId, runContext.snapshot())
+              await this.persistence.updateStatus(runId, 'failed')
+              await emitEvent({
+                type: 'complete',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: {
+                  status: 'failed',
+                  error: error.message,
+                  scope: error.scope
+                }
+              })
+              this.emittedHitlResolutions.delete(runId)
+              return { runId, status: 'failed', output: null }
+            }
+
+            if (process.env.DEBUG_FLEX_ERRORS === '1') {
+              // eslint-disable-next-line no-console
+              console.log('debug:flex.error_unhandled', {
+                name: (error as { name?: string }).name,
+                constructor: (error as { constructor?: { name?: string } }).constructor?.name,
+                message: (error as { message?: string }).message
+              })
+            }
+
             throw error
           }
         }
 
-        await this.persistence.saveRunContext(runId, runContext.snapshot())
-        this.emittedHitlResolutions.delete(runId)
-        if (resolvedDecisionResult) {
-          return resolvedDecisionResult
-        }
-        return { runId, status: 'completed', output: finalOutput }
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error))
-        if (err instanceof AwaitingHumanInputError) {
-          await this.persistence.saveRunContext(runId, runContext.snapshot())
-          await this.persistence.updateStatus(runId, 'awaiting_human')
-          this.emittedHitlResolutions.delete(runId)
-          return { runId, status: 'awaiting_human', output: null }
-        }
-        if (err instanceof HitlPauseError || err instanceof RunPausedError) {
-          await this.persistence.saveRunContext(runId, runContext.snapshot())
-          await this.persistence.updateStatus(runId, 'awaiting_hitl')
-          this.emittedHitlResolutions.delete(runId)
-          return { runId, status: 'awaiting_hitl', output: null }
-        }
-        const status: 'failed' | 'cancelled' = err.name === 'AbortError' ? 'cancelled' : 'failed'
-        await this.persistence.updateStatus(runId, status)
-        await opts.onEvent({
-          type: 'log',
-          timestamp: new Date().toISOString(),
-          message: err.message,
-          payload: { runId }
-        })
-        this.emittedHitlResolutions.delete(runId)
-        throw err
+      await this.persistence.saveRunContext(runId, runContext.snapshot())
+      this.emittedHitlResolutions.delete(runId)
+      if (resolvedDecisionResult) {
+        return resolvedDecisionResult
       }
+      return { runId, status: 'completed', output: finalOutput }
     }
 
     let planSnapshot: FlexPlanNodeSnapshot[] = []
@@ -982,7 +1341,7 @@ export class FlexRunCoordinator {
         policyAttempts: {}
       }
     })
-      await opts.onEvent({
+      await emitEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
         payload: {
@@ -1046,7 +1405,7 @@ export class FlexRunCoordinator {
         }
         try {
           const result = await this.engine.execute(runId, executionEnvelope, activePlan, {
-            onEvent: opts.onEvent,
+            onEvent: emitEvent,
             correlationId: opts.correlationId,
             hitl: {
               service: this.hitlService,
@@ -1074,7 +1433,7 @@ export class FlexRunCoordinator {
               ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
               ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
             }
-            await opts.onEvent({
+            await emitEvent({
               type: 'policy_triggered',
               timestamp: new Date().toISOString(),
               runId,
@@ -1137,7 +1496,7 @@ export class FlexRunCoordinator {
                 mode: pendingState!.mode
               }
             })
-            await opts.onEvent({
+            await emitEvent({
               type: 'plan_updated',
               timestamp: new Date().toISOString(),
               runId,
@@ -1184,6 +1543,49 @@ export class FlexRunCoordinator {
             })
             continue
           }
+
+          if (isRuntimePolicyFailureError(error)) {
+            await this.persistence.saveRunContext(runId, runContext.snapshot())
+            await this.persistence.updateStatus(runId, 'failed')
+            await emitEvent({
+              type: 'complete',
+              timestamp: new Date().toISOString(),
+              runId,
+              payload: {
+                status: 'failed',
+                error: error.message,
+                policyId: error.policyId
+              }
+            })
+            this.emittedHitlResolutions.delete(runId)
+            return { runId, status: 'failed', output: null }
+          }
+
+          if (isFlexValidationError(error)) {
+            await this.persistence.saveRunContext(runId, runContext.snapshot())
+            await this.persistence.updateStatus(runId, 'failed')
+            await emitEvent({
+              type: 'complete',
+              timestamp: new Date().toISOString(),
+              runId,
+              payload: {
+                status: 'failed',
+                error: error.message,
+                scope: error.scope
+              }
+            })
+            this.emittedHitlResolutions.delete(runId)
+            return { runId, status: 'failed', output: null }
+          }
+
+          if (process.env.DEBUG_FLEX_ERRORS === '1') {
+            // eslint-disable-next-line no-console
+            console.log('debug:flex.error_unhandled', {
+              name: (error as { name?: string }).name,
+              constructor: (error as { constructor?: { name?: string } }).constructor?.name,
+              message: (error as { message?: string }).message
+            })
+          }
           throw error
         }
       }
@@ -1210,7 +1612,7 @@ export class FlexRunCoordinator {
       const status: 'failed' | 'cancelled' = error.name === 'AbortError' ? 'cancelled' : 'failed'
       await this.persistence.updateStatus(runId, status)
 
-      await opts.onEvent({
+      await emitEvent({
         type: 'log',
         timestamp: new Date().toISOString(),
         message: error.message,

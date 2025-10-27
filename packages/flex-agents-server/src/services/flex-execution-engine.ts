@@ -14,7 +14,9 @@ import type {
   JsonSchemaShape,
   RuntimePolicy,
   Action,
-  HitlContractSummary
+  HitlContractSummary,
+  ContextBundle,
+  FlexFacetProvenanceMap
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -43,7 +45,7 @@ const POLICY_ACTION_SOURCE = {
 } as const
 type PolicyActionSource = (typeof POLICY_ACTION_SOURCE)[keyof typeof POLICY_ACTION_SOURCE]
 
-class FlexValidationError extends Error {
+export class FlexValidationError extends Error {
   constructor(
     message: string,
     public readonly scope: 'capability_input' | 'capability_output' | 'final_output' | 'envelope',
@@ -309,7 +311,12 @@ export class FlexExecutionEngine {
     return 'ai'
   }
 
-  private async handleVirtualNode(runId: string, node: FlexPlanNode, opts: FlexExecutionOptions) {
+  private async handleVirtualNode(
+    runId: string,
+    plan: FlexPlan,
+    node: FlexPlanNode,
+    opts: FlexExecutionOptions
+  ) {
     const startedAt = new Date()
     await this.persistence.markNode(runId, node.id, {
       status: 'running',
@@ -339,7 +346,7 @@ export class FlexExecutionEngine {
           virtual: true,
           startedAt: startedAt.toISOString()
         },
-        { runId, nodeId: node.id }
+        { runId, nodeId: node.id, planVersion: plan.version, facetProvenance: node.provenance ?? undefined }
       )
     )
 
@@ -370,7 +377,7 @@ export class FlexExecutionEngine {
           virtual: true,
           completedAt: completedAt.toISOString()
         },
-        { runId, nodeId: node.id }
+        { runId, nodeId: node.id, planVersion: plan.version, facetProvenance: node.provenance ?? undefined }
       )
     )
   }
@@ -482,7 +489,7 @@ export class FlexExecutionEngine {
       const isVirtual = !node.capabilityId
       if (isVirtual) {
         nodeStatuses.set(node.id, 'running')
-        await this.handleVirtualNode(runId, node, opts)
+        await this.handleVirtualNode(runId, plan, node, opts)
         nodeStatuses.set(node.id, 'completed')
         completedNodeIds.add(node.id)
         index += 1
@@ -509,11 +516,12 @@ export class FlexExecutionEngine {
         node.bundle.assignment.createdAt = node.bundle.assignment.createdAt ?? startedAt.toISOString()
       }
 
+      const persistenceContext = this.buildPersistenceContext(node, runContext)
       await this.persistence.markNode(runId, node.id, {
         status: initialStatus,
         capabilityId: node.capabilityId,
         label: node.label,
-        context: node.bundle,
+        context: persistenceContext,
         startedAt
       })
       try {
@@ -533,10 +541,19 @@ export class FlexExecutionEngine {
         executorType,
         contracts: node.contracts ? JSON.parse(JSON.stringify(node.contracts)) : undefined,
         facets: node.facets ? JSON.parse(JSON.stringify(node.facets)) : undefined,
-        assignment: isHumanExecutor ? this.buildHumanAssignmentPayload(node, runId) : undefined
+        assignment: isHumanExecutor
+          ? this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: runContext.snapshot() })
+          : undefined
       })
 
-      await opts.onEvent(this.buildEvent('node_start', nodeStartPayload, { runId, nodeId: node.id }))
+      await opts.onEvent(
+        this.buildEvent('node_start', nodeStartPayload, {
+          runId,
+          nodeId: node.id,
+          planVersion: plan.version,
+          facetProvenance: node.provenance ?? undefined
+        })
+      )
 
       if (isHumanExecutor) {
         await this.pauseForHuman({
@@ -587,7 +604,12 @@ export class FlexExecutionEngine {
               completedAt: completedAt.toISOString(),
               output: result.output
             },
-            { runId, nodeId: node.id }
+            {
+              runId,
+              nodeId: node.id,
+              planVersion: plan.version,
+              facetProvenance: node.provenance ?? undefined
+            }
           )
         )
 
@@ -678,7 +700,13 @@ export class FlexExecutionEngine {
               label: node.label,
               error: serialized
             },
-            { runId, nodeId: node.id, message: serialized.message as string | undefined }
+            {
+              runId,
+              nodeId: node.id,
+              message: serialized.message as string | undefined,
+              planVersion: plan.version,
+              facetProvenance: node.provenance ?? undefined
+            }
           )
         )
         throw error
@@ -743,7 +771,13 @@ export class FlexExecutionEngine {
         }
       }
     })
-    await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
+    await opts.onEvent(
+      this.buildEvent(
+        'complete',
+        { output: finalOutput },
+        { runId, planVersion: plan.version, facetProvenance: provenance ?? undefined }
+      )
+    )
     return finalOutput
   }
 
@@ -859,7 +893,8 @@ export class FlexExecutionEngine {
         this.buildEvent('policy_triggered', policyPayload, {
           runId: context.runId,
           nodeId: context.node.id,
-          message: `runtime_policy:${source}:${action.type}`
+          message: `runtime_policy:${source}:${action.type}`,
+          planVersion: context.plan.version
         })
       )
     } catch {}
@@ -904,7 +939,8 @@ export class FlexExecutionEngine {
           eventName: action.event,
           payload: action.payload ?? {},
           policyId: policy.id,
-          rationale: action.rationale
+          rationale: action.rationale,
+          planVersion: context.plan.version
         })
         return { kind: 'noop' }
       }
@@ -1283,8 +1319,9 @@ export class FlexExecutionEngine {
     payload: Record<string, unknown>
     policyId: string
     rationale?: string
+    planVersion: number
   }) {
-    const { runId, node, opts, eventName, payload, policyId, rationale } = args
+    const { runId, node, opts, eventName, payload, policyId, rationale, planVersion } = args
     try {
       await opts.onEvent(
         this.buildEvent(
@@ -1293,14 +1330,15 @@ export class FlexExecutionEngine {
             policyId,
             action: 'emit',
             event: eventName,
-            payload
-          },
-          {
-            runId,
-            nodeId: node.id,
-            message: `runtime_policy_emit:${eventName}`
-          }
-        )
+          payload
+        },
+        {
+          runId,
+          nodeId: node.id,
+          message: `runtime_policy_emit:${eventName}`,
+          planVersion
+        }
+      )
       )
     } catch {}
     try {
@@ -1317,7 +1355,8 @@ export class FlexExecutionEngine {
           {
             runId,
             nodeId: node.id,
-            message: rationale ?? undefined
+            message: rationale ?? undefined,
+            planVersion
           }
         )
       )
@@ -1456,7 +1495,8 @@ export class FlexExecutionEngine {
           {
             runId: context.runId,
             nodeId: context.node.id,
-            message: `runtime_policy_goto:${action.next}`
+            message: `runtime_policy_goto:${action.next}`,
+            planVersion: context.plan.version
           }
         )
       )
@@ -1647,7 +1687,11 @@ export class FlexExecutionEngine {
     return false
   }
 
-  private buildHumanAssignmentPayload(node: FlexPlanNode, runId: string): Record<string, unknown> {
+  private buildHumanAssignmentPayload(
+    node: FlexPlanNode,
+    runId: string,
+    options: { runContextSnapshot?: FacetSnapshot | null } = {}
+  ): Record<string, unknown> {
     const assignment = (node.bundle.assignment ?? {}) as Record<string, unknown>
     const executorDefaults = node.executor?.assignment?.defaults ?? null
     const defaults = (assignment.defaults as AssignmentDefaults | undefined) ?? executorDefaults ?? null
@@ -1674,12 +1718,93 @@ export class FlexExecutionEngine {
         assignment.maxNotifications ?? (defaults as AssignmentDefaults | null)?.maxNotifications ?? null,
       instructions,
       defaults: defaults ? JSON.parse(JSON.stringify(defaults)) : null,
-      metadata: metadata ? JSON.parse(JSON.stringify(metadata)) : null,
       createdAt: assignment.createdAt ?? null,
       updatedAt: assignment.updatedAt ?? null
     }
 
-    return this.compactPayload(payload)
+    const facetsSnapshot = {
+      input: Array.isArray(node.facets?.input) ? [...node.facets.input] : [],
+      output: Array.isArray(node.facets?.output) ? [...node.facets.output] : []
+    }
+
+    const provenanceSnapshot: Record<string, unknown> = {}
+    if (node.provenance?.input && node.provenance.input.length) {
+      provenanceSnapshot.input = node.provenance.input.map((entry) => ({ ...entry }))
+    }
+    if (node.provenance?.output && node.provenance.output.length) {
+      provenanceSnapshot.output = node.provenance.output.map((entry) => ({ ...entry }))
+    }
+
+    const contractsSnapshot: Record<string, unknown> = {
+      ...(node.contracts.input ? { input: JSON.parse(JSON.stringify(node.contracts.input)) } : {}),
+      output: JSON.parse(JSON.stringify(node.contracts.output))
+    }
+
+    const contextExtras: Record<string, unknown> = {}
+    if (node.bundle.inputs) {
+      contextExtras.currentInputs = JSON.parse(JSON.stringify(node.bundle.inputs))
+    }
+    if (node.bundle.priorOutputs) {
+      contextExtras.currentOutput = JSON.parse(JSON.stringify(node.bundle.priorOutputs))
+    }
+    if (options.runContextSnapshot && Object.keys(options.runContextSnapshot).length) {
+      contextExtras.runContextSnapshot = JSON.parse(JSON.stringify(options.runContextSnapshot))
+    }
+
+    const metadataClone =
+      metadata && typeof metadata === 'object'
+        ? JSON.parse(JSON.stringify(metadata as Record<string, unknown>))
+        : {}
+    Object.assign(metadataClone, contextExtras)
+
+    return this.compactPayload({
+      ...payload,
+      metadata: Object.keys(metadataClone).length ? metadataClone : null,
+      facets: facetsSnapshot,
+      contracts: contractsSnapshot,
+      facetProvenance: Object.keys(provenanceSnapshot).length ? provenanceSnapshot : null,
+      context: Object.keys(contextExtras).length ? contextExtras : null
+    })
+  }
+
+  private buildPersistenceContext(node: FlexPlanNode, runContext: RunContext): ContextBundle & Record<string, unknown> {
+    const bundle = node.bundle ? JSON.parse(JSON.stringify(node.bundle)) : ({} as ContextBundle)
+    bundle.nodeId = node.id
+    if (!bundle.runId) {
+      bundle.runId = node.bundle?.runId ?? ''
+    }
+
+    const context: ContextBundle & Record<string, unknown> = bundle as ContextBundle & Record<string, unknown>
+
+    const facetsSnapshot = {
+      input: Array.isArray(node.facets?.input) ? [...node.facets.input] : [],
+      output: Array.isArray(node.facets?.output) ? [...node.facets.output] : []
+    }
+    context.facets = facetsSnapshot
+
+    const provenanceSnapshot: Record<string, unknown> = {}
+    if (node.provenance?.input && node.provenance.input.length) {
+      provenanceSnapshot.input = node.provenance.input.map((entry) => ({ ...entry }))
+    }
+    if (node.provenance?.output && node.provenance.output.length) {
+      provenanceSnapshot.output = node.provenance.output.map((entry) => ({ ...entry }))
+    }
+    if (Object.keys(provenanceSnapshot).length) {
+      context.facetProvenance = provenanceSnapshot
+    }
+
+    const contractsSnapshot: Record<string, unknown> = {
+      ...(node.contracts.input ? { input: JSON.parse(JSON.stringify(node.contracts.input)) } : {}),
+      output: JSON.parse(JSON.stringify(node.contracts.output))
+    }
+    context.contracts = contractsSnapshot
+
+    const runSnapshot = runContext.snapshot()
+    if (runSnapshot && Object.keys(runSnapshot).length) {
+      context.runContextSnapshot = JSON.parse(JSON.stringify(runSnapshot))
+    }
+
+    return context
   }
 
   private async pauseForHuman(args: {
@@ -1739,7 +1864,7 @@ export class FlexExecutionEngine {
       })
     } catch {}
 
-    const assignmentPayload = this.buildHumanAssignmentPayload(node, runId)
+    const assignmentPayload = this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: facetsSnapshot })
     try {
       await opts.onEvent(
         this.buildEvent(
@@ -1999,7 +2124,13 @@ export class FlexExecutionEngine {
   private buildEvent(
     type: FlexEvent['type'],
     payload: Record<string, unknown>,
-    meta?: { runId?: string; nodeId?: string; message?: string }
+    meta?: {
+      runId?: string
+      nodeId?: string
+      message?: string
+      planVersion?: number
+      facetProvenance?: FlexFacetProvenanceMap | null
+    }
   ): FlexEvent {
     return {
       type,
@@ -2007,7 +2138,9 @@ export class FlexExecutionEngine {
       payload,
       runId: meta?.runId,
       nodeId: meta?.nodeId,
-      message: meta?.message
+      message: meta?.message,
+      planVersion: typeof meta?.planVersion === 'number' ? meta.planVersion : undefined,
+      facetProvenance: meta?.facetProvenance ?? undefined
     }
   }
 
@@ -2203,7 +2336,12 @@ export class FlexExecutionEngine {
             label: terminalNode.label,
             startedAt: startAt.toISOString()
           },
-          { runId, nodeId: terminalNode.id }
+          {
+            runId,
+            nodeId: terminalNode.id,
+            planVersion: plan.version,
+            facetProvenance: terminalNode.provenance ?? undefined
+          }
         )
       )
 
@@ -2225,7 +2363,12 @@ export class FlexExecutionEngine {
             completedAt: completedAt.toISOString(),
             output: finalOutput
           },
-          { runId, nodeId: terminalNode.id }
+          {
+            runId,
+            nodeId: terminalNode.id,
+            planVersion: plan.version,
+            facetProvenance: terminalNode.provenance ?? undefined
+          }
         )
       )
     }
@@ -2260,7 +2403,13 @@ export class FlexExecutionEngine {
         }
       }
     })
-    await opts.onEvent(this.buildEvent('complete', { output: finalOutput }, { runId }))
+    await opts.onEvent(
+      this.buildEvent(
+        'complete',
+        { output: finalOutput },
+        { runId, planVersion: plan.version, facetProvenance: provenance ?? undefined }
+      )
+    )
     return finalOutput
   }
 }

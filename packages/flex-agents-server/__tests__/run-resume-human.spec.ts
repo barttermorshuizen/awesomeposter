@@ -171,9 +171,22 @@ class MemoryFlexPersistence {
       const [runId, nodeId] = key.split(':')
       if (value.status !== 'awaiting_human') continue
       const run = this.runs.get(runId)
-      const assignment = (value.context?.assignment ?? {}) as Record<string, unknown>
+      const context = (value.context ?? {}) as Record<string, unknown>
+      const assignment = (context.assignment ?? {}) as Record<string, unknown>
       const defaults = assignment.defaults ? { ...(assignment.defaults as Record<string, unknown>) } : null
-      const metadata = assignment.metadata ? { ...(assignment.metadata as Record<string, unknown>) } : null
+      const metadataSource = assignment.metadata ? { ...(assignment.metadata as Record<string, unknown>) } : {}
+      const ctxInputs = (context.currentInputs ?? context.inputs) as Record<string, unknown> | undefined
+      if (ctxInputs) {
+        metadataSource.currentInputs = { ...ctxInputs }
+      }
+      const ctxOutput = (context.currentOutput ?? context.priorOutputs) as Record<string, unknown> | undefined
+      if (ctxOutput) {
+        metadataSource.currentOutput = { ...ctxOutput }
+      }
+      if (context.runContextSnapshot) {
+        metadataSource.runContextSnapshot = { ...(context.runContextSnapshot as Record<string, unknown>) }
+      }
+      const metadata = Object.keys(metadataSource).length ? metadataSource : null
       const status = (assignment.status as string | undefined) ?? 'awaiting_submission'
       const task = {
         taskId: (assignment.assignmentId as string | undefined) ?? key,
@@ -188,7 +201,12 @@ class MemoryFlexPersistence {
         priority: (assignment.priority as string | undefined) ?? null,
         instructions: (assignment.instructions as string | undefined) ?? null,
         defaults,
-        metadata
+        metadata,
+        contracts: context.contracts ? { ...(context.contracts as Record<string, unknown>) } : null,
+        facets: context.facets ? { ...(context.facets as Record<string, unknown>) } : null,
+        facetProvenance: context.facetProvenance
+          ? { ...(context.facetProvenance as Record<string, unknown>) }
+          : null
       }
       tasks.push(task)
     }
@@ -499,5 +517,82 @@ describe('FlexRunCoordinator resume with human submission', () => {
     const pendingTasks = await persistence.listPendingHumanTasks()
     expect(pendingTasks).toHaveLength(1)
     expect(pendingTasks[0]?.status).toBe('awaiting_submission')
+  })
+
+  it('fails run and emits decline events when operator declines task', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const { coordinator } = createHumanCoordinator(persistence)
+
+    const envelope: TaskEnvelope = {
+      objective: 'Launch announcement copy',
+      inputs: {
+        objectiveBrief: { goal: 'Announce new product' },
+        toneOfVoice: 'uplifting',
+        audienceProfile: { persona: 'marketers' }
+      },
+      policies: parseTaskPolicies({ planner: {}, runtime: [] }),
+      outputContract: { mode: 'freeform' }
+    }
+
+    const initialEvents: FlexEvent[] = []
+    const firstRun = await coordinator.run(envelope, {
+      correlationId: 'cid_decline_start',
+      onEvent: async (frame) => initialEvents.push(frame)
+    })
+
+    expect(firstRun.status).toBe('awaiting_human')
+    const pendingTasks = await persistence.listPendingHumanTasks()
+    expect(pendingTasks).toHaveLength(1)
+    const task = pendingTasks[0]
+    expect(task?.status).toBe('awaiting_submission')
+
+    const stored = await persistence.loadFlexRun(firstRun.runId)
+    const resumeEnvelope = {
+      ...(stored!.run.envelope as TaskEnvelope),
+      constraints: {
+        ...(((stored!.run.envelope as TaskEnvelope).constraints as Record<string, unknown> | undefined) ?? {}),
+        resumeRunId: firstRun.runId
+      },
+      metadata: {
+        ...(((stored!.run.envelope as TaskEnvelope).metadata as Record<string, unknown> | undefined) ?? {}),
+        runId: firstRun.runId,
+        resume: true
+      }
+    }
+
+    const declineEvents: FlexEvent[] = []
+    const result = await coordinator.run(resumeEnvelope, {
+      correlationId: 'cid_decline_resume',
+      onEvent: async (frame) => declineEvents.push(frame),
+      resumeSubmission: {
+        nodeId: task?.nodeId as string,
+        decline: {
+          reason: 'Insufficient details',
+          note: 'Need budget before proceeding'
+        },
+        submittedAt: new Date().toISOString()
+      }
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.output).toBeNull()
+    expect(persistence.statuses.get(firstRun.runId)).toBe('failed')
+
+    const nodeComplete = declineEvents.find((evt) => evt.type === 'node_complete')
+    expect(nodeComplete).toBeTruthy()
+    expect(nodeComplete?.payload).toMatchObject({
+      outcome: 'declined',
+      decline: {
+        reason: 'Insufficient details',
+        note: 'Need budget before proceeding'
+      }
+    })
+
+    const completeEvent = declineEvents.find((evt) => evt.type === 'complete')
+    expect(completeEvent).toBeTruthy()
+    expect((completeEvent?.payload as any)?.status).toBe('failed')
+
+    const refreshedTasks = await persistence.listPendingHumanTasks()
+    expect(refreshedTasks).toHaveLength(0)
   })
 })

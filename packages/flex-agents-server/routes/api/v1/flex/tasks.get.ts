@@ -1,20 +1,8 @@
-import { getMethod, getHeader, setHeader, sendNoContent, createError, getQuery } from 'h3'
+import { getMethod, getHeader, setHeader, createError, getQuery } from 'h3'
 import { FlexRunPersistence } from '../../../../src/services/orchestrator-persistence'
 
 export default defineEventHandler(async (event) => {
   const method = getMethod(event)
-
-  if (method === 'OPTIONS') {
-    const origin = getHeader(event, 'origin')
-    if (origin) {
-      setHeader(event, 'Vary', 'Origin')
-      setHeader(event, 'Access-Control-Allow-Origin', origin)
-    }
-    setHeader(event, 'Access-Control-Allow-Methods', 'GET,OPTIONS')
-    setHeader(event, 'Access-Control-Allow-Headers', 'accept,authorization,content-type')
-    setHeader(event, 'Access-Control-Max-Age', 600)
-    return sendNoContent(event, 204)
-  }
 
   if (method !== 'GET') {
     throw createError({ statusCode: 405, statusMessage: 'Method Not Allowed' })
@@ -26,8 +14,14 @@ export default defineEventHandler(async (event) => {
     setHeader(event, 'Access-Control-Allow-Origin', origin)
     setHeader(event, 'Access-Control-Allow-Credentials', 'true')
   }
+  const requestedHeaders = getHeader(event, 'access-control-request-headers')
   setHeader(event, 'Access-Control-Allow-Methods', 'GET,OPTIONS')
-  setHeader(event, 'Access-Control-Allow-Headers', 'accept,authorization,content-type')
+  setHeader(
+    event,
+    'Access-Control-Allow-Headers',
+    requestedHeaders || 'content-type,accept,authorization,x-correlation-id'
+  )
+  setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
   setHeader(event, 'Cache-Control', 'no-store')
 
   const query = getQuery(event) as Record<string, unknown>

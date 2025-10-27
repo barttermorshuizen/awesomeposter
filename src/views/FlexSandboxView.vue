@@ -14,7 +14,9 @@ import {
   type HitlContractSummary
 } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
+import { addFlexEventListener } from '@/lib/flex-event-bus'
 import FlexSandboxPlanInspector from '@/components/FlexSandboxPlanInspector.vue'
+import FlexTaskPanel from '@/components/flex-tasks/FlexTaskPanel.vue'
 import HitlPromptPanel from '@/components/HitlPromptPanel.vue'
 import VueJsonPretty from 'vue-json-pretty'
 import 'vue-json-pretty/lib/styles.css'
@@ -23,6 +25,7 @@ import { appendHistoryEntry, extractPlanPayload } from '@/lib/flexSandboxPlan'
 import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
 import { useHitlStore } from '@/stores/hitl'
 import { useNotificationsStore } from '@/stores/notifications'
+import { useFlexTasksStore } from '@/stores/flexTasks'
 import { useFlexEnvelopeBuilderStore } from '@/stores/flexEnvelopeBuilder'
 
 type FacetMetadataDescriptor = {
@@ -115,6 +118,7 @@ const DEFAULT_ENVELOPE: TaskEnvelope = {
 }
 
 const draftsKey = 'flex.sandbox.drafts'
+let externalEventCleanup: (() => void) | null = null
 
 const metadata = ref<SandboxMetadata | null>(null)
 const metadataLoading = ref(false)
@@ -137,6 +141,8 @@ const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
 const notifications = useNotificationsStore()
 const envelopeBuilder = useFlexEnvelopeBuilderStore()
+const flexTasksStore = useFlexTasksStore()
+const { hasPendingTasks: hasFlexTasks, loading: flexTasksLoading } = storeToRefs(flexTasksStore)
 
 const hitlStore = useHitlStore()
 const { pendingRun, hasActiveRequest, operatorProfile } = storeToRefs(hitlStore)
@@ -763,6 +769,7 @@ function handleEvent(evt: FlexEventWithId) {
           hitlStore.setThreadId(thread)
         }
       }
+      void flexTasksStore.hydrateFromBacklog({ syncLegacyHitl: false })
       break
     case 'plan_generated':
       updatePlanFromGenerated(evt.payload, evt.timestamp)
@@ -772,15 +779,18 @@ function handleEvent(evt: FlexEventWithId) {
       break
     case 'node_start':
       updateNodeStatus(evt.nodeId, 'running', evt.timestamp)
+      flexTasksStore.handleNodeStart(evt)
       break
     case 'node_complete':
       updateNodeStatus(evt.nodeId, 'completed', evt.timestamp)
+      flexTasksStore.handleNodeComplete(evt)
       break
     case 'node_error':
       updateNodeStatus(evt.nodeId, 'error', evt.timestamp)
       if (!runError.value && evt.message) {
         runError.value = evt.message
       }
+      flexTasksStore.handleNodeError(evt)
       break
     case 'hitl_request':
       runStatus.value = 'hitl'
@@ -835,12 +845,20 @@ function handleEvent(evt: FlexEventWithId) {
         runError.value = evt.message
       }
       break
-    case 'complete':
-      if (runStatus.value !== 'error') {
+    case 'complete': {
+      const payload = (evt.payload ?? {}) as Record<string, unknown>
+      const status = typeof payload.status === 'string' ? payload.status : null
+      if (status === 'failed') {
+        runStatus.value = 'error'
+        if (typeof payload.error === 'string' && !runError.value) {
+          runError.value = payload.error
+        }
+      } else if (runStatus.value !== 'error') {
         runStatus.value = 'completed'
       }
       hitlStore.resetAll()
       break
+    }
   }
 }
 
@@ -1168,6 +1186,11 @@ onMounted(() => {
   if (FLEX_SANDBOX_ENABLED) {
     void loadMetadata()
   }
+  void flexTasksStore.hydrateFromBacklog({ syncLegacyHitl: false })
+  externalEventCleanup = addFlexEventListener((evt) => {
+    if (evt.runId && runId.value && evt.runId !== runId.value) return
+    handleEvent(evt)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -1176,6 +1199,8 @@ onBeforeUnmount(() => {
     saveTimeout = null
   }
   abortRun()
+  externalEventCleanup?.()
+  externalEventCleanup = null
 })
 
 watch(
@@ -1713,6 +1738,9 @@ watch(
         </v-col>
 
         <v-col cols="12" md="4" class="d-flex flex-column ga-4">
+          <FlexTaskPanel
+            v-if="hasFlexTasks || flexTasksLoading"
+          />
           <HitlPromptPanel
             v-if="showHitlPanel"
             @resume="handleHitlResume"

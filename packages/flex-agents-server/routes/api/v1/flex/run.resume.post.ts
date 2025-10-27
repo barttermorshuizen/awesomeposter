@@ -12,6 +12,25 @@ import { FlexRunCoordinator } from '../../../../src/services/flex-run-coordinato
 import { FlexRunPersistence } from '../../../../src/services/orchestrator-persistence'
 import { genCorrelationId, getLogger } from '../../../../src/services/logger'
 
+const ResumeSubmissionSchema = z
+  .object({
+    nodeId: z.string().min(1),
+    output: z.record(z.string(), z.unknown()).optional(),
+    decline: z
+      .object({
+        reason: z.string().min(1),
+        note: z.string().optional().nullable()
+      })
+      .optional(),
+    submittedAt: z.string().optional(),
+    note: z.string().optional()
+  })
+  .refine((value) => {
+    const outputPresent = Boolean(value.output)
+    const declinePresent = Boolean(value.decline)
+    return outputPresent !== declinePresent || (outputPresent && !declinePresent)
+  }, 'Provide either an output payload or a decline reason.')
+
 const ResumeRequestSchema = z.object({
   runId: z.string().min(1),
   expectedPlanVersion: z.number().int().nonnegative().optional(),
@@ -24,14 +43,7 @@ const ResumeRequestSchema = z.object({
     .optional(),
   note: z.string().optional(),
   correlationId: z.string().optional(),
-  payload: z
-    .object({
-      nodeId: z.string().min(1),
-      output: z.record(z.string(), z.unknown()),
-      submittedAt: z.string().optional(),
-      note: z.string().optional()
-    })
-    .optional()
+  payload: ResumeSubmissionSchema.optional()
 })
 
 function buildResumeEnvelope(record: TaskEnvelope, runId: string, threadId: string | null, auditMetadata: Record<string, unknown>) {
@@ -193,7 +205,15 @@ export default defineEventHandler(async (event) => {
         resumeSubmission: payload.payload
           ? {
               nodeId: payload.payload.nodeId,
-              output: payload.payload.output as Record<string, unknown>,
+              output: payload.payload.output
+                ? (payload.payload.output as Record<string, unknown>)
+                : undefined,
+              decline: payload.payload.decline
+                ? {
+                    reason: payload.payload.decline.reason,
+                    note: payload.payload.decline.note ?? null
+                  }
+                : undefined,
               submittedAt: payload.payload.submittedAt,
               note: payload.payload.note ?? null
             }
