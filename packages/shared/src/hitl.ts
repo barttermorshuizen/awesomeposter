@@ -5,7 +5,7 @@ import { FlexFacetProvenanceSchema, JsonSchemaContractSchema, OutputContractSche
 export const HitlUrgencyEnum = z.enum(['low', 'normal', 'high'])
 export type HitlUrgency = z.infer<typeof HitlUrgencyEnum>
 
-export const HitlRequestKindEnum = z.enum(['question', 'approval', 'choice'])
+export const HitlRequestKindEnum = z.enum(['question', 'approval', 'choice', 'clarify'])
 export type HitlRequestKind = z.infer<typeof HitlRequestKindEnum>
 
 export const HitlOriginAgentEnum = z.enum(['strategy', 'generation', 'qa'])

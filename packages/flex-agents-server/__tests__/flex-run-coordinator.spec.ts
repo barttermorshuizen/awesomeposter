@@ -19,6 +19,20 @@ import { STRATEGY_CAPABILITY_ID } from '../src/agents/strategy-manager'
 import { QA_CAPABILITY_ID } from '../src/agents/quality-assurance'
 import type { PlannerServiceInterface, PlannerServiceInput } from '../src/services/planner-service'
 import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from '../src/services/runtime-policy-types'
+import type { RunContextSnapshot } from '../src/services/run-context'
+
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value ?? null)) as T
+
+type CoordinatorOptions = {
+  plannerService?: PlannerServiceInterface
+  runtimeOverrides?: Partial<{
+    runStructured: (
+      schema: unknown,
+      messages: unknown,
+      options?: { schemaName?: string }
+    ) => Promise<any>
+  }>
+}
 
 class MemoryFlexPersistence {
   runs = new Map<string, any>()
@@ -27,13 +41,13 @@ class MemoryFlexPersistence {
   results = new Map<string, Record<string, unknown>>()
   planVersions = new Map<string, number>()
   pendingResults = new Map<string, Record<string, unknown>>()
-  contexts = new Map<string, Record<string, unknown>>()
+  contexts = new Map<string, RunContextSnapshot>()
   snapshots = new Map<
     string,
     {
       planVersion: number
       snapshot: { nodes: any[]; edges: any[]; metadata: Record<string, unknown>; pendingState?: { completedNodeIds: string[]; nodeOutputs: Record<string, Record<string, unknown>> } }
-      facets: Record<string, unknown> | null
+      facets: RunContextSnapshot | null
       schemaHash: string | null
       pendingNodeIds: string[]
       createdAt: Date
@@ -45,7 +59,7 @@ class MemoryFlexPersistence {
   async createOrUpdateRun(record: any) {
     this.runs.set(record.runId, { ...record })
     if (record.contextSnapshot) {
-      this.contexts.set(record.runId, { ...record.contextSnapshot })
+      this.contexts.set(record.runId, clone(record.contextSnapshot))
     }
     this.statuses.set(record.runId, record.status)
   }
@@ -61,7 +75,7 @@ class MemoryFlexPersistence {
     version: number,
     nodes: any[],
     options: {
-      facets?: Record<string, unknown>
+      facets?: RunContextSnapshot
       schemaHash?: string | null
       edges?: unknown
       planMetadata?: Record<string, unknown>
@@ -89,7 +103,7 @@ class MemoryFlexPersistence {
     const run = this.runs.get(runId)
     if (run) run.planVersion = version
     if (options.facets) {
-      this.contexts.set(runId, { ...options.facets })
+      this.contexts.set(runId, clone(options.facets))
     }
     const pendingNodeIds = nodes
       .filter((node) => node.status !== 'completed')
@@ -118,7 +132,7 @@ class MemoryFlexPersistence {
             }
           : {})
       },
-      facets: options.facets ? { ...options.facets } : null,
+      facets: options.facets ? clone(options.facets) : null,
       schemaHash: options.schemaHash ?? null,
       pendingNodeIds,
       createdAt: timestamp,
@@ -133,10 +147,10 @@ class MemoryFlexPersistence {
   }
 
   async recordResult(runId: string, result: Record<string, unknown>, options: any = {}) {
-    this.results.set(runId, result)
-    this.outputs.set(runId, { result: { ...result }, options: { ...options } })
+    this.results.set(runId, clone(result))
+    this.outputs.set(runId, { result: clone(result), options: clone(options ?? {}) })
     const run = this.runs.get(runId)
-    if (run) run.result = result
+    if (run) run.result = clone(result)
     const status = options.status ?? 'completed'
     this.statuses.set(runId, status)
     if (run) run.status = status
@@ -145,13 +159,13 @@ class MemoryFlexPersistence {
   async ensure() {}
 
   async recordPendingResult(runId: string, result: Record<string, unknown>) {
-    this.pendingResults.set(runId, result)
+    this.pendingResults.set(runId, clone(result))
     const run = this.runs.get(runId)
-    if (run) run.result = result
+    if (run) run.result = clone(result)
   }
 
-  async saveRunContext(runId: string, snapshot: Record<string, unknown>) {
-    this.contexts.set(runId, { ...snapshot })
+  async saveRunContext(runId: string, snapshot: RunContextSnapshot) {
+    this.contexts.set(runId, clone(snapshot))
   }
 
   async loadFlexRun(runId: string) {
@@ -179,9 +193,9 @@ class MemoryFlexPersistence {
         envelope: run.envelope,
         schemaHash: run.schemaHash ?? null,
         metadata: run.metadata ?? null,
-        result: this.results.get(runId) ?? this.pendingResults.get(runId) ?? null,
+        result: clone(this.results.get(runId) ?? this.pendingResults.get(runId) ?? null),
         planVersion: run.planVersion ?? 1,
-        contextSnapshot: this.contexts.get(runId) ?? undefined
+        contextSnapshot: this.contexts.has(runId) ? clone(this.contexts.get(runId)) : undefined
       },
       nodes
     }
@@ -399,10 +413,7 @@ function createPlannerServiceStub(options: { firstPlanInvalid?: boolean } = {}):
   }
 }
 
-function createCoordinator(
-  persistence: MemoryFlexPersistence,
-  options: { plannerService?: PlannerServiceInterface } = {}
-) {
+function createCoordinator(persistence: MemoryFlexPersistence, options: CoordinatorOptions = {}) {
   const strategyCapability = {
     capabilityId: STRATEGY_CAPABILITY_ID,
     status: 'active' as const,
@@ -528,6 +539,10 @@ function createCoordinator(
         ]
       }
     })
+  }
+
+  if (options.runtimeOverrides) {
+    Object.assign(runtime, options.runtimeOverrides)
   }
 
   const engine = new FlexExecutionEngine(persistence as any, {
@@ -903,29 +918,32 @@ describe('FlexRunCoordinator', () => {
     const persistence = new MemoryFlexPersistence()
     const { coordinator } = createCoordinator(persistence)
     const runId = 'flex_resume_test'
-    const facetSnapshot = {
-      copyVariants: {
-        value: [
-          {
-            headline: 'Resume Success',
-            body: 'Stored facet payload revived after HITL pause to complete the run.',
-            callToAction: 'Let us know'
-          },
-          {
-            headline: 'Variant B Returns',
-            body: 'Second output variant ensures schema validation passes during the resume flow.',
-            callToAction: 'Share feedback'
-          }
-        ],
-        updatedAt: '2025-04-01T12:00:00.000Z',
-        provenance: [
-          {
-            nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
-            capabilityId: CONTENT_CAPABILITY_ID,
-            timestamp: '2025-04-01T12:00:00.000Z'
-          }
-        ]
-      }
+    const contextSnapshot: RunContextSnapshot = {
+      facets: {
+        copyVariants: {
+          value: [
+            {
+              headline: 'Resume Success',
+              body: 'Stored facet payload revived after HITL pause to complete the run.',
+              callToAction: 'Let us know'
+            },
+            {
+              headline: 'Variant B Returns',
+              body: 'Second output variant ensures schema validation passes during the resume flow.',
+              callToAction: 'Share feedback'
+            }
+          ],
+          updatedAt: '2025-04-01T12:00:00.000Z',
+          provenance: [
+            {
+              nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
+              capabilityId: CONTENT_CAPABILITY_ID,
+              timestamp: '2025-04-01T12:00:00.000Z'
+            }
+          ]
+        }
+      },
+      hitlClarifications: []
     }
 
     persistence.runs.set(runId, {
@@ -936,17 +954,17 @@ describe('FlexRunCoordinator', () => {
       metadata: null,
       result: null,
       planVersion: 1,
-      contextSnapshot: facetSnapshot
+      contextSnapshot: contextSnapshot
     })
     persistence.statuses.set(runId, 'awaiting_hitl')
-    persistence.contexts.set(runId, { ...facetSnapshot })
+    persistence.contexts.set(runId, clone(contextSnapshot))
     persistence.nodes.set(`${runId}:ContentGeneratorAgent_linkedinVariants_1`, {
       nodeId: 'ContentGeneratorAgent_linkedinVariants_1',
       capabilityId: CONTENT_CAPABILITY_ID,
       label: 'Copywriter – LinkedIn Variants',
       status: 'completed',
       context: null,
-      output: facetSnapshot.copyVariants.value,
+      output: contextSnapshot.facets.copyVariants.value,
       startedAt: new Date(),
       completedAt: new Date()
     })
@@ -970,7 +988,7 @@ describe('FlexRunCoordinator', () => {
           label: 'Copywriter – LinkedIn Variants',
           status: 'completed',
           context: null,
-          output: facetSnapshot.copyVariants.value,
+          output: contextSnapshot.facets.copyVariants.value,
           facets: null,
           contracts: null,
           provenance: null,
@@ -992,13 +1010,13 @@ describe('FlexRunCoordinator', () => {
         }
       ],
       {
-        facets: facetSnapshot,
+        facets: contextSnapshot,
         schemaHash: null,
         pendingState: {
           completedNodeIds: ['ContentGeneratorAgent_linkedinVariants_1'],
           nodeOutputs: {
             ContentGeneratorAgent_linkedinVariants_1: {
-              copyVariants: facetSnapshot.copyVariants.value
+              copyVariants: contextSnapshot.facets.copyVariants.value
             }
           },
           policyActions: [],
@@ -1229,7 +1247,7 @@ describe('FlexRunCoordinator', () => {
     const resumeOutputRecord = persistence.outputs.get(resumeResult.runId)
     expect(resumeOutputRecord?.options?.status).toBe('completed')
     expect(resumeOutputRecord?.options?.facets).toBeDefined()
-    const resumeFacetSnapshot = resumeOutputRecord?.options?.facets?.copyVariants
+    const resumeFacetSnapshot = resumeOutputRecord?.options?.facets?.facets?.copyVariants
     expect(resumeFacetSnapshot?.provenance?.length ?? 0).toBeGreaterThan(0)
     const resumeSnapshot = resumeOutputRecord?.options?.snapshot
     if (resumeSnapshot) {
@@ -1249,6 +1267,90 @@ describe('FlexRunCoordinator', () => {
         )
       ).toBe(true)
     }
+  })
+
+  it('pauses for HITL clarification and replays operator answers on resume', async () => {
+    const persistence = new MemoryFlexPersistence()
+    const clarifyQuestion = 'Which audience segment should we emphasise?'
+    const clarifyAnswer = 'Highlight developer advocates within the platform engineering group.'
+    let clarifyRequestId: string | null = null
+    const runtimeOverride = vi.fn(async (_schema, messages) => {
+      const ctx = getHitlContext()
+      expect(ctx).toBeDefined()
+      const baseOutput = {
+        copyVariants: [
+          {
+            headline: 'Team Retreat Spotlight',
+            body: 'AwesomePoster just wrapped an unforgettable retreat and is searching for creators who love building tooling for developers.',
+            callToAction: 'Join the team'
+          },
+          {
+            headline: 'Build The Future With AwesomePoster',
+            body: 'We are expanding our developer experience crew and want teammates who thrive on human-first automation to shape the roadmap.',
+            callToAction: 'Apply today'
+          }
+        ]
+      }
+
+      if (runtimeOverride.mock.calls.length === 1) {
+        const result = await ctx!.hitlService.raiseRequest({
+          question: clarifyQuestion,
+          kind: 'clarify',
+          options: [],
+          allowFreeForm: true,
+          urgency: 'normal'
+        })
+        clarifyRequestId = result.request.id
+        return baseOutput
+      }
+
+      const serialized = JSON.stringify(messages)
+      expect(serialized).toContain('HITL clarifications history')
+      expect(serialized).toContain(clarifyQuestion)
+      expect(serialized).toContain(clarifyAnswer)
+      return baseOutput
+    })
+
+    const { coordinator, hitlService } = createCoordinator(persistence, {
+      runtimeOverrides: { runStructured: runtimeOverride }
+    })
+    const events: FlexEvent[] = []
+
+    const initialResult = await coordinator.run(buildEnvelope(), {
+      correlationId: 'cid_hitl_clarify',
+      onEvent: async (evt) => events.push(evt)
+    })
+
+    expect(runtimeOverride).toHaveBeenCalledTimes(1)
+    expect(initialResult.status).toBe('awaiting_hitl')
+    expect(events.some((evt) => evt.type === 'hitl_request')).toBe(true)
+    expect(clarifyRequestId).toBeTruthy()
+    expect(hitlService.state.pendingRequestId).toBe(clarifyRequestId)
+    const storedContext = persistence.contexts.get(initialResult.runId)
+    expect(storedContext?.hitlClarifications).toHaveLength(1)
+    expect(storedContext?.hitlClarifications?.[0]?.question).toBe(clarifyQuestion)
+    expect(storedContext?.hitlClarifications?.[0]?.answer).toBeUndefined()
+
+    await hitlService.applyResponses(initialResult.runId, [
+      { requestId: clarifyRequestId!, freeformText: clarifyAnswer }
+    ])
+
+    const resumeEnvelope = buildEnvelope({
+      constraints: { resumeRunId: initialResult.runId }
+    })
+    const resumeEvents: FlexEvent[] = []
+
+    const resumeResult = await coordinator.run(resumeEnvelope, {
+      correlationId: 'cid_hitl_clarify_resume',
+      onEvent: async (evt) => resumeEvents.push(evt)
+    })
+
+    expect(runtimeOverride).toHaveBeenCalledTimes(2)
+    expect(resumeResult.status).toBe('completed')
+    expect(resumeResult.output?.copyVariants).toHaveLength(2)
+    const finalContext = persistence.contexts.get(resumeResult.runId)
+    expect(finalContext?.hitlClarifications?.[0]?.answer).toBe(clarifyAnswer)
+    expect(resumeEvents.some((evt) => evt.type === 'hitl_resolved')).toBe(true)
   })
 
   it('emits runtime policy events when action emits custom event', async () => {

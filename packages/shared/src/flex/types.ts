@@ -243,6 +243,16 @@ export const ContextBundleSchema = z.object({
 })
 export type ContextBundle = z.infer<typeof ContextBundleSchema>
 
+export type HitlClarificationEntry = {
+  questionId: string
+  nodeId: string
+  capabilityId?: string
+  question: string
+  answer?: string
+  createdAt: string
+  answeredAt?: string
+}
+
 export const FlexEnvelopeConversationMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['assistant', 'user', 'system']),
