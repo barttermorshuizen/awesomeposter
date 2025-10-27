@@ -862,7 +862,7 @@ Once validated, the plan graph is the single source of truth for control flow.
 - HITL request rows now persist `pending_node_id`, `contract_summary_json`, and `operator_prompt`, allowing the coordinator to replay the exact node contract (facets + schema expectations) and the orchestrator-authored guidance string without recomputing metadata during resume.
 
 ## 9. Data Model & Persistence
-- `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`).
+- `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`) plus persisted run context (`hitlClarifications` storing the structured clarify question/answer history).
 - `flex_plan_nodes`: stores node-level state, selected capability IDs, context hashes, and validation status for auditing and resumption.
 - `flex_plan_snapshots`: versioned checkpoints serializing plan graphs (node facets, compiled contracts, provenance, pending node IDs) and the facet snapshot used for resume/HITL flows.
 - `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, completion status, and timestamps so downstream systems can audit or resume runs.
@@ -879,6 +879,9 @@ Once validated, the plan graph is the single source of truth for control flow.
 ## 10. API Surface (Initial)
 - `POST /api/v1/flex/run.stream`: primary SSE entry point; accepts `TaskEnvelope`, streams `FlexEvent` frames, and enforces output schema validation.
 - `POST /api/v1/flex/run.resume`: resumes paused runs after HITL resolution; accepts the run ID and operator payload.
+- `GET /api/v1/flex/tasks`: lists pending flex human assignments with filter support (`assignedTo`, `status`, `role`).
+- `POST /api/v1/flex/tasks/:taskId/decline`: records a structured decline for a flex task, ending the run according to policy.
+- `POST /api/v1/flex/tasks/:taskId/reassign`: updates assignment metadata (for example new assignee, due date) without closing the task.
 - `POST /api/v1/flex/hitl/resolve`: records operator decisions that originate from the SPA; reuses existing auth model.
 - `POST /api/v1/flex/capabilities/register`: agents call this on boot to advertise or refresh their `CapabilityRegistration`; orchestrator updates the registry and acknowledges health status.
 - `GET /api/v1/flex/runs/:id`: debugging endpoint returning persisted envelope, plan graph, and outputs (auth-gated).
@@ -901,7 +904,7 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 
 Each frame carries `runId` (and `nodeId` for node-scoped events) at the top level, allowing consumers to correlate updates without re-parsing payloads.
 
-**Resume after HITL:** Once `/api/hitl/resume` records operator approval, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`.
+**Resume after HITL/Flex Task Submission:** Once the operator submits via `/api/v1/flex/run.resume`, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`. Declines go through `/api/v1/flex/tasks/:taskId/decline`, triggering policy-defined fail paths without attempting resume.
 
 Example `curl` invocation:
 
@@ -1097,6 +1100,8 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 | `qaRubric` | input | Policy and quality rubric settings QA should enforce. | Object with `checks[]` (enum), `thresholds` (object). |
 | `qaFindings` | output | QA results with scores and compliance flags. | Object with `scores`, `issues[]`, `overallStatus`. |
 | `recommendationSet` | output | Normalised follow-up actions for editors or writers. | Array of `{ severity, recommendation, rationale }`. |
+| `clarificationRequest` | input | Outstanding questions and rationale requiring human strategist input. | Object with `pendingQuestions[]` containing `{ id, question, priority, required, context }`. |
+| `clarificationResponse` | output | Structured answers or declines supplied by human strategists. | Object with `responses[]` capturing `{ questionId, status, response, notes }` plus optional attachments. |
 
 ### Current Inventory
 
@@ -1105,6 +1110,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 | `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `assetBundle` | `writerBrief`, `planKnobs`, `strategicRationale` | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
 | `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | `writerBrief`, `planKnobs`, `toneOfVoice`, `audienceProfile` | `copyVariants` | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
 | `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | `copyVariants`, `writerBrief`, `qaRubric` | `qaFindings`, `recommendationSet` | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
+| `HumanAgent.clarifyBrief` | Human Operator – Brief Clarification | Resolves planner clarification requests with structured human responses; declines or missed SLAs fail the run. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `writerBrief`, `clarificationRequest` | `clarificationResponse` | `packages/flex-agents-server/src/agents/human-clarify-brief.ts` |
 
 > Capability metadata, facet coverage, costs, and heartbeat settings are the source of truth—update the tables above and the corresponding agent module together during future agent work. Add new facets to the catalog before referencing them in capabilities.
 
@@ -1168,6 +1174,31 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 ### 15.1 Concept Overview
 - HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds.
+
+### 15.x HITL Clarify Extension
+> *Extension of existing HITL mechanism — adds node-initiated clarify flow.*
+
+- Nodes can call `hitl.clarify()` when missing or ambiguous inputs block forward progress. The call captures a single textual question and suspends execution until a human supplies a single textual response.
+- The ExecutionEngine emits a `hitl_request` with `kind: "clarify"`, persists the active snapshot, and pauses the run. When `/api/v1/flex/run.resume` returns, the engine **reruns the same node that issued the clarify call** so it can evaluate the answer with no topology changes.
+- Clarify requests never create a new plan version and do not mutate the `PlanGraph`; they are treated as deterministic pauses against the existing node contract.
+- `/api/v1/flex/run.resume` validates the supplied textual answer, appends an entry to `runContext.hitlClarifications[]`, and restarts the issuing node with the enriched context. Multiple clarification cycles can accumulate in this array over the lifetime of a run.
+- Each clarification entry is stored with rich metadata so downstream LLM executions can map answers back to the exact questions they asked:
+
+```ts
+interface ClarificationEntry {
+  nodeId: string
+  capabilityId?: string
+  questionId: string
+  question: string
+  answer?: string
+  createdAt: string
+  answeredAt?: string
+}
+```
+
+- The metadata (`nodeId`, `questionId`, etc.) ensures the LLM processing a rerun node can identify which outstanding clarifications it requested and which answers are now available.
+- Division of responsibilities remains clean: **policies continue to trigger approve/reject HITL for output governance**, while **nodes initiate clarify HITL when they require missing or ambiguous inputs resolved by a human**.
+
 - Human Agents extend the CapabilityRegistry with `agentType: "human"` entries so the planner can emit plan nodes that resolve to human-executed capabilities. The ExecutionEngine dispatches them like any other capability node.
 - These nodes target work that demands human judgment, clarification, or creative input. They are deterministic plan graph nodes with explicit inputs/outputs, not ad-hoc runtime pauses.
 - Pause/resume semantics, schema compilation, and validation operate identically across AI and human nodes, preserving deterministic execution and a complete audit trail.
@@ -1192,6 +1223,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - A facet widget registry (for example `ToneOfVoiceWidget`, `ObjectiveBriefWidget`, `CopyVariantsWidget`) maps facet names to reusable UI components that assemble into the task surface.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
+- Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
 - Example facet/widget mappings:
 
 | Facet | Example Widget | User Role |
@@ -1204,9 +1236,12 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 ### 15.5 Notification and Assignment Model
 - `node_start` events for human-executed nodes include assignment metadata such as `assignedTo`, `role`, and `dueAt` so downstream tooling can route work.
 - The SPA or a notification service subscribes to these events and surfaces tasks via in-app queues, email, or chat integrations.
-- Operators query their backlog with `GET /api/v1/flex/hitl/tasks?assignedTo=me` (or equivalent filters) and launch the facet-driven task surface to work the node.
+- Operators query their backlog with `GET /api/v1/flex/tasks?assignedTo=me` (or equivalent filters) and launch the facet-driven task surface to work the node.
 - Once structured output is submitted, the orchestrator validates it, marks the node resolved, and the plan continues.
+- Declines call `POST /api/v1/flex/tasks/:taskId/decline` with structured reason codes, triggering policy-driven failure paths; reassignments use `POST /api/v1/flex/tasks/:taskId/reassign` to update assignee metadata without altering node contracts.
 - This approach adds traceability and role-based routing without altering the orchestrator’s core execution loop.
+
+> **Endpoint Boundary:** `/api/v1/flex/tasks` serves the human work queue. Legacy `/api/hitl/*` endpoints remain reserved for policy approvals/declines; if compatibility is required, they may proxy into the flex task APIs without exposing HITL semantics to routine human work.
 
 ### 15.6 Planner Behavior
 - The planner can inject `HumanAgent.*` nodes explicitly when replanning requires human clarification (for example rationale: “Need clarification on objective”).
@@ -1232,7 +1267,14 @@ graph LR
 ### 15.9 Offline and Notification Semantics
 - If no operator UI is connected, execution suspends deterministically when a Human Agent node starts; the run enters an `awaiting_human` state persisted in `flex_plan_nodes`.
 - Telemetry frames (`node_start`, `executorType: "human"`) still emit, but live delivery is optional; durable state in the database keeps the run recoverable.
-- Pending tasks remain discoverable through APIs such as `GET /api/v1/flex/hitl/tasks?status=pending` or via services monitoring `flex_plan_nodes`.
+- Pending tasks remain discoverable through APIs such as `GET /api/v1/flex/tasks?status=pending` or via services monitoring `flex_plan_nodes`.
 - The orchestrator does not require active SSE listeners—it idles safely until `/api/v1/flex/run.resume` receives valid output.
-- Optional runtime policies (for example `onTimeout`, `onMetricBelow`) can detect long-idle human tasks and trigger replanning or escalation actions.
+- Optional runtime policies (for example `onTimeout`, `onMetricBelow`) can detect long-idle human tasks and trigger replanning or escalation actions; reassignments via `/api/v1/flex/tasks/:taskId/reassign` update task metadata without duplicating records.
 - Persistent execution plus eventual UI delivery keeps the system resilient to operator downtime and ensures safe resumption once human input arrives.
+
+### 15.10 Registration & Governance Notes
+- Human capabilities register via `/api/v1/flex/capabilities/register` with `agentType: "human"`; the registry compiles facet-backed contracts identically to AI entries.
+- Capability payloads include `instructionTemplates` for UI copy and `assignmentDefaults` so operator tooling can render consistent guidance without custom configuration.
+- Response SLAs derive from the `FLEX_HUMAN_ASSIGNMENT_TIMEOUT_SECONDS` environment variable (default 15 minutes). Missed SLAs fail the active run with a recorded rationale.
+- Each assignment sends a single notification (`maxNotifications: 1`). Operators are expected to complete all clarifications in one submission.
+- Declining any clarification item triggers `onDecline: "fail_run"`, causing the orchestrator to terminate the run and surface the decline reason for follow-up triage.
