@@ -1677,7 +1677,7 @@ watch(
                   v-for="frame in eventLog"
                   :key="`${frame.timestamp}-${frame.id ?? ''}-${frame.type}`"
                   size="x-small"
-                  :dot-color="frame.type === 'error' || frame.type === 'validation_error' ? 'error' : 'primary'"
+                  :dot-color="frame.type === 'node_error' || frame.type === 'validation_error' ? 'error' : 'primary'"
                 >
                   <div class="d-flex align-center justify-space-between">
                     <div class="text-body-2">

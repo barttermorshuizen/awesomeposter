@@ -2,6 +2,7 @@ import Ajv, { type ErrorObject } from 'ajv'
 import { z, type ZodTypeAny } from 'zod'
 import type { FlexPlan, FlexPlanNode } from './flex-planner'
 import type {
+  AssignmentDefaults,
   TaskEnvelope,
   FlexEvent,
   OutputContract,
@@ -234,6 +235,13 @@ export class HitlPauseError extends Error {
   }
 }
 
+export class AwaitingHumanInputError extends Error {
+  constructor(message = 'Awaiting human operator response') {
+    super(message)
+    this.name = 'AwaitingHumanInputError'
+  }
+}
+
 export class RunPausedError extends Error {
   constructor(message = 'Execution paused by runtime policy') {
     super(message)
@@ -288,6 +296,17 @@ export class FlexExecutionEngine {
     this.runtime = options?.runtime ?? getAgents().runtime
     this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
     this.facetCompiler = new FacetContractCompiler({ catalog: getFacetCatalog() })
+  }
+
+  private getExecutorType(node: FlexPlanNode): 'ai' | 'human' {
+    if (node.executor?.type === 'human') {
+      return 'human'
+    }
+    const metadata = node.metadata as Record<string, unknown> | undefined
+    if (metadata && typeof metadata.executorType === 'string' && metadata.executorType === 'human') {
+      return 'human'
+    }
+    return 'ai'
   }
 
   private async handleVirtualNode(runId: string, node: FlexPlanNode, opts: FlexExecutionOptions) {
@@ -470,11 +489,28 @@ export class FlexExecutionEngine {
         continue
       }
 
+      const executorType = this.getExecutorType(node)
+      const isHumanExecutor = executorType === 'human'
       const startedAt = new Date()
-      nodeStatuses.set(node.id, 'running')
+      const initialStatus: FlexPlanNodeStatus = isHumanExecutor ? 'awaiting_human' : 'running'
+      nodeStatuses.set(node.id, initialStatus)
       nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), startedAt })
+
+      if (node.bundle.nodeId !== node.id) {
+        node.bundle.nodeId = node.id
+      }
+      if (node.bundle.assignment) {
+        const assignmentId = node.bundle.assignment.assignmentId ?? `${runId}:${node.id}`
+        node.bundle.assignment.assignmentId = assignmentId
+        node.bundle.assignment.runId = node.bundle.assignment.runId ?? runId
+        node.bundle.assignment.nodeId = node.id
+        node.bundle.assignment.status = 'awaiting_submission'
+        node.bundle.assignment.updatedAt = startedAt.toISOString()
+        node.bundle.assignment.createdAt = node.bundle.assignment.createdAt ?? startedAt.toISOString()
+      }
+
       await this.persistence.markNode(runId, node.id, {
-        status: 'running',
+        status: initialStatus,
         capabilityId: node.capabilityId,
         label: node.label,
         context: node.bundle,
@@ -485,20 +521,40 @@ export class FlexExecutionEngine {
           runId,
           nodeId: node.id,
           capabilityId: node.capabilityId,
+          executorType,
           correlationId: opts.correlationId
         })
       } catch {}
-      await opts.onEvent(
-        this.buildEvent(
-          'node_start',
-          {
-            capabilityId: node.capabilityId,
-            label: node.label,
-            startedAt: startedAt.toISOString()
-          },
-          { runId, nodeId: node.id }
-        )
-      )
+
+      const nodeStartPayload = this.compactPayload({
+        capabilityId: node.capabilityId,
+        label: node.label,
+        startedAt: startedAt.toISOString(),
+        executorType,
+        contracts: node.contracts ? JSON.parse(JSON.stringify(node.contracts)) : undefined,
+        facets: node.facets ? JSON.parse(JSON.stringify(node.facets)) : undefined,
+        assignment: isHumanExecutor ? this.buildHumanAssignmentPayload(node, runId) : undefined
+      })
+
+      await opts.onEvent(this.buildEvent('node_start', nodeStartPayload, { runId, nodeId: node.id }))
+
+      if (isHumanExecutor) {
+        await this.pauseForHuman({
+          runId,
+          envelope,
+          plan,
+          node,
+          opts,
+          runContext,
+          nodeStatuses,
+          nodeOutputs,
+          nodeTimings,
+          completedNodeIds,
+          policyActions,
+          policyAttempts,
+          schemaHash: opts.schemaHash ?? null
+        })
+      }
 
       try {
         const result = await this.invokeCapability(runId, node, envelope, opts, plan, runContext, nodeOutputs)
@@ -580,6 +636,9 @@ export class FlexExecutionEngine {
         index += 1
       } catch (error) {
         if (error instanceof ReplanRequestedError) {
+          throw error
+        }
+        if (error instanceof AwaitingHumanInputError) {
           throw error
         }
         if (error instanceof HitlPauseError) {
@@ -732,6 +791,17 @@ export class FlexExecutionEngine {
       )
     }
     return result
+  }
+
+  async validateNodeOutput(
+    node: FlexPlanNode,
+    output: Record<string, unknown>,
+    runId: string,
+    opts: FlexExecutionOptions
+  ) {
+    const contract = node.contracts?.output
+    if (!contract) return
+    await this.ensureOutputMatchesContract(contract, output, { scope: 'capability_output', runId, nodeId: node.id }, opts)
   }
 
   private async resolveCapability(capabilityId: string): Promise<CapabilityRecord> {
@@ -1295,6 +1365,12 @@ export class FlexExecutionEngine {
     }
   }
 
+  private compactPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== undefined && value !== null)
+    )
+  }
+
   private clonePolicyActions(actions: PendingPolicyActionState[]): PendingPolicyActionState[] {
     return actions.map((action) => JSON.parse(JSON.stringify(action)) as PendingPolicyActionState)
   }
@@ -1569,6 +1645,116 @@ export class FlexExecutionEngine {
       return constraints.requiresHitlApproval
     }
     return false
+  }
+
+  private buildHumanAssignmentPayload(node: FlexPlanNode, runId: string): Record<string, unknown> {
+    const assignment = (node.bundle.assignment ?? {}) as Record<string, unknown>
+    const executorDefaults = node.executor?.assignment?.defaults ?? null
+    const defaults = (assignment.defaults as AssignmentDefaults | undefined) ?? executorDefaults ?? null
+    const metadata = assignment.metadata ?? node.executor?.assignment?.metadata ?? null
+    const instructions =
+      (assignment.instructions as string | undefined) ??
+      node.executor?.assignment?.instructions ??
+      (node.rationale && node.rationale.length ? node.rationale.join('\n') : undefined)
+
+    const payload: Record<string, unknown> = {
+      assignmentId: assignment.assignmentId ?? `${runId}:${node.id}`,
+      runId,
+      nodeId: node.id,
+      capabilityId: node.capabilityId ?? null,
+      label: node.label ?? null,
+      status: assignment.status ?? 'awaiting_submission',
+      role: assignment.role ?? (defaults as AssignmentDefaults | null)?.role ?? null,
+      assignedTo: assignment.assignedTo ?? (defaults as AssignmentDefaults | null)?.assignedTo ?? null,
+      dueAt: assignment.dueAt ?? null,
+      priority: assignment.priority ?? (defaults as AssignmentDefaults | null)?.priority ?? null,
+      notifyChannels: assignment.notifyChannels ?? (defaults as AssignmentDefaults | null)?.notifyChannels ?? null,
+      timeoutSeconds: assignment.timeoutSeconds ?? (defaults as AssignmentDefaults | null)?.timeoutSeconds ?? null,
+      maxNotifications:
+        assignment.maxNotifications ?? (defaults as AssignmentDefaults | null)?.maxNotifications ?? null,
+      instructions,
+      defaults: defaults ? JSON.parse(JSON.stringify(defaults)) : null,
+      metadata: metadata ? JSON.parse(JSON.stringify(metadata)) : null,
+      createdAt: assignment.createdAt ?? null,
+      updatedAt: assignment.updatedAt ?? null
+    }
+
+    return this.compactPayload(payload)
+  }
+
+  private async pauseForHuman(args: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    node: FlexPlanNode
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    nodeStatuses: Map<string, FlexPlanNodeStatus>
+    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    completedNodeIds: Set<string>
+    policyActions: PendingPolicyActionState[]
+    policyAttempts: Map<string, number>
+    schemaHash?: string | null
+  }): Promise<never> {
+    const {
+      runId,
+      plan,
+      node,
+      opts,
+      runContext,
+      nodeStatuses,
+      nodeOutputs,
+      nodeTimings,
+      completedNodeIds,
+      policyActions,
+      policyAttempts,
+      schemaHash
+    } = args
+
+    const facetsSnapshot = runContext.snapshot()
+    const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+
+    await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
+      facets: facetsSnapshot,
+      schemaHash: schemaHash ?? null,
+      edges: plan.edges,
+      planMetadata: plan.metadata,
+      pendingState: {
+        completedNodeIds: Array.from(completedNodeIds),
+        nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+        policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
+        policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+        mode: 'human'
+      }
+    })
+
+    await this.persistence.updateStatus(runId, 'awaiting_human')
+
+    try {
+      getLogger().info('flex_human_node_pause', {
+        runId,
+        nodeId: node.id,
+        capabilityId: node.capabilityId
+      })
+    } catch {}
+
+    const assignmentPayload = this.buildHumanAssignmentPayload(node, runId)
+    try {
+      await opts.onEvent(
+        this.buildEvent(
+          'log',
+          this.compactPayload({
+            severity: 'info',
+            event: 'awaiting_human',
+            assignment: assignmentPayload
+          }),
+          { runId, nodeId: node.id, message: 'awaiting_human_assignment' }
+        )
+      )
+    } catch {}
+
+    throw new AwaitingHumanInputError()
   }
 
   private async triggerHitlPause(args: {

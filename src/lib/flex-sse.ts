@@ -35,6 +35,15 @@ export function postFlexEventStream(opts: PostFlexStreamOptions): { abort: () =>
   let stopped = false
   let correlationId: string | undefined
 
+  const emitLog = (message: string, extra?: Partial<FlexEventWithId>) => {
+    onEvent({
+      type: 'log',
+      timestamp: new Date().toISOString(),
+      message,
+      ...extra
+    })
+  }
+
   const done = (async () => {
     try {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -63,13 +72,13 @@ export function postFlexEventStream(opts: PostFlexStreamOptions): { abort: () =>
           }
 
           const text = await res.text().catch(() => '')
-          onEvent({ type: 'log', message: `HTTP ${res.status} ${res.statusText}`, payload: { body: text } })
+          emitLog(`HTTP ${res.status} ${res.statusText}`, { payload: { body: text } })
           break
         }
 
         const reader = res.body?.getReader()
         if (!reader) {
-          onEvent({ type: 'log', message: 'No readable response body for SSE' })
+          emitLog('No readable response body for SSE')
           break
         }
 
@@ -84,9 +93,9 @@ export function postFlexEventStream(opts: PostFlexStreamOptions): { abort: () =>
         } catch (err: unknown) {
           const name = (err as { name?: string } | null)?.name
           if (name === 'AbortError') {
-            onEvent({ type: 'log', message: 'Stream aborted by user' })
+            emitLog('Stream aborted by user')
           } else {
-            onEvent({ type: 'log', message: String(err) })
+            emitLog(String(err))
           }
         }
         break

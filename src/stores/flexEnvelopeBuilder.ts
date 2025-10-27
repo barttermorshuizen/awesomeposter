@@ -8,6 +8,7 @@ import {
 } from '@awesomeposter/shared'
 
 type ConversationMessageRole = FlexEnvelopeConversationMessage['role']
+type ConversationLogMessage = FlexEnvelopeConversationMessage & { error?: boolean }
 
 type StartConversationOptions = {
   baseUrl: string
@@ -52,7 +53,7 @@ function buildRequestInit(body: unknown, token?: string): RequestInit {
 export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
   state: () => ({
     conversationId: null as string | null,
-    messages: [] as FlexEnvelopeConversationMessage[],
+    messages: [] as ConversationLogMessage[],
     pending: false,
     error: null as string | null,
     lastDeltaSummary: [] as string[],
@@ -87,8 +88,8 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
         timestamp: nowIso()
       })
     },
-    appendUserMessage(content: string): FlexEnvelopeConversationMessage {
-      const message: FlexEnvelopeConversationMessage = {
+    appendUserMessage(content: string): ConversationLogMessage {
+      const message: ConversationLogMessage = {
         id: generateId(),
         role: 'user',
         content,
@@ -102,12 +103,13 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
       for (const entry of messages) {
         const role: ConversationMessageRole =
           entry.role === 'assistant' || entry.role === 'system' ? entry.role : 'assistant'
-        this.messages.push({
+        const entryMessage: ConversationLogMessage = {
           id: entry.id ?? generateId(),
           role,
           content: entry.content,
           timestamp: entry.timestamp ?? nowIso()
-        })
+        }
+        this.messages.push(entryMessage)
       }
     },
     applyDelta(delta: FlexEnvelopeConversationDelta | null, snapshot?: TaskEnvelope | null) {

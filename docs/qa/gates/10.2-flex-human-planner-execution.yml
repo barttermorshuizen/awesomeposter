@@ -1,0 +1,32 @@
+schema: 1
+story: '10.2'
+story_title: 'Story 10.2: Flex Human Planner & Execution Lifecycle'
+gate: PASS
+status_reason: 'Resume validation now preserves awaiting_human state on bad submissions and emits node_error telemetry; regression test covers the failure path.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-27T06:45:45Z'
+top_issues: []
+waiver: { active: false }
+evidence:
+  tests_reviewed: 1
+  notes:
+    - 'npm run test:unit -- packages/flex-agents-server/__tests__/run-resume-human.spec.ts'
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Resume endpoint behaviour unchanged; no new exposure beyond existing auth + payload validation.'
+  reliability:
+    status: PASS
+    notes: 'Failed human submissions remain resumable and emit diagnostics, preventing stranded runs.'
+  performance:
+    status: PASS
+    notes: 'Early validation short-circuits before resuming execution; no additional load.'
+  maintainability:
+    status: PASS
+    notes: 'Unit test guards regression; logic localized inside FlexRunCoordinator for clarity.'
+quality_score: 100
+recommendations:
+  immediate: []
+  future:
+    - action: 'Add an integration flow test once the UI resumes human tasks to ensure node_error handling displays properly.'
+      refs: []

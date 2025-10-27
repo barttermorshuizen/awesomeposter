@@ -184,17 +184,8 @@ function createPlannerServiceStub(): PlannerServiceInterface {
         }
       ]
 
-      const branchRequests =
-        hasBlogCue
-          ? [
-              { id: 'planner_branch_1', label: 'Product spotlight', rationale: 'Cover product angle' },
-              { id: 'planner_branch_2', label: 'Culture story', rationale: 'Cover culture angle' }
-            ]
-          : undefined
-
       return {
         nodes,
-        branchRequests,
         metadata: {
           provider: 'planner-stub',
           model: 'stub-1.0'
@@ -205,7 +196,7 @@ function createPlannerServiceStub(): PlannerServiceInterface {
 }
 
 describe('FlexPlanner', () => {
-  it('assembles a multi-stage LinkedIn plan with normalization, provenance, and fallback', async () => {
+  it('assembles a multi-stage LinkedIn plan with normalization and provenance', async () => {
     const planner = new FlexPlanner(
       {
         capabilityRegistry: createRegistryStub([STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY]) as any,
@@ -266,14 +257,13 @@ describe('FlexPlanner', () => {
     expect(kinds).toContain('structuring')
     expect(kinds).toContain('execution')
     expect(kinds).toContain('validation')
-    expect(kinds).toContain('fallback')
+    expect(kinds).not.toContain('fallback')
 
     const hasNormalization = kinds.includes('transformation')
 
     const structuringNode = plan.nodes.find((node) => node.kind === 'structuring')!
     const executionNode = plan.nodes.find((node) => node.kind === 'execution')!
     const normalizationNode = plan.nodes.find((node) => node.kind === 'transformation') ?? null
-    const fallbackNode = plan.nodes.find((node) => node.kind === 'fallback')!
 
     expect(structuringNode.capabilityId).toBe(STRATEGY_CAPABILITY_ID)
     expect(structuringNode.facets.output).toContain('writerBrief')
@@ -290,14 +280,13 @@ describe('FlexPlanner', () => {
     } else {
       expect(plan.metadata.normalizationInjected).toBe(false)
     }
-
-    expect(fallbackNode.bundle.instructions?.some((instruction) => instruction.includes('Escalate'))).toBe(true)
     expect(plan.metadata.plannerContext).toMatchObject({
       channel: 'linkedin',
       formats: expect.arrayContaining(['linkedin'])
     })
     expect(plan.metadata.planVersionTag).toBeDefined()
-    expect(plan.nodes[plan.nodes.length - 1]?.kind).toBe('fallback')
+    const terminalKind = plan.nodes[plan.nodes.length - 1]?.kind
+    expect(['validation', 'transformation']).toContain(terminalKind)
   })
 
   it('creates branches and marks derived capabilities for blog scenarios', async () => {
@@ -352,14 +341,10 @@ describe('FlexPlanner', () => {
     const plan = await planner.buildPlan('run_blog', envelope)
 
     const branchNodes = plan.nodes.filter((node) => node.kind === 'branch')
-    expect(branchNodes).toHaveLength(2)
-    expect(branchNodes.map((node) => node.label)).toEqual([
-      'Inject branch: Product spotlight',
-      'Inject branch: Culture story'
-    ])
-    const firstExecutionIndex = plan.nodes.findIndex((node) => node.kind === 'execution')
-    expect(firstExecutionIndex).toBeGreaterThan(1)
-    expect(plan.nodes.slice(0, firstExecutionIndex).some((node) => node.kind === 'branch')).toBe(true)
+    expect(branchNodes).toHaveLength(0)
+    expect('branchPolicySources' in plan.metadata).toBe(false)
+    expect('ignoredBranchRequests' in plan.metadata).toBe(false)
+    expect('branchCount' in plan.metadata).toBe(false)
 
     const executionNode = plan.nodes.find((node) => node.kind === 'execution')!
     expect(executionNode.derivedCapability?.fromCapabilityId).toBe(CONTENT_CAPABILITY_ID)
@@ -370,7 +355,7 @@ describe('FlexPlanner', () => {
     })
   })
 
-  it('falls back gracefully for generic scenarios and retains HITL escape hatch', async () => {
+  it('handles generic scenarios with derived capability coverage', async () => {
     const planner = new FlexPlanner(
       {
         capabilityRegistry: createRegistryStub([STRATEGY_CAPABILITY, EXPERIMENTAL_CONTENT_CAPABILITY, QA_CAPABILITY]) as any,
@@ -431,8 +416,7 @@ describe('FlexPlanner', () => {
     expect(executionNode.derivedCapability).toBeTruthy()
     expect(executionNode.capabilityLabel).toContain('Content Generator')
 
-    const fallbackNode = plan.nodes.find((node) => node.kind === 'fallback')!
-    expect(fallbackNode.bundle.instructions?.some((instruction) => instruction.includes('Escalate'))).toBe(true)
-    expect(plan.nodes[plan.nodes.length - 1]?.kind).toBe('fallback')
+    const terminalKind = plan.nodes[plan.nodes.length - 1]?.kind
+    expect(['validation', 'transformation']).toContain(terminalKind)
   })
 })

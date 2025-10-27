@@ -352,7 +352,7 @@ export const flexRuns = pgTable('flex_runs', {
   runId: text('run_id').primaryKey(),
   threadId: text('thread_id'),
   status: text('status')
-    .$type<'pending' | 'running' | 'awaiting_hitl' | 'completed' | 'failed' | 'cancelled'>()
+    .$type<'pending' | 'running' | 'awaiting_hitl' | 'awaiting_human' | 'completed' | 'failed' | 'cancelled'>()
     .default('pending'),
   objective: text('objective'),
   envelopeJson: jsonb('envelope_json').$type<Record<string, unknown>>().notNull(),
@@ -375,7 +375,7 @@ export const flexPlanNodes = pgTable(
     capabilityId: text('capability_id'),
     label: text('label'),
     status: text('status')
-      .$type<'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl'>()
+      .$type<'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl' | 'awaiting_human'>()
       .default('pending'),
     contextJson: jsonb('context_json').$type<Record<string, unknown>>().default({}),
     outputJson: jsonb('output_json').$type<Record<string, unknown> | null>().default(null),
@@ -465,6 +465,7 @@ export const flexCapabilities = pgTable('flex_capabilities', {
   version: text('version').notNull(),
   displayName: text('display_name').notNull(),
   summary: text('summary').notNull(),
+  agentType: text('agent_type').$type<'ai' | 'human'>().notNull().default('ai'),
   inputTraitsJson: jsonb('input_traits_json').$type<Record<string, unknown> | null>().default(null),
   inputContractJson: jsonb('input_contract_json').$type<Record<string, unknown> | null>().default(null),
   outputContractJson: jsonb('output_contract_json').$type<Record<string, unknown> | null>().default(null),
@@ -473,6 +474,8 @@ export const flexCapabilities = pgTable('flex_capabilities', {
   costJson: jsonb('cost_json').$type<Record<string, unknown> | null>().default(null),
   preferredModels: text('preferred_models').array().default(sql`ARRAY[]::text[]`),
   heartbeatJson: jsonb('heartbeat_json').$type<Record<string, unknown> | null>().default(null),
+  instructionTemplatesJson: jsonb('instruction_templates_json').$type<Record<string, unknown> | null>().default(null),
+  assignmentDefaultsJson: jsonb('assignment_defaults_json').$type<Record<string, unknown> | null>().default(null),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown> | null>().default(null),
   status: text('status').$type<'active' | 'inactive'>().notNull().default('active'),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),

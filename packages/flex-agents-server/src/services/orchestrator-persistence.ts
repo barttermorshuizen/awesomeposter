@@ -9,7 +9,8 @@ import type {
   FlexPlanNodeFacets,
   FlexPlanNodeProvenance,
   FlexPlan,
-  FlexPlanEdge
+  FlexPlanEdge,
+  FlexPlanExecutor
 } from './flex-planner'
 import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 
@@ -308,8 +309,15 @@ export function setOrchestratorPersistence(instance: PersistenceImpl) {
   } catch {}
 }
 
-export type FlexRunStatus = 'pending' | 'running' | 'awaiting_hitl' | 'completed' | 'failed' | 'cancelled'
-export type FlexPlanNodeStatus = 'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl'
+export type FlexRunStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_hitl'
+  | 'awaiting_human'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+export type FlexPlanNodeStatus = 'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl' | 'awaiting_human'
 
 export type FlexPlanNodeSnapshot = {
   nodeId: string
@@ -326,6 +334,7 @@ export type FlexPlanNodeSnapshot = {
   provenance?: FlexPlanNodeProvenance | null
   metadata?: Record<string, unknown> | null
   rationale?: string[] | null
+  executor?: FlexPlanExecutor | null
 }
 
 export type FlexRunRecord = {
@@ -559,6 +568,7 @@ export class FlexRunPersistence {
           contracts: node.contracts ? clone(node.contracts) : null,
           provenance: node.provenance ? clone(node.provenance) : null,
           metadata: node.metadata ? clone(node.metadata) : null,
+          executor: node.executor ? clone(node.executor) : null,
           rationale: node.rationale ? clone(node.rationale) : null,
           startedAt: node.startedAt ? node.startedAt.toISOString() : null,
           completedAt: node.completedAt ? node.completedAt.toISOString() : null
@@ -796,7 +806,13 @@ export class FlexRunPersistence {
       output: (node.outputJson as Record<string, unknown> | null) ?? null,
       error: (node.errorJson as Record<string, unknown> | null) ?? null,
       startedAt: node.startedAt ?? null,
-      completedAt: node.completedAt ?? null
+      completedAt: node.completedAt ?? null,
+      facets: null,
+      contracts: null,
+      provenance: null,
+      metadata: null,
+      rationale: null,
+      executor: null
     }))
 
     return {
@@ -835,6 +851,92 @@ export class FlexRunPersistence {
       createdAt: row.createdAt ?? null,
       updatedAt: row.updatedAt ?? null
     }))
+  }
+
+  async listPendingHumanTasks(filters: { assignedTo?: string; role?: string; status?: string } = {}) {
+    const rows = await this.db
+      .select({
+        runId: flexPlanNodes.runId,
+        nodeId: flexPlanNodes.nodeId,
+        capabilityId: flexPlanNodes.capabilityId,
+        label: flexPlanNodes.label,
+        context: flexPlanNodes.contextJson,
+        nodeUpdatedAt: flexPlanNodes.updatedAt,
+        nodeCreatedAt: flexPlanNodes.createdAt,
+        runStatus: flexRuns.status,
+        runUpdatedAt: flexRuns.updatedAt
+      })
+      .from(flexPlanNodes)
+      .innerJoin(flexRuns, eq(flexPlanNodes.runId, flexRuns.runId))
+      .where(eq(flexPlanNodes.status, 'awaiting_human'))
+
+    const normalized = rows.map((row) => {
+      const context = (row.context as ContextBundle | null) ?? null
+      const assignment = context?.assignment ?? null
+      const status =
+        typeof assignment?.status === 'string' && assignment.status
+          ? (assignment.status as string)
+          : 'awaiting_submission'
+      const assignedTo = assignment?.assignedTo ?? null
+      const role = assignment?.role ?? null
+      const dueAt = assignment?.dueAt ?? null
+      const priority = assignment?.priority ?? null
+      const instructions = assignment?.instructions ?? null
+      const defaults = assignment?.defaults ? clone(assignment.defaults) : null
+      const metadata = assignment?.metadata ? clone(assignment.metadata) : null
+      const timeoutSeconds = assignment?.timeoutSeconds ?? null
+      const maxNotifications = assignment?.maxNotifications ?? null
+      const notifyChannels = assignment?.notifyChannels ?? null
+      const taskId = assignment?.assignmentId ?? `${row.runId}:${row.nodeId}`
+      const createdAt =
+        assignment?.createdAt ??
+        (row.nodeCreatedAt ? row.nodeCreatedAt.toISOString() : null)
+      const updatedAt =
+        assignment?.updatedAt ??
+        (row.nodeUpdatedAt ? row.nodeUpdatedAt.toISOString() : null)
+
+      return {
+        taskId,
+        runId: row.runId,
+        nodeId: row.nodeId,
+        capabilityId: row.capabilityId ?? null,
+        label: row.label ?? null,
+        status,
+        assignedTo,
+        role,
+        dueAt,
+        priority,
+        instructions,
+        defaults,
+        metadata,
+        timeoutSeconds,
+        maxNotifications,
+        notifyChannels,
+        createdAt,
+        updatedAt,
+        runStatus: row.runStatus ?? null,
+        runUpdatedAt: row.runUpdatedAt ? row.runUpdatedAt.toISOString() : null
+      }
+    })
+
+    return normalized
+      .filter((task) => {
+        if (filters.assignedTo) {
+          if (!task.assignedTo || task.assignedTo !== filters.assignedTo) return false
+        }
+        if (filters.role) {
+          if (!task.role || task.role !== filters.role) return false
+        }
+        if (filters.status) {
+          if (task.status !== filters.status) return false
+        }
+        return true
+      })
+      .sort((a, b) => {
+        const left = a.updatedAt ?? ''
+        const right = b.updatedAt ?? ''
+        return right.localeCompare(left)
+      })
   }
 
   async recordResumeAudit(

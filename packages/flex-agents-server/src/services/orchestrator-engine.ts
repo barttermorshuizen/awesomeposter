@@ -6,8 +6,20 @@ import { getHitlService, resolveHitlDecision, parseHitlDecisionAction, type Hitl
 import { withHitlContext } from './hitl-context';
 import { genCorrelationId, getLogger } from './logger';
 import { getOrchestratorPersistence, type OrchestratorRunStatus } from './orchestrator-persistence';
+import { HITL_TOOL_NAME } from '../tools/hitl';
 
 type SpecialistId = 'strategy' | 'generation' | 'qa';
+
+type ToolEventRecord = {
+  seq: number;
+  stepId: string | null;
+  type: 'tool_call' | 'tool_result' | 'metrics';
+  name?: string;
+  args?: unknown;
+  result?: unknown;
+  durationMs?: number;
+  tokens?: number;
+};
 
 function mapToCapabilityIdOrAction(value: any): { capabilityId?: string; action?: 'finalize' } | undefined {
   const s = String(value || '').toLowerCase().trim();
@@ -249,11 +261,28 @@ export async function runOrchestratorEngine(
   const resumeKey = (req as any).threadId || (req.mode === 'app' ? (req.briefId || undefined) : undefined);
   const runId = resumeKey || cid || genCorrelationId();
 
+  const toolEvents: ToolEventRecord[] = [];
+  let toolEventSeq = 0;
+  let activeToolStepId: string | null = null;
+
   const toolEventForwarder = (ev: any) => {
-    const name = String(ev?.name || '');
-    if (ev?.type === 'tool_call') onEvent({ type: 'tool_call', message: name, data: { args: ev.args }, correlationId: cid });
-    if (ev?.type === 'tool_result') onEvent({ type: 'tool_result', message: name, data: { result: ev.result }, durationMs: ev.durationMs, correlationId: cid });
-    if (ev?.type === 'metrics') onEvent({ type: 'metrics', tokens: ev.tokens, durationMs: ev.durationMs, correlationId: cid });
+    const name = typeof ev?.name === 'string' ? ev.name : '';
+    const type = ev?.type;
+    if (type === 'tool_call' || type === 'tool_result' || type === 'metrics') {
+      toolEvents.push({
+        seq: ++toolEventSeq,
+        stepId: activeToolStepId,
+        type,
+        name: name || undefined,
+        args: ev?.args,
+        result: ev?.result,
+        durationMs: ev?.durationMs,
+        tokens: ev?.tokens
+      });
+    }
+    if (type === 'tool_call') onEvent({ type: 'tool_call', message: name, data: { args: ev.args }, correlationId: cid });
+    if (type === 'tool_result') onEvent({ type: 'tool_result', message: name, data: { result: ev.result }, durationMs: ev.durationMs, correlationId: cid });
+    if (type === 'metrics') onEvent({ type: 'metrics', tokens: ev.tokens, durationMs: ev.durationMs, correlationId: cid });
   };
 
   const registry: Record<SpecialistId, { name: string; instance?: any }> = {} as any;
@@ -763,6 +792,10 @@ export async function runOrchestratorEngine(
     let text = '';
     let attempt = 0;
     let durationMs = 0;
+    const eventStartIndex = toolEvents.length;
+    const toolStepId = stepId || sid;
+    activeToolStepId = toolStepId;
+    let awaitingHitlForStep = false;
     const withTimeout = async <T>(p: Promise<T>, ms: number) => {
       return await Promise.race([
         p,
@@ -805,28 +838,63 @@ export async function runOrchestratorEngine(
       }
     };
 
-    while (true) {
-      try {
-        attempt += 1;
-        text = await runOnce();
-        break;
-      } catch (err: any) {
-        const isTimeout = err && String(err.message || '').includes('STEP_TIMEOUT');
-        if (attempt <= MAX_RETRIES) {
-          onEvent({ type: 'warning', message: `Step ${sid} failed${isTimeout ? ' (timeout)' : ''}; retrying`, data: { attempt }, correlationId: cid });
-          continue;
+    try {
+      while (true) {
+        try {
+          attempt += 1;
+          text = await runOnce();
+          break;
+        } catch (err: any) {
+          const isTimeout = err && String(err.message || '').includes('STEP_TIMEOUT');
+          if (attempt <= MAX_RETRIES) {
+            onEvent({ type: 'warning', message: `Step ${sid} failed${isTimeout ? ' (timeout)' : ''}; retrying`, data: { attempt }, correlationId: cid });
+            continue;
+          }
+          onEvent({ type: 'warning', message: `Step ${sid} failed; proceeding best-effort`, data: { error: String(err?.message || err) }, correlationId: cid });
+          text = '';
+          break;
         }
-        onEvent({ type: 'warning', message: `Step ${sid} failed; proceeding best-effort`, data: { error: String(err?.message || err) }, correlationId: cid });
-        text = '';
-        break;
       }
+    } finally {
+      activeToolStepId = null;
     }
+
+    const stepToolEvents = toolEvents.slice(eventStartIndex);
+    const hitlToolResult = stepToolEvents.find((ev) => ev.type === 'tool_result' && ev.name === HITL_TOOL_NAME && ev.result && typeof ev.result === 'object' && (ev.result as any).status === 'pending');
+    if (hitlToolResult) {
+      awaitingHitlForStep = true;
+      try {
+        onEvent({
+          type: 'message',
+          message: 'hitl_pending',
+          data: {
+            capabilityId: sid,
+            requestId: typeof (hitlToolResult.result as any)?.requestId === 'string' ? (hitlToolResult.result as any).requestId : undefined
+          },
+          correlationId: cid
+        });
+      } catch {}
+    }
+    if (!awaitingHitlForStep && hitlAwaiting && (hitlAwaiting.stepId === stepId || hitlAwaiting.pendingNodeId === stepId)) {
+      awaitingHitlForStep = true;
+    }
+
     if (sid === 'strategy') {
       artifacts.strategy = { rawText: text };
-      try { const parsed = JSON.parse(text); artifacts.strategy = { rawText: text, rationale: parsed.rationale, writerBrief: parsed.writerBrief, knobs: parsed.knobs ?? parsed.writerBrief?.knobs }; } catch {}
-    } else if (sid === 'generation') {
+      if (!awaitingHitlForStep && text) {
+        try {
+          const parsed = JSON.parse(text);
+          artifacts.strategy = {
+            rawText: text,
+            rationale: parsed.rationale,
+            writerBrief: parsed.writerBrief,
+            knobs: parsed.knobs ?? parsed.writerBrief?.knobs
+          };
+        } catch {}
+      }
+    } else if (!awaitingHitlForStep && sid === 'generation') {
       artifacts.generation = { rawText: text, draftText: text };
-    } else if (sid === 'qa') {
+    } else if (!awaitingHitlForStep && sid === 'qa') {
       artifacts.qa = { rawText: text };
       try {
         const parsed: any = JSON.parse(text);
@@ -835,14 +903,16 @@ export async function runOrchestratorEngine(
     }
 
     // Record step result best-effort
-    try {
-      const last = plan.steps.find((s) => s.id === stepId) || plan.steps.find((s) => s.status === 'in_progress');
-      const id = stepId || last?.id || `step_${sid}_${plan.version}`;
-      const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
-      const hasError = !text;
-      stepResults.push({ stepId: id, output: parsed ?? text, error: hasError ? 'step_failed_or_timeout' : undefined, metrics: { durationMs, attempt, capabilityId: sid } });
-      onEvent({ type: 'metrics', durationMs, correlationId: cid });
-    } catch {}
+    if (!awaitingHitlForStep) {
+      try {
+        const last = plan.steps.find((s) => s.id === stepId) || plan.steps.find((s) => s.status === 'in_progress');
+        const id = stepId || last?.id || `step_${sid}_${plan.version}`;
+        const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
+        const hasError = !text;
+        stepResults.push({ stepId: id, output: parsed ?? text, error: hasError ? 'step_failed_or_timeout' : undefined, metrics: { durationMs, attempt, capabilityId: sid } });
+        onEvent({ type: 'metrics', durationMs, correlationId: cid });
+      } catch {}
+    }
   };
 
   const plannerSystem = [

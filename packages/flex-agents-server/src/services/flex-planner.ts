@@ -1,4 +1,5 @@
 import type {
+  AssignmentDefaults,
   CapabilityRecord,
   ContextBundle,
   JsonSchemaContract,
@@ -55,6 +56,16 @@ export type FlexPlanNodeProvenance = {
   output?: FacetProvenance[]
 }
 
+export type FlexPlanExecutor = {
+  type: 'ai' | 'human'
+  capabilityId?: string | null
+  assignment?: {
+    defaults?: AssignmentDefaults | null
+    instructions?: string | null
+    metadata?: Record<string, unknown> | null
+  }
+}
+
 export type FlexPlanNode = {
   id: string
   kind: FlexPlanNodeKind
@@ -68,6 +79,7 @@ export type FlexPlanNode = {
   facets: FlexPlanNodeFacets
   provenance: FlexPlanNodeProvenance
   rationale: string[]
+  executor?: FlexPlanExecutor
   metadata: Record<string, unknown>
 }
 
@@ -109,13 +121,6 @@ type FlexPlannerDependencies = {
 
 type PlannerOptions = {
   now?: () => Date
-}
-
-type BranchRequest = {
-  id: string
-  label: string
-  rationale?: string
-  source: 'planner' | 'envelope'
 }
 
 type PlannerContextInternal = PlannerContextHints & {
@@ -367,6 +372,8 @@ export class FlexPlanner {
       )
       const nodeLabel = draftNode.label ?? capability?.displayName ?? 'Planner node'
 
+      const executor = this.buildExecutor(capability)
+
       const bundle = this.buildContextBundle({
         runId,
         envelope: envelopeForPlanner,
@@ -377,8 +384,28 @@ export class FlexPlanner {
         outputContract,
         compiledContracts,
         derived: derivedFlag,
-        variantCount
+        variantCount,
+        executor
       })
+
+      const metadata: Record<string, unknown> = {
+        capabilityScore: compatibilityScore,
+        derived: derivedFlag,
+        plannerDerived: draftNode.derived ?? undefined,
+        plannerStage: draftNode.stage ?? undefined,
+        plannerInstructions: draftNode.instructions ?? undefined,
+        facetInputSchema: compiledContracts.input ? safeJsonClone(compiledContracts.input.schema) : undefined,
+        facetOutputSchema: compiledContracts.output ? safeJsonClone(compiledContracts.output.schema) : undefined,
+        missingFacets: missingFacets.length ? missingFacets : undefined
+      }
+
+      if (executor) {
+        metadata.executorType = executor.type
+        if (executor.assignment?.defaults) {
+          metadata.assignmentRole = executor.assignment.defaults.role
+          metadata.assignmentDefaults = executor.assignment.defaults
+        }
+      }
 
       const node: FlexPlanNode = {
         id: nodeId,
@@ -399,26 +426,15 @@ export class FlexPlanner {
           output: compiledContracts.outputProvenance
         },
         rationale: draftNode.rationale ?? [],
-        metadata: {
-          capabilityScore: compatibilityScore,
-          derived: derivedFlag,
-          plannerDerived: draftNode.derived ?? undefined,
-          plannerStage: draftNode.stage ?? undefined,
-          plannerInstructions: draftNode.instructions ?? undefined,
-          facetInputSchema: compiledContracts.input ? safeJsonClone(compiledContracts.input.schema) : undefined,
-          facetOutputSchema: compiledContracts.output ? safeJsonClone(compiledContracts.output.schema) : undefined,
-          missingFacets: missingFacets.length ? missingFacets : undefined
-        }
+        executor,
+        metadata
       }
 
       nodes.push(node)
       facets.output.forEach((facet) => availableFacets.add(facet))
     })
 
-    const branchRequests = this.collectBranchRequests(plannerDraft, envelope)
-    this.injectBranchNodes(nodes, branchRequests)
     this.ensureNormalizationNode(nodes, envelope, variantCount)
-    this.ensureFallbackNode(nodes, variantCount)
 
     const edges = this.buildEdges(nodes)
     const derivedNodes = nodes.filter((node) => node.derivedCapability)
@@ -433,8 +449,6 @@ export class FlexPlanner {
       edges,
       metadata: {
         variantCount,
-        branchCount: branchRequests.length || nodes.filter((node) => node.kind === 'branch').length,
-        branchPolicySources: unique(branchRequests.map((request) => request.source)),
         capabilitySnapshotSize: capabilitySnapshot.active.length,
         derivedCapabilityCount: derivedNodes.length,
         derivedCapabilities: derivedNodes.map((node) => ({
@@ -507,78 +521,6 @@ export class FlexPlanner {
     })
 
     return facets
-  }
-
-  private collectBranchRequests(plannerDraft: PlannerDraft, envelope: TaskEnvelope): BranchRequest[] {
-    const fromPlanner =
-      plannerDraft.branchRequests?.map((entry, index) => ({
-        id: entry.id ?? `planner_branch_${index + 1}`,
-        label: entry.label,
-        rationale: entry.rationale,
-        source: 'planner' as const
-      })) ?? []
-
-    if (fromPlanner.length) {
-      return fromPlanner
-    }
-
-    return collectEnvelopeBranchRequests(envelope)
-  }
-
-  private injectBranchNodes(nodes: FlexPlanNode[], requests: BranchRequest[]) {
-    if (!requests.length) return
-    const executionIndex = nodes.findIndex((node) => node.kind === 'execution')
-    const insertIndex = executionIndex === -1 ? nodes.length : executionIndex
-
-    requests.forEach((request, offset) => {
-      const nodeId = sanitizeNodeId(request.id || 'branch', nodes.length + offset)
-      const bundle: ContextBundle = {
-        runId: nodes[0]?.bundle.runId ?? '',
-        nodeId: '',
-        objective: nodes[0]?.bundle.objective ?? '',
-        instructions: [
-          `Branch "${request.label}" requested prior to execution.`,
-          request.rationale ? `Rationale: ${request.rationale}` : 'Planner recommends collecting additional variants.'
-        ],
-        inputs: {
-          plannerKind: 'branch',
-          branchSource: request.source
-        },
-        policies: {},
-        contract: {
-          output: {
-            mode: 'freeform',
-            instructions: 'Document branch-specific requirements to guide downstream nodes.'
-          },
-          fallback: 'retry',
-          maxAttempts: 1
-        }
-      }
-
-      const node: FlexPlanNode = {
-        id: nodeId,
-        kind: 'branch',
-        capabilityId: null,
-        capabilityLabel: `Branch (${request.label})`,
-        capabilityVersion: undefined,
-        label: `Inject branch: ${request.label}`,
-        bundle,
-        contracts: {
-          output: bundle.contract.output
-        },
-        facets: {
-          input: [],
-          output: []
-        },
-        provenance: {},
-        rationale: request.rationale ? [request.rationale] : [],
-        metadata: {
-          branchSource: request.source
-        }
-      }
-
-      nodes.splice(insertIndex + offset, 0, node)
-    })
   }
 
   private resolveNodeFacets(
@@ -670,8 +612,20 @@ export class FlexPlanner {
     }
     derived: boolean
     variantCount: number
+    executor?: FlexPlanExecutor
   }): ContextBundle {
-    const { runId, envelope, kind, draftNode, capability, facets, outputContract, derived, variantCount } = args
+    const {
+      runId,
+      envelope,
+      kind,
+      draftNode,
+      capability,
+      facets,
+      outputContract,
+      derived,
+      variantCount,
+      executor
+    } = args
     const inputs = safeJsonClone(envelope.inputs ?? {})
     const policies = safeJsonClone(envelope.policies ?? {})
 
@@ -703,6 +657,31 @@ export class FlexPlanner {
       fallback: kind === 'fallback' ? 'hitl' : 'retry'
     }
 
+    const assignment =
+      executor?.type === 'human'
+        ? {
+            runId,
+            nodeId: '',
+            status: 'pending',
+            defaults: executor.assignment?.defaults ?? null,
+            instructions:
+              executor.assignment?.instructions ??
+              capability?.instructionTemplates?.app ??
+              capability?.instructionTemplates?.summary ??
+              null,
+            notifyChannels: capability?.assignmentDefaults?.notifyChannels,
+            priority: capability?.assignmentDefaults?.priority,
+            timeoutSeconds: capability?.assignmentDefaults?.timeoutSeconds,
+            maxNotifications: capability?.assignmentDefaults?.maxNotifications,
+            role: capability?.assignmentDefaults?.role,
+            assignedTo: capability?.assignmentDefaults?.assignedTo,
+            metadata:
+              executor.assignment?.metadata && Object.keys(executor.assignment.metadata).length
+                ? executor.assignment.metadata
+                : null
+          }
+        : undefined
+
     return {
       runId,
       nodeId: '',
@@ -718,7 +697,35 @@ export class FlexPlanner {
       policies,
       priorOutputs: undefined,
       artifacts: undefined,
-      contract
+      contract,
+      ...(assignment ? { assignment } : {})
+    }
+  }
+
+  private buildExecutor(capability: CapabilityRecord | undefined): FlexPlanExecutor | undefined {
+    if (!capability) return undefined
+    const type: FlexPlanExecutor['type'] = capability.agentType === 'human' ? 'human' : 'ai'
+    const defaults = capability.assignmentDefaults ? safeJsonClone(capability.assignmentDefaults) : null
+    const assignmentMetadata =
+      capability.metadata && typeof capability.metadata === 'object'
+        ? (capability.metadata as Record<string, unknown>).assignmentPolicy ?? null
+        : null
+    const instructions =
+      capability.instructionTemplates?.app ??
+      capability.instructionTemplates?.summary ??
+      capability.summary ??
+      null
+    return {
+      type,
+      capabilityId: capability.capabilityId,
+      assignment:
+        type === 'human'
+          ? {
+              defaults,
+              instructions,
+              metadata: assignmentMetadata ? safeJsonClone(assignmentMetadata) : null
+            }
+          : undefined
     }
   }
 
@@ -872,50 +879,6 @@ export class FlexPlanner {
     return true
   }
 
-  private ensureFallbackNode(nodes: FlexPlanNode[], variantCount: number) {
-    if (nodes.some((node) => node.kind === 'fallback')) return
-
-    const fallbackId = sanitizeNodeId('fallback', nodes.length)
-    const bundle: ContextBundle = {
-      runId: nodes[0]?.bundle.runId ?? '',
-      nodeId: '',
-      objective: nodes[0]?.bundle.objective ?? '',
-      instructions: ['Escalate to HITL operator with latest outputs and diagnostics.'],
-      inputs: {
-        plannerKind: 'fallback',
-        plannerVariantCount: variantCount
-      },
-      policies: {},
-      contract: {
-        output: {
-          mode: 'freeform',
-          instructions: 'Document HITL escalation decision and context.'
-        },
-        fallback: 'hitl',
-        maxAttempts: 1
-      }
-    }
-
-    nodes.push({
-      id: fallbackId,
-      kind: 'fallback',
-      capabilityId: null,
-      capabilityLabel: 'HITL Fallback',
-      label: 'HITL fallback path',
-      bundle,
-      contracts: {
-        output: bundle.contract.output
-      },
-      facets: {
-        input: ['copyVariants'],
-        output: ['qaFindings']
-      },
-      provenance: {},
-      rationale: ['Provide HITL escape hatch when automated paths fail.'],
-      metadata: {}
-    })
-  }
-
   private filterFacetsByDirection(names: string[], direction: 'input' | 'output'): string[] {
     const allowed = new Set<string>()
     names.forEach((name) => {
@@ -996,46 +959,6 @@ export class FlexPlanner {
     const score = precomputedScore ?? this.computeCapabilityCompatibility(capability, context)
     return score < 60
   }
-}
-
-function collectEnvelopeBranchRequests(envelope: TaskEnvelope): BranchRequest[] {
-  const policies = (envelope.policies ?? {}) as Record<string, unknown>
-  const constraints = (envelope.constraints ?? {}) as Record<string, unknown>
-
-  const keys = ['branchVariants', 'variantStrategies', 'preExecutionBranches']
-
-  for (const key of keys) {
-    const fromPolicies = Array.isArray(policies[key]) ? (policies[key] as unknown[]) : []
-    const fromConstraints = Array.isArray(constraints[key]) ? (constraints[key] as unknown[]) : []
-    const merged = [...fromPolicies, ...fromConstraints]
-    if (!merged.length) continue
-    return merged
-      .map((entry, index): BranchRequest | null => {
-        if (typeof entry === 'string') {
-          const branch: BranchRequest = {
-            id: `${key}_${index + 1}`,
-            label: entry.trim(),
-            source: 'envelope'
-          }
-          return branch
-        }
-        if (entry && typeof entry === 'object') {
-          const obj = entry as Record<string, unknown>
-          const label = typeof obj.label === 'string' ? obj.label : typeof obj.name === 'string' ? obj.name : `branch_${index + 1}`
-          const branch: BranchRequest = {
-            id: typeof obj.id === 'string' ? obj.id : `${key}_${index + 1}`,
-            label,
-            rationale: typeof obj.rationale === 'string' ? obj.rationale : undefined,
-            source: 'envelope'
-          }
-          return branch
-        }
-        return null
-      })
-      .filter((value): value is BranchRequest => value !== null)
-  }
-
-  return []
 }
 
 function derivePlannerContext(

@@ -22,18 +22,12 @@ export const PlannerDraftNodeSchema = z.object({
   capabilityId: z.string().min(1).optional(),
   derived: z.boolean().optional(),
   kind: z
-    .enum(['structuring', 'branch', 'execution', 'transformation', 'validation', 'fallback'])
+    .enum(['structuring', 'execution', 'transformation', 'validation', 'fallback'])
     .optional(),
   inputFacets: FacetListSchema.optional(),
   outputFacets: FacetListSchema.optional(),
   rationale: StringOrArraySchema.optional(),
   instructions: StringOrArraySchema.optional()
-})
-
-export const PlannerDraftBranchSchema = z.object({
-  id: z.string().min(1).optional(),
-  label: z.string().min(1),
-  rationale: z.string().min(1).optional()
 })
 
 export const PlannerDraftMetadataSchema = z.object({
@@ -43,17 +37,14 @@ export const PlannerDraftMetadataSchema = z.object({
 
 export const PlannerDraftSchema = z.object({
   nodes: z.array(PlannerDraftNodeSchema).min(1),
-  branchRequests: z.array(PlannerDraftBranchSchema).optional(),
   metadata: PlannerDraftMetadataSchema.optional()
 })
 
 export type PlannerDraftNode = z.infer<typeof PlannerDraftNodeSchema>
-export type PlannerDraftBranch = z.infer<typeof PlannerDraftBranchSchema>
 export type PlannerDraftMetadata = z.infer<typeof PlannerDraftMetadataSchema>
 
 export type PlannerDraft = {
   nodes: PlannerDraftNode[]
-  branchRequests?: PlannerDraftBranch[]
   metadata?: PlannerDraftMetadata
 }
 
@@ -67,4 +58,3 @@ export type PlannerDiagnostic = {
 }
 
 export type PlannerDiagnostics = PlannerDiagnostic[]
-

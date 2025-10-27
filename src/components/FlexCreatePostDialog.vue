@@ -95,38 +95,43 @@ const normalizePolicies = (override?: TaskEnvelope['policies']): TaskPolicies | 
 const mergeTaskPolicies = (base: TaskPolicies, override: TaskPolicies | null): TaskPolicies => {
   if (!override) return base
 
-  const mergedPlanner =
-    base.planner || override.planner
-      ? {
-          topology: {
-            ...base.planner?.topology,
-            ...override.planner?.topology
-          },
-          selection: {
-            ...base.planner?.selection,
-            ...override.planner?.selection
-          },
-          optimisation: {
-            ...base.planner?.optimisation,
-            ...override.planner?.optimisation
-          },
-          directives: {
-            ...(base.planner?.directives ?? {}),
-            ...(override.planner?.directives ?? {})
-          }
-        }
-      : undefined
-
-  if (mergedPlanner?.directives && Object.keys(mergedPlanner.directives).length === 0) {
-    mergedPlanner.directives = undefined
+  const mergedTopologySource = {
+    ...(base.planner?.topology ?? {}),
+    ...(override.planner?.topology ?? {})
+  }
+  const mergedSelectionSource = {
+    ...(base.planner?.selection ?? {}),
+    ...(override.planner?.selection ?? {})
+  }
+  const mergedOptimisationSource = {
+    ...(base.planner?.optimisation ?? {}),
+    ...(override.planner?.optimisation ?? {})
+  }
+  const mergedDirectivesSource = {
+    ...(base.planner?.directives ?? {}),
+    ...(override.planner?.directives ?? {})
   }
 
-  const plannerEmpty =
-    !mergedPlanner ||
-    (!mergedPlanner.topology && !mergedPlanner.selection && !mergedPlanner.optimisation && !mergedPlanner.directives)
+  const mergedTopology =
+    Object.keys(mergedTopologySource).length > 0 ? mergedTopologySource : undefined
+  const mergedSelection =
+    Object.keys(mergedSelectionSource).length > 0 ? mergedSelectionSource : undefined
+  const mergedOptimisation =
+    Object.keys(mergedOptimisationSource).length > 0 ? mergedOptimisationSource : undefined
+  const mergedDirectives =
+    Object.keys(mergedDirectivesSource).length > 0 ? mergedDirectivesSource : undefined
+
+  const plannerEmpty = !mergedTopology && !mergedSelection && !mergedOptimisation && !mergedDirectives
 
   const merged: TaskPolicies = {
-    planner: plannerEmpty ? undefined : mergedPlanner,
+    planner: plannerEmpty
+      ? undefined
+      : {
+          ...(mergedTopology ? { topology: mergedTopology } : {}),
+          ...(mergedSelection ? { selection: mergedSelection } : {}),
+          ...(mergedOptimisation ? { optimisation: mergedOptimisation } : {}),
+          ...(mergedDirectives ? { directives: mergedDirectives } : {})
+        },
     runtime: override.runtime.length ? override.runtime : base.runtime
   }
 

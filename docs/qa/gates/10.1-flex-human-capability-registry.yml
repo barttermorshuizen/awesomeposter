@@ -1,0 +1,9 @@
+schema: 1
+story: '10.1'
+gate: PASS
+status_reason: 'Human capability registration exports compile cleanly, metadata persists, and documentation/tests confirm facet coverage.'
+reviewer: 'Quinn'
+updated: '2025-10-26T07:01:00Z'
+top_issues: []
+waiver:
+  active: false

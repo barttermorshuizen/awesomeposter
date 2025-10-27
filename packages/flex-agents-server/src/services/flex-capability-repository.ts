@@ -7,6 +7,7 @@ export type FlexCapabilityRow = {
   version: string
   displayName: string
   summary: string
+  agentType: 'ai' | 'human'
   inputTraits: Record<string, unknown> | null
   inputContract: Record<string, unknown> | null
   outputContract: Record<string, unknown> | null
@@ -15,6 +16,8 @@ export type FlexCapabilityRow = {
   cost: Record<string, unknown> | null
   preferredModels: string[] | null
   heartbeat: Record<string, unknown> | null
+  instructionTemplates: Record<string, unknown> | null
+  assignmentDefaults: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
   status: 'active' | 'inactive'
   lastSeenAt: Date | null
@@ -42,6 +45,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      agentType: payload.agentType ?? 'ai',
       inputTraitsJson: (payload.inputTraits ?? null) as any,
       inputContractJson: (payload.inputContract ?? null) as any,
       outputContractJson: (payload.outputContract ?? null) as any,
@@ -50,6 +54,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       costJson: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeatJson: (payload.heartbeat ?? null) as any,
+      instructionTemplatesJson: (payload.instructionTemplates ?? null) as any,
+      assignmentDefaultsJson: (payload.assignmentDefaults ?? null) as any,
       metadataJson: (payload.metadata ?? null) as any,
       status: 'active' as const,
       lastSeenAt: now,
@@ -66,6 +72,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           version: payload.version,
           displayName: payload.displayName,
           summary: payload.summary,
+          agentType: payload.agentType ?? 'ai',
           inputTraitsJson: (payload.inputTraits ?? null) as any,
           inputContractJson: (payload.inputContract ?? null) as any,
           outputContractJson: (payload.outputContract ?? null) as any,
@@ -74,6 +81,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           costJson: (payload.cost ?? null) as any,
           preferredModels: payload.preferredModels ?? [],
           heartbeatJson: (payload.heartbeat ?? null) as any,
+          instructionTemplatesJson: (payload.instructionTemplates ?? null) as any,
+          assignmentDefaultsJson: (payload.assignmentDefaults ?? null) as any,
           metadataJson: (payload.metadata ?? null) as any,
           status: 'active',
           lastSeenAt: now,
@@ -89,6 +98,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       version: row.version,
       displayName: row.displayName,
       summary: row.summary,
+      agentType: (row.agentType ?? 'ai') as 'ai' | 'human',
       inputTraits: (row.inputTraitsJson ?? null) as any,
       inputContract: (row.inputContractJson ?? null) as any,
       outputContract: (row.outputContractJson ?? null) as any,
@@ -97,6 +107,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       cost: (row.costJson ?? null) as any,
       preferredModels: row.preferredModels ?? null,
       heartbeat: (row.heartbeatJson ?? null) as any,
+      instructionTemplates: (row.instructionTemplatesJson ?? null) as any,
+      assignmentDefaults: (row.assignmentDefaultsJson ?? null) as any,
       metadata: (row.metadataJson ?? null) as any,
       status: (row.status as 'active' | 'inactive') ?? 'inactive',
       lastSeenAt: row.lastSeenAt ?? null,

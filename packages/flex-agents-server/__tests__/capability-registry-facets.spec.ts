@@ -6,6 +6,10 @@ import { STRATEGY_CAPABILITY } from '../src/agents/strategy-manager'
 import { CONTENT_CAPABILITY } from '../src/agents/content-generator'
 import { QA_CAPABILITY } from '../src/agents/quality-assurance'
 import {
+  HUMAN_ASSIGNMENT_TIMEOUT_SECONDS,
+  HUMAN_CLARIFY_CAPABILITY
+} from '../src/agents/human-clarify-brief'
+import {
   FlexCapabilityRegistryService
 } from '../src/services/flex-capability-registry'
 import {
@@ -29,6 +33,7 @@ class InMemoryRepository implements FlexCapabilityRepository {
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      agentType: payload.agentType ?? 'ai',
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,
       outputContract: (payload.outputContract ?? null) as any,
@@ -37,6 +42,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,
+      instructionTemplates: (payload.instructionTemplates ?? null) as any,
+      assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
       status: 'active',
       lastSeenAt: now,
@@ -79,6 +86,7 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
     await service.register(STRATEGY_CAPABILITY)
     await service.register(CONTENT_CAPABILITY)
     await service.register(QA_CAPABILITY)
+    await service.register(HUMAN_CLARIFY_CAPABILITY)
 
     const strategy = await service.getCapabilityById(STRATEGY_CAPABILITY.capabilityId)
     expect(strategy?.inputContract?.mode).toBe('json_schema')
@@ -88,6 +96,31 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
     const persisted = repo.getRow(CONTENT_CAPABILITY.capabilityId)
     expect(persisted?.inputFacets).toEqual(['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'])
     expect(persisted?.outputFacets).toEqual(['copyVariants'])
+
+    const humanRow = repo.getRow(HUMAN_CLARIFY_CAPABILITY.capabilityId)
+    expect(humanRow?.agentType).toBe('human')
+    expect(humanRow?.assignmentDefaults).toEqual(
+      expect.objectContaining({
+        timeoutSeconds: HUMAN_ASSIGNMENT_TIMEOUT_SECONDS,
+        maxNotifications: 1,
+        onDecline: 'fail_run'
+      })
+    )
+
+    const human = await service.getCapabilityById(HUMAN_CLARIFY_CAPABILITY.capabilityId)
+    expect(human?.agentType).toBe('human')
+    expect(human?.inputFacets).toEqual([
+      'objectiveBrief',
+      'audienceProfile',
+      'toneOfVoice',
+      'writerBrief',
+      'clarificationRequest'
+    ])
+    expect(human?.outputFacets).toEqual(['clarificationResponse'])
+    expect(human?.instructionTemplates?.app).toContain('human strategist')
+    expect(human?.assignmentDefaults?.timeoutSeconds).toBe(HUMAN_ASSIGNMENT_TIMEOUT_SECONDS)
+    expect(human?.assignmentDefaults?.maxNotifications).toBe(1)
+    expect(human?.assignmentDefaults?.onDecline).toBe('fail_run')
   })
 
   it('rejects registrations that reference unknown facets', async () => {

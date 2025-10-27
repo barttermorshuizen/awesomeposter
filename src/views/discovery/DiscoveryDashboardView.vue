@@ -13,7 +13,7 @@ import {
   type DiscoveryFeatureDisabledPayload,
 } from '@/lib/discovery-sse'
 import { bulkArchive, bulkPromote } from '@/services/discovery/bulkActions'
-import type { DiscoveryBulkFiltersSnapshot } from '@awesomeposter/shared'
+import type { DiscoveryBulkFiltersSnapshot, DiscoverySearchStatus } from '@awesomeposter/shared'
 import { DASHBOARD_CLIENT_STORAGE_KEY } from './loadDiscoveryDashboard'
 
 interface ClientOption {
@@ -157,12 +157,25 @@ const bulkActionPrimaryLabel = computed(() =>
 
 const isBulkNoteValid = computed(() => bulkActionNote.value.trim().length >= 5)
 
+const ALLOWED_STATUSES: readonly DiscoverySearchStatus[] = [
+  'spotted',
+  'approved',
+  'suppressed',
+  'archived',
+  'pending',
+  'promoted',
+] as const
+
 function buildBulkFiltersSnapshot(): DiscoveryBulkFiltersSnapshot {
-  const normalizedStatuses = filters.status.length
-    ? filters.status.map((status) => status.trim().toLowerCase()).filter(Boolean)
-    : ['spotted']
+  const normalizedStatusesSource = filters.status.length ? filters.status : ['spotted']
+  const normalizedStatuses: DiscoverySearchStatus[] = normalizedStatusesSource
+    .map((status) => status.trim().toLowerCase())
+    .filter((status): status is DiscoverySearchStatus => (ALLOWED_STATUSES as readonly string[]).includes(status))
+  if (normalizedStatuses.length === 0) {
+    normalizedStatuses.push('spotted')
+  }
   return {
-    status: normalizedStatuses,
+    status: normalizedStatuses as DiscoveryBulkFiltersSnapshot['status'],
     sourceIds: [...filters.sourceIds],
     topicIds: [...filters.topicIds],
     search: filters.search,
@@ -213,17 +226,22 @@ async function submitBulkAction() {
 
   const note = bulkActionNote.value.trim()
   const snapshot = bulkSelectionStore.ensureFiltersSnapshot(buildBulkFiltersSnapshot)
+  const normalizedSnapshotStatus =
+    snapshot.status.length
+      ? snapshot.status
+      : (['spotted'] as DiscoveryBulkFiltersSnapshot['status'])
+  const filtersSnapshotPayload: DiscoveryBulkFiltersSnapshot = {
+    ...snapshot,
+    status: normalizedSnapshotStatus,
+    search: snapshot.search ?? '',
+  }
   const payload = {
     actionId: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
     clientId: clientId.value,
     itemIds: [...selectedIds.value],
     note,
     actorId: globalThis.crypto?.randomUUID?.() ?? '00000000-0000-4000-8000-000000000000',
-    filtersSnapshot: {
-      ...snapshot,
-      status: snapshot.status.length ? snapshot.status : ['spotted'],
-      search: snapshot.search ?? '',
-    },
+    filtersSnapshot: filtersSnapshotPayload,
   }
 
   bulkActionLoading.value = true

@@ -500,6 +500,105 @@ const defaultDefinitions: FacetDefinition[] = [
       tags: ['qa', 'followup'],
       requiredByDefault: true
     }
+  },
+  {
+    name: 'clarificationRequest',
+    title: 'Clarification Request',
+    description: 'Questions and supporting context that require input from a human agent.',
+    schema: {
+      type: 'object',
+      properties: {
+        pendingQuestions: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', minLength: 1 },
+              question: { type: 'string', minLength: 1 },
+              rationale: { type: 'string' },
+              priority: { type: 'string', enum: ['high', 'normal', 'low'], default: 'normal' },
+              required: { type: 'boolean', default: true },
+              context: { type: 'object' }
+            },
+            required: ['id', 'question'],
+            additionalProperties: true
+          }
+        },
+        generatedBy: { type: 'string' },
+        createdAt: { type: 'string', format: 'date-time' }
+      },
+      required: ['pendingQuestions'],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Lists the unresolved clarifications the planner needs before progressing a flex run.',
+      instruction:
+        'Review each entry in `pendingQuestions`. Provide definitive answers or explicitly decline with rationale if the question cannot be satisfied.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'input',
+      tags: ['human', 'clarification'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'clarificationResponse',
+    title: 'Clarification Response',
+    description: 'Structured answers from human strategists resolving pending clarification items.',
+    schema: {
+      type: 'object',
+      properties: {
+        responses: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              questionId: { type: 'string', minLength: 1 },
+              status: {
+                type: 'string',
+                enum: ['answered', 'declined', 'needs_follow_up'],
+                default: 'answered'
+              },
+              response: { type: 'string' },
+              notes: { type: 'string' },
+              attachments: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', minLength: 1 },
+                    uri: { type: 'string', minLength: 1 }
+                  },
+                  required: ['label', 'uri'],
+                  additionalProperties: true
+                }
+              }
+            },
+            required: ['questionId', 'status'],
+            additionalProperties: true
+          }
+        },
+        readyForPlanner: { type: 'boolean', default: true },
+        submittedAt: { type: 'string', format: 'date-time' },
+        operatorId: { type: 'string' }
+      },
+      required: ['responses'],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Captures the human-provided clarifications so the planner can resume deterministically.',
+      instruction:
+        'Populate `responses` with final answers. Mark items as `declined` only when the run must fail; include notes describing the blocker.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'output',
+      tags: ['human', 'clarification'],
+      requiredByDefault: true
+    }
   }
 ]
 

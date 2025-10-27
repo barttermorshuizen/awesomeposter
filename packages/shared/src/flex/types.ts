@@ -97,6 +97,66 @@ export type CapabilityContract = OutputContract
 export const LooseRecordSchema = z.record(z.unknown())
 export type LooseRecord = z.infer<typeof LooseRecordSchema>
 
+export const AgentTypeSchema = z.enum(['ai', 'human'])
+export type AgentType = z.infer<typeof AgentTypeSchema>
+
+const InstructionTemplatesSchemaCore = z
+  .record(z.string(), z.string().min(1))
+  .superRefine((value, ctx) => {
+    const appTemplate = value.app
+    if (typeof appTemplate !== 'string' || appTemplate.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Instruction templates must include a non-empty `app` entry.',
+        path: ['app']
+      })
+    }
+  })
+
+export const InstructionTemplatesSchema = InstructionTemplatesSchemaCore
+export type InstructionTemplates = z.infer<typeof InstructionTemplatesSchema>
+
+const AssignmentDefaultsSchemaCore = z
+  .object({
+    role: z.string().min(1),
+    assignedTo: z.string().min(1).optional(),
+    notifyChannels: z.array(z.string().min(1)).optional(),
+    maxNotifications: z.number().int().positive().optional(),
+    timeoutSeconds: z.number().int().positive().optional(),
+    onDecline: z.enum(['fail_run', 'requeue', 'escalate']).optional(),
+    priority: z.enum(['urgent', 'high', 'normal', 'low']).optional(),
+    instructions: z.string().optional()
+  })
+  .passthrough()
+
+export const AssignmentDefaultsSchema = AssignmentDefaultsSchemaCore
+export type AssignmentDefaults = z.infer<typeof AssignmentDefaultsSchema>
+
+const AssignmentSnapshotSchemaCore = z
+  .object({
+    assignmentId: z.string().min(1).optional(),
+    runId: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+    status: z.enum(['pending', 'in_progress', 'awaiting_submission', 'completed', 'cancelled']).optional(),
+    assignedTo: z.string().min(1).optional(),
+    role: z.string().min(1).optional(),
+    notifyChannels: z.array(z.string().min(1)).optional(),
+    dueAt: z.string().min(1).optional(),
+    submittedAt: z.string().min(1).optional(),
+    timeoutSeconds: z.number().int().positive().optional(),
+    maxNotifications: z.number().int().positive().optional(),
+    priority: z.enum(['urgent', 'high', 'normal', 'low']).optional(),
+    instructions: z.string().optional(),
+    defaults: AssignmentDefaultsSchema.optional(),
+    metadata: LooseRecordSchema.optional(),
+    createdAt: z.string().min(1).optional(),
+    updatedAt: z.string().min(1).optional()
+  })
+  .passthrough()
+
+export const AssignmentSnapshotSchema = AssignmentSnapshotSchemaCore
+export type AssignmentSnapshot = z.infer<typeof AssignmentSnapshotSchema>
+
 const FlexFacetProvenanceDirectionSchema = z.enum(['input', 'output'])
 
 export const FlexFacetProvenanceSchema = z.object({
@@ -172,6 +232,7 @@ export const ContextBundleSchema = z.object({
   priorOutputs: LooseRecordSchema.optional(),
   instructions: z.array(z.string()).optional(),
   contract: NodeContractSchema,
+  assignment: AssignmentSnapshotSchema.optional(),
   metadata: z
     .object({
       correlationId: z.string().optional(),
@@ -299,12 +360,15 @@ const CapabilityRegistrationCoreSchema = z.object({
   version: z.string().min(1),
   displayName: z.string().min(1),
   summary: z.string().min(1),
+  agentType: AgentTypeSchema.default('ai'),
   inputTraits: InputTraitsSchema,
   inputContract: CapabilityContractSchema.optional(),
   outputContract: CapabilityContractSchema.optional(),
   cost: CostInfoSchema,
   preferredModels: z.array(z.string()).optional(),
   heartbeat: HeartbeatSchema,
+  instructionTemplates: InstructionTemplatesSchema.optional(),
+  assignmentDefaults: AssignmentDefaultsSchema.optional(),
   metadata: LooseRecordSchema.optional()
 })
 

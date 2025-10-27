@@ -210,6 +210,52 @@ class MemoryFlexPersistence {
       updatedAt: record.updatedAt
     }
   }
+
+  async listPendingHumanTasks(filters: { assignedTo?: string; role?: string; status?: string } = {}) {
+    const tasks: Array<Record<string, unknown>> = []
+    for (const [key, value] of this.nodes.entries()) {
+      if (!key.includes(':')) continue
+      const [runId, nodeId] = key.split(':')
+      if (value.status !== 'awaiting_human') continue
+      const runEntry = this.runs.get(runId)
+      const assignment = (value.context?.assignment ?? {}) as Record<string, unknown>
+      const defaults = assignment.defaults ? { ...(assignment.defaults as Record<string, unknown>) } : null
+      const metadata = assignment.metadata ? { ...(assignment.metadata as Record<string, unknown>) } : null
+      const status = (assignment.status as string | undefined) ?? 'awaiting_submission'
+
+      const task = {
+        taskId: (assignment.assignmentId as string | undefined) ?? key,
+        runId,
+        nodeId,
+        capabilityId: value.capabilityId ?? null,
+        label: value.label ?? null,
+        status,
+        assignedTo: (assignment.assignedTo as string | undefined) ?? null,
+        role: (assignment.role as string | undefined) ?? null,
+        dueAt: (assignment.dueAt as string | undefined) ?? null,
+        priority: (assignment.priority as string | undefined) ?? null,
+        instructions: (assignment.instructions as string | undefined) ?? null,
+        defaults,
+        metadata,
+        timeoutSeconds: assignment.timeoutSeconds ?? null,
+        maxNotifications: assignment.maxNotifications ?? null,
+        notifyChannels: assignment.notifyChannels ?? null,
+        createdAt: (assignment.createdAt as string | undefined) ?? null,
+        updatedAt: (assignment.updatedAt as string | undefined) ?? null,
+        runStatus: runEntry?.status ?? null,
+        runUpdatedAt: runEntry?.updatedAt ?? null
+      }
+
+      tasks.push(task)
+    }
+
+    return tasks.filter((task) => {
+      if (filters.assignedTo && task.assignedTo !== filters.assignedTo) return false
+      if (filters.role && task.role !== filters.role) return false
+      if (filters.status && task.status !== filters.status) return false
+      return true
+    })
+  }
 }
 
 class StubHitlService {

@@ -2,6 +2,10 @@ import { AgentRuntime } from './agent-runtime'
 import { StrategyManagerAgent, STRATEGY_CAPABILITY_ID, STRATEGY_INSTRUCTIONS_APP, STRATEGY_TOOLS } from '../agents/strategy-manager'
 import { ContentGeneratorAgent, CONTENT_CAPABILITY_ID, CONTENT_INSTRUCTIONS_APP, CONTENT_TOOLS } from '../agents/content-generator'
 import { QualityAssuranceAgent, QA_CAPABILITY_ID, QA_INSTRUCTIONS, QA_TOOLS } from '../agents/quality-assurance'
+import {
+  HUMAN_CLARIFY_CAPABILITY_ID,
+  HUMAN_CLARIFY_INSTRUCTIONS_APP
+} from '../agents/human-clarify-brief'
 import { registerIOTools } from '../tools/io'
 import { registerStrategyTools } from '../tools/strategy'
 import { registerContentTools } from '../tools/content'
@@ -87,6 +91,10 @@ const capabilityPromptMap: Record<string, CapabilityPromptContext> = {
   [QA_CAPABILITY_ID]: {
     instructions: QA_INSTRUCTIONS,
     toolsAllowlist: [...QA_TOOLS]
+  },
+  [HUMAN_CLARIFY_CAPABILITY_ID]: {
+    instructions: HUMAN_CLARIFY_INSTRUCTIONS_APP,
+    toolsAllowlist: []
   }
 }
 

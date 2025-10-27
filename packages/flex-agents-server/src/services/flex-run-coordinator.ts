@@ -18,7 +18,13 @@ import {
   type FlexPlanEdge,
   type PlannerGraphState
 } from './flex-planner'
-import { FlexExecutionEngine, HitlPauseError, ReplanRequestedError, RunPausedError } from './flex-execution-engine'
+import {
+  FlexExecutionEngine,
+  HitlPauseError,
+  AwaitingHumanInputError,
+  ReplanRequestedError,
+  RunPausedError
+} from './flex-execution-engine'
 import { getHitlService, parseHitlDecisionAction, resolveHitlDecision, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
 import { RunContext, type FacetSnapshot } from './run-context'
@@ -28,6 +34,12 @@ import { getTelemetryService } from './telemetry-service'
 type RunOptions = {
   onEvent: (event: FlexEvent) => Promise<void>
   correlationId?: string
+  resumeSubmission?: {
+    nodeId: string
+    output: Record<string, unknown>
+    submittedAt?: string
+    note?: string | null
+  }
 }
 
 function schemaHash(contract: TaskEnvelope['outputContract']): string | null {
@@ -57,7 +69,7 @@ function resolveThreadId(envelope: TaskEnvelope): string | null {
 
 type RunResult = {
   runId: string
-  status: 'completed' | 'awaiting_hitl' | 'failed'
+  status: 'completed' | 'awaiting_hitl' | 'awaiting_human' | 'failed'
   output: Record<string, unknown> | null
 }
 
@@ -84,12 +96,12 @@ export class FlexRunCoordinator {
     const loadedByRunId = providedRunId ? await this.persistence.loadFlexRun(providedRunId) : null
     const loadedByThreadId = providedThreadId ? await this.persistence.findFlexRunByThreadId(providedThreadId) : null
 
-    const isAwaitingHitl = (snapshot: typeof loadedByRunId | typeof loadedByThreadId | null): snapshot is NonNullable<typeof snapshot> =>
-      Boolean(snapshot && snapshot.run.status === 'awaiting_hitl')
+    const isAwaitingPause = (snapshot: typeof loadedByRunId | typeof loadedByThreadId | null): snapshot is NonNullable<typeof snapshot> =>
+      Boolean(snapshot && (snapshot.run.status === 'awaiting_hitl' || snapshot.run.status === 'awaiting_human'))
 
     const resumeCandidate =
-      (isAwaitingHitl(loadedByRunId) ? loadedByRunId : null) ??
-      (isAwaitingHitl(loadedByThreadId) ? loadedByThreadId : null)
+      (isAwaitingPause(loadedByRunId) ? loadedByRunId : null) ??
+      (isAwaitingPause(loadedByThreadId) ? loadedByThreadId : null)
 
     const runId = resumeCandidate?.run.runId ?? `flex_${genCorrelationId()}`
     const threadId = providedThreadId ?? resumeCandidate?.run.threadId ?? null
@@ -462,7 +474,6 @@ export class FlexRunCoordinator {
 
     if (isResume && resumeCandidate) {
       await updateHitlState(hitlState)
-      await this.persistence.updateStatus(runId, 'running')
 
       const latestSnapshot = await this.persistence.loadPlanSnapshot(
         runId,
@@ -596,6 +607,135 @@ export class FlexRunCoordinator {
       if (!finalOutputSeed || Object.keys(finalOutputSeed).length === 0) {
         executionMode = 'execute'
         finalOutputSeed = {}
+      }
+
+      let resumeStatusUpdated = false
+
+      if (resumeCandidate.run.status === 'awaiting_human') {
+        const submission = opts.resumeSubmission
+        if (!submission) {
+          throw new Error('flex_resume_missing_submission_payload')
+        }
+
+        const humanNode = activePlan.nodes.find((node) => node.id === submission.nodeId)
+        if (!humanNode) {
+          throw new Error(`flex_resume_unknown_node:${submission.nodeId}`)
+        }
+
+        const validationOptions: FlexExecutionOptions = {
+          onEvent: opts.onEvent,
+          correlationId: opts.correlationId,
+          hitl: {
+            service: this.hitlService,
+            state: hitlState,
+            threadId,
+            limit: hitlLimit,
+            onRequest: signalHitlRequest,
+            onDenied: signalHitlDenied,
+            updateState: updateHitlState
+          },
+          runContext,
+          schemaHash: schemaHashValue
+        }
+
+        try {
+          await this.engine.validateNodeOutput(humanNode, submission.output, runId, validationOptions)
+        } catch (error) {
+          const serialized =
+            error && typeof error === 'object'
+              ? {
+                  message: (error as Error).message,
+                  name: (error as Error).name,
+                  ...(Object.prototype.hasOwnProperty.call(error, 'scope')
+                    ? { scope: (error as any).scope }
+                    : {}),
+                  ...(Object.prototype.hasOwnProperty.call(error, 'errors')
+                    ? { errors: (error as any).errors }
+                    : {})
+                }
+              : { message: String(error) }
+
+          await this.persistence.markNode(runId, humanNode.id, {
+            status: 'awaiting_human',
+            error: serialized,
+            completedAt: null
+          })
+          await this.persistence.updateStatus(runId, 'awaiting_human')
+
+          const errorTimestamp = new Date().toISOString()
+          await opts.onEvent({
+            type: 'node_error',
+            timestamp: errorTimestamp,
+            runId,
+            nodeId: humanNode.id,
+            payload: {
+              capabilityId: humanNode.capabilityId,
+              label: humanNode.label,
+              executorType: 'human',
+              error: serialized,
+              submittedAt: submission.submittedAt ?? errorTimestamp
+            }
+          })
+          return { runId, status: 'awaiting_human', output: null }
+        }
+
+        runContext.updateFromNode(humanNode, submission.output)
+        if (!pendingState) {
+          pendingState = {
+            completedNodeIds: [],
+            nodeOutputs: {},
+            facets: runContext.snapshot(),
+            mode: 'resume'
+          }
+        }
+
+        pendingState.nodeOutputs = {
+          ...pendingState.nodeOutputs,
+          [humanNode.id]: submission.output
+        }
+        if (!pendingState.completedNodeIds.includes(humanNode.id)) {
+          pendingState.completedNodeIds = [...pendingState.completedNodeIds, humanNode.id]
+        }
+        pendingState.facets = runContext.snapshot()
+        pendingState.mode = 'resume'
+
+        resumeInitialState = {
+          completedNodeIds: [...pendingState.completedNodeIds],
+          nodeOutputs: { ...pendingState.nodeOutputs },
+          policyActions: pendingState.policyActions ? [...pendingState.policyActions] : [],
+          policyAttempts: pendingState.policyAttempts ? { ...pendingState.policyAttempts } : {},
+          mode: 'resume'
+        }
+
+        const completionInstant = new Date(submission.submittedAt ?? Date.now())
+        await this.persistence.markNode(runId, humanNode.id, {
+          status: 'completed',
+          output: submission.output,
+          completedAt: completionInstant
+        })
+        await this.persistence.updateStatus(runId, 'running')
+        resumeStatusUpdated = true
+        await opts.onEvent({
+          type: 'node_complete',
+          timestamp: completionInstant.toISOString(),
+          runId,
+          nodeId: humanNode.id,
+          payload: {
+            capabilityId: humanNode.capabilityId,
+            label: humanNode.label,
+            completedAt: completionInstant.toISOString(),
+            output: submission.output,
+            executorType: 'human'
+          }
+        })
+
+        executionMode = 'execute'
+        finalOutputSeed = {}
+      }
+
+      if (!resumeStatusUpdated) {
+        await this.persistence.updateStatus(runId, 'running')
+        resumeStatusUpdated = true
       }
 
       let finalOutput: Record<string, unknown> | null = null
@@ -787,6 +927,12 @@ export class FlexRunCoordinator {
         return { runId, status: 'completed', output: finalOutput }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error))
+        if (err instanceof AwaitingHumanInputError) {
+          await this.persistence.saveRunContext(runId, runContext.snapshot())
+          await this.persistence.updateStatus(runId, 'awaiting_human')
+          this.emittedHitlResolutions.delete(runId)
+          return { runId, status: 'awaiting_human', output: null }
+        }
         if (err instanceof HitlPauseError || err instanceof RunPausedError) {
           await this.persistence.saveRunContext(runId, runContext.snapshot())
           await this.persistence.updateStatus(runId, 'awaiting_hitl')
@@ -1049,13 +1195,18 @@ export class FlexRunCoordinator {
         return resolvedDecisionResult
       }
       return { runId, status: 'completed', output: finalOutput }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err))
-      if (error instanceof HitlPauseError || error instanceof RunPausedError) {
-        await this.persistence.saveRunContext(runId, runContext.snapshot())
-        await this.persistence.updateStatus(runId, 'awaiting_hitl')
-        return { runId, status: 'awaiting_hitl', output: null }
-      }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err))
+    if (error instanceof AwaitingHumanInputError) {
+      await this.persistence.saveRunContext(runId, runContext.snapshot())
+      await this.persistence.updateStatus(runId, 'awaiting_human')
+      return { runId, status: 'awaiting_human', output: null }
+    }
+    if (error instanceof HitlPauseError || error instanceof RunPausedError) {
+      await this.persistence.saveRunContext(runId, runContext.snapshot())
+      await this.persistence.updateStatus(runId, 'awaiting_hitl')
+      return { runId, status: 'awaiting_hitl', output: null }
+    }
       const status: 'failed' | 'cancelled' = error.name === 'AbortError' ? 'cancelled' : 'failed'
       await this.persistence.updateStatus(runId, status)
 

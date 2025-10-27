@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { STRATEGY_CAPABILITY } from '../../src/agents/strategy-manager'
 import { CONTENT_CAPABILITY } from '../../src/agents/content-generator'
 import { QA_CAPABILITY } from '../../src/agents/quality-assurance'
+import { HUMAN_CLARIFY_CAPABILITY } from '../../src/agents/human-clarify-brief'
 import type { CapabilityContract } from '@awesomeposter/shared'
 
 type FacetCoverage = {
@@ -22,7 +23,7 @@ function getFacetList(contract?: CapabilityContract | null): string[] {
 }
 
 function loadCodeCoverage() {
-  const capabilities = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY]
+  const capabilities = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY, HUMAN_CLARIFY_CAPABILITY]
   return new Map<string, FacetCoverage>(
     capabilities.map((capability) => [
       capability.capabilityId,

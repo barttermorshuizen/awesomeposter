@@ -142,6 +142,15 @@ export class FlexCapabilityRegistryService {
     const outputFacets = row.outputFacets ?? []
     const metadata = this.mergeMetadata(row.metadata, inputFacets, outputFacets)
 
+    const instructionTemplates =
+      row.instructionTemplates && Object.keys(row.instructionTemplates).length
+        ? (row.instructionTemplates as CapabilityRecord['instructionTemplates'])
+        : undefined
+    const assignmentDefaults =
+      row.assignmentDefaults && Object.keys(row.assignmentDefaults).length
+        ? (row.assignmentDefaults as CapabilityRecord['assignmentDefaults'])
+        : undefined
+
     const lastSeen = row.lastSeenAt ? row.lastSeenAt.toISOString() : undefined
     const registeredAt = row.registeredAt ? row.registeredAt.toISOString() : undefined
     const heartbeat = (row.heartbeat ?? undefined) as CapabilityRecord['heartbeat']
@@ -159,6 +168,9 @@ export class FlexCapabilityRegistryService {
       cost: (row.cost ?? undefined) as CapabilityRecord['cost'],
       preferredModels,
       heartbeat,
+      agentType: row.agentType ?? 'ai',
+      instructionTemplates,
+      assignmentDefaults,
       metadata: metadata as CapabilityRecord['metadata'],
       status: row.status,
       lastSeenAt: lastSeen,

@@ -116,7 +116,6 @@ export class PlannerService implements PlannerServiceInterface {
       const result = (await Promise.race([llmPromise, timeoutPromise])) as PlannerDraft
       return {
         nodes: result.nodes ?? [],
-        branchRequests: result.branchRequests,
         metadata: {
           provider: result.metadata?.provider ?? 'llm',
           model: result.metadata?.model ?? this.model
@@ -144,16 +143,11 @@ export class PlannerService implements PlannerServiceInterface {
         '    stage?: string',
         '    capabilityId?: string',
         '    derived?: boolean',
-        '    kind?: "structuring" | "branch" | "execution" | "transformation" | "validation" | "fallback"',
+        '    kind?: "structuring" | "execution" | "transformation" | "validation" | "fallback"',
         '    inputFacets?: string[] | string | Record<string, unknown>',
         '    outputFacets?: string[] | string | Record<string, unknown>',
         '    rationale?: string | string[]',
         '    instructions?: string | string[]',
-        '  }>',
-        '  branchRequests?: Array<{',
-        '    id?: string',
-        '    label: string',
-        '    rationale?: string',
         '  }>',
         '  metadata?: { provider?: string; model?: string }',
         '}',
@@ -171,17 +165,17 @@ export class PlannerService implements PlannerServiceInterface {
         '- Analyze the objective, inputs, and output expectations',
         '- Select the **minimal set of capabilities** needed to produce the required output facets',
         '- Route facets correctly between nodes, respecting capability I/O contracts',
-        '- Include fallback nodes only when risks are high and policy allows automation',
-        'Example execution node:',
-        '{ "stage": "generation", "kind": "execution", "capabilityId": "ContentGeneratorAgent.linkedinVariants", "inputFacets": ["objectiveBrief"], "outputFacets": ["copyVariants"] }',
+        '',
         'Planner rules:',
         '1. Every non-virtual node MUST set `capabilityId` to exactly one of the provided capability IDs.',
         '2. Before selecting a capability, ensure every required input facet or schema field is available from the envelope or a prior node; if not, add the upstream node that produces it.',
         '3. Never invent new capability IDs or placeholder names; reuse the registry values verbatim.',
         '4. Use only facet names that appear in the capability definitions or facet catalog. Do not invent new facet keys.',
-        '5. Honor the input contract schema (including required properties and enums). Convert free-form values via structuring nodes when necessary (e.g., map tone to allowed enum values).',
-        '6. If no suitable capability exists, return diagnostics describing the gap rather than creating anonymous stages.',
-        '7. Do NOT add standalone "normalization" or other controller-managed nodes unless the special instructions explicitly demand it—the orchestrator already handles schema shaping.',
+        '5. Honor the input contract schema (including required properties and enums). Rely on the orchestrator for baked-in facet normalization (objective mappings, tone enums, clarification shapes) instead of adding structuring helper nodes.',
+        '6. Do NOT output controller helper nodes such as "normalize_input_facets" or "shape_clarification_request"; the orchestrator performs these transformations automatically.',
+        '7. When the selected capability is human-operated (`capabilityId` starting with "HumanAgent."), avoid inserting automated strategy or content planning nodes just to populate context facets like `writerBrief`, `planKnobs`, or `strategicRationale`. Rely on provided inputs or return diagnostics if critical data is unavailable.',
+        '8. If no suitable capability exists, return diagnostics describing the gap rather than creating anonymous stages.',
+        '9. Do NOT add standalone "normalization" or other controller-managed nodes unless the special instructions explicitly demand it—the orchestrator already handles schema shaping.',
         'Reason from capability definitions. Include only the capabilities needed to achieve the objective given the available inputs and required outputs.',
         '- When required facets are missing and no fallback is possible, return JSON that captures the failure instead of inventing data.',
         'CRITICALLY:',
@@ -409,7 +403,6 @@ export class PlannerService implements PlannerServiceInterface {
     ]
     return {
       nodes: baseNodes,
-      branchRequests: undefined,
       metadata: {
         provider: 'deterministic-fallback'
       }

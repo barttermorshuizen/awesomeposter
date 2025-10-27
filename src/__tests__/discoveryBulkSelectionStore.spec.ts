@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useBulkSelectionStore } from '@/stores/discovery/bulkSelection'
-import { DISCOVERY_BULK_SELECTION_LIMIT } from '@awesomeposter/shared'
+import { DISCOVERY_BULK_SELECTION_LIMIT, type DiscoveryBulkFiltersSnapshot } from '@awesomeposter/shared'
 
-function buildSnapshot() {
+function buildSnapshot(): DiscoveryBulkFiltersSnapshot {
   return {
     status: ['spotted'],
     sourceIds: ['source-1'],

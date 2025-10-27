@@ -23,7 +23,15 @@ const ResumeRequestSchema = z.object({
     })
     .optional(),
   note: z.string().optional(),
-  correlationId: z.string().optional()
+  correlationId: z.string().optional(),
+  payload: z
+    .object({
+      nodeId: z.string().min(1),
+      output: z.record(z.string(), z.unknown()),
+      submittedAt: z.string().optional(),
+      note: z.string().optional()
+    })
+    .optional()
 })
 
 function buildResumeEnvelope(record: TaskEnvelope, runId: string, threadId: string | null, auditMetadata: Record<string, unknown>) {
@@ -95,11 +103,19 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, statusMessage: 'Run not found', data: { code: 'run_not_found' } })
   }
 
-  if (record.run.status !== 'awaiting_hitl') {
+  if (record.run.status !== 'awaiting_hitl' && record.run.status !== 'awaiting_human') {
     throw createError({
       statusCode: 409,
       statusMessage: 'Run is not awaiting operator input',
       data: { code: 'invalid_run_state', status: record.run.status }
+    })
+  }
+
+  if (record.run.status === 'awaiting_human' && !payload.payload) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Human submission payload is required',
+      data: { code: 'human_payload_required' }
     })
   }
 
@@ -173,7 +189,15 @@ export default defineEventHandler(async (event) => {
         correlationId,
         onEvent: async (frame) => {
           await sse.send(frame)
-        }
+        },
+        resumeSubmission: payload.payload
+          ? {
+              nodeId: payload.payload.nodeId,
+              output: payload.payload.output as Record<string, unknown>,
+              submittedAt: payload.payload.submittedAt,
+              note: payload.payload.note ?? null
+            }
+          : undefined
       })
     })
   } catch (error: any) {

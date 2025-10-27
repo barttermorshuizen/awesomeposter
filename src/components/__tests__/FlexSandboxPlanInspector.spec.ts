@@ -11,6 +11,7 @@ const capability: CapabilityRecord = {
   displayName: 'Writer',
   summary: 'Writes content',
   status: 'active',
+  agentType: 'ai',
   preferredModels: [],
   outputContract: { mode: 'json_schema', schema: { type: 'object' } },
   inputContract: undefined,

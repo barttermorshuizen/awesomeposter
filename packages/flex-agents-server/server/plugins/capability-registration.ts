@@ -1,9 +1,10 @@
 import { STRATEGY_CAPABILITY } from '../../src/agents/strategy-manager'
 import { CONTENT_CAPABILITY } from '../../src/agents/content-generator'
 import { QA_CAPABILITY } from '../../src/agents/quality-assurance'
+import { HUMAN_CLARIFY_CAPABILITY } from '../../src/agents/human-clarify-brief'
 import { getLogger } from '../../src/services/logger'
 
-const CAPABILITIES = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY]
+const CAPABILITIES = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY, HUMAN_CLARIFY_CAPABILITY]
 
 export default defineNitroPlugin((nitro) => {
   const logger = getLogger()
@@ -30,6 +31,12 @@ export default defineNitroPlugin((nitro) => {
     let attempt = startingAttempt
     while (attempt < startingAttempt + maxAttempts) {
       try {
+        console.log('[flex-capability] registering payload', {
+          capabilityId: payload.capabilityId,
+          agentType: (payload as any).agentType,
+          hasInstructionTemplates: Boolean((payload as any).instructionTemplates),
+          hasAssignmentDefaults: Boolean((payload as any).assignmentDefaults)
+        })
         const res = await nitro.localFetch('/api/v1/flex/capabilities/register', {
           method: 'POST',
           body: JSON.stringify(payload),
