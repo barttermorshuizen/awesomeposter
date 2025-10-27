@@ -1173,7 +1173,8 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 ## 15. Supporting Human Agents (to be implemented)
 
 ### 15.1 Concept Overview
-- HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds.
+- Human agents perform tasks side-by-side ai agents, fulfilling work.
+- HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds. 
 
 ### 15.x HITL Clarify Extension
 > *Extension of existing HITL mechanism — adds node-initiated clarify flow.*
@@ -1200,7 +1201,7 @@ interface ClarificationEntry {
 - Division of responsibilities remains clean: **policies continue to trigger approve/reject HITL for output governance**, while **nodes initiate clarify HITL when they require missing or ambiguous inputs resolved by a human**.
 
 - Human Agents extend the CapabilityRegistry with `agentType: "human"` entries so the planner can emit plan nodes that resolve to human-executed capabilities. The ExecutionEngine dispatches them like any other capability node.
-- These nodes target work that demands human judgment, clarification, or creative input. They are deterministic plan graph nodes with explicit inputs/outputs, not ad-hoc runtime pauses.
+- These nodes target work that demands human judgment, creative input or work that we want to be performed by humans. They are deterministic plan graph nodes with explicit inputs/outputs, not ad-hoc runtime pauses.
 - Pause/resume semantics, schema compilation, and validation operate identically across AI and human nodes, preserving deterministic execution and a complete audit trail.
 
 ### 15.2 Design Principles
