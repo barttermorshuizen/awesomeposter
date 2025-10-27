@@ -25,7 +25,7 @@ import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } 
 import { getAgents, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
-import { RunContext, type FacetEntry, type FacetSnapshot } from './run-context'
+import { RunContext, type RunContextSnapshot } from './run-context'
 import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
 import type { RuntimePolicyEffect } from './policy-normalizer'
 import type { PendingPolicyActionState, PolicyAttemptState, RuntimePolicySnapshotMode } from './runtime-policy-types'
@@ -217,7 +217,7 @@ export type FlexExecutionOptions = {
   initialState?: {
     completedNodeIds?: string[]
     nodeOutputs?: Record<string, Record<string, unknown>>
-    facets?: Record<string, FacetEntry>
+    facets?: RunContextSnapshot
     policyActions?: PendingPolicyActionState[]
     policyAttempts?: PolicyAttemptState
     mode?: RuntimePolicySnapshotMode
@@ -269,7 +269,7 @@ export class ReplanRequestedError extends Error {
     public readonly state: {
       completedNodeIds: string[]
       nodeOutputs: Record<string, Record<string, unknown>>
-      facets: Record<string, FacetEntry>
+      facets: RunContextSnapshot
       policyActions?: PendingPolicyActionState[]
       policyAttempts?: PolicyAttemptState
     }
@@ -386,9 +386,7 @@ export class FlexExecutionEngine {
     const initialNodeOutputs = opts.initialState?.nodeOutputs ?? {}
     const nodeOutputs = new Map<string, Record<string, unknown>>(Object.entries(initialNodeOutputs))
     const completedNodeIds = new Set<string>(opts.initialState?.completedNodeIds ?? Object.keys(initialNodeOutputs))
-    const runContext =
-      opts.runContext ??
-      RunContext.fromSnapshot((opts.initialState?.facets as Record<string, FacetEntry> | undefined) ?? undefined)
+    const runContext = opts.runContext ?? RunContext.fromSnapshot(opts.initialState?.facets)
     const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
     const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
     const policyActions: PendingPolicyActionState[] = Array.isArray(opts.initialState?.policyActions)
@@ -574,7 +572,20 @@ export class FlexExecutionEngine {
       }
 
       try {
-        const result = await this.invokeCapability(runId, node, envelope, opts, plan, runContext, nodeOutputs)
+        const result = await this.invokeCapability(
+          runId,
+          node,
+          envelope,
+          opts,
+          plan,
+          runContext,
+          nodeOutputs,
+          nodeStatuses,
+          nodeTimings,
+          completedNodeIds,
+          policyActions,
+          policyAttempts
+        )
         nodeOutputs.set(node.id, result.output)
         runContext.updateFromNode(node, result.output)
         completedNodeIds.add(node.id)
@@ -788,7 +799,12 @@ export class FlexExecutionEngine {
     opts: FlexExecutionOptions,
     plan: FlexPlan,
     runContext: RunContext,
-    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeOutputs: Map<string, Record<string, unknown>>,
+    nodeStatuses: Map<string, FlexPlanNodeStatus>,
+    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>,
+    completedNodeIds: Set<string>,
+    policyActions: PendingPolicyActionState[],
+    policyAttempts: Map<string, number>
   ): Promise<CapabilityResult> {
     if (!node.capabilityId) {
       throw new Error(`Execution node ${node.id} is missing capabilityId`)
@@ -796,34 +812,92 @@ export class FlexExecutionEngine {
 
     const capability = await this.resolveCapability(node.capabilityId)
     await this.validateCapabilityInputs(capability, node, runId, opts)
-    try {
-      getLogger().info('flex_capability_dispatch_start', {
-        runId,
-        nodeId: node.id,
-        capabilityId: capability.capabilityId,
-        correlationId: opts.correlationId
-      })
-    } catch {}
-    const result = await this.dispatchCapability(capability, node, envelope, plan, runContext, nodeOutputs)
-    try {
-      getLogger().info('flex_capability_dispatch_complete', {
-        runId,
-        nodeId: node.id,
-        capabilityId: capability.capabilityId,
-        correlationId: opts.correlationId
-      })
-    } catch {}
-    const preferredContract = node.contracts.output ?? capability.outputContract
-    const contract = preferredContract ?? null
-    const shouldValidateOutput = (node.kind ?? 'execution') === 'execution'
-    if (contract && shouldValidateOutput) {
-      await this.ensureOutputMatchesContract(
-        contract,
-        result.output,
-        { scope: 'capability_output', runId, nodeId: node.id },
-        opts
-      )
+
+    const dispatch = async () => {
+      try {
+        getLogger().info('flex_capability_dispatch_start', {
+          runId,
+          nodeId: node.id,
+          capabilityId: capability.capabilityId,
+          correlationId: opts.correlationId
+        })
+      } catch {}
+      const outcome = await this.dispatchCapability(capability, node, envelope, plan, runContext, nodeOutputs)
+      try {
+        getLogger().info('flex_capability_dispatch_complete', {
+          runId,
+          nodeId: node.id,
+          capabilityId: capability.capabilityId,
+          correlationId: opts.correlationId
+        })
+      } catch {}
+      const preferredContract = node.contracts.output ?? capability.outputContract
+      const contract = preferredContract ?? null
+      const shouldValidateOutput = (node.kind ?? 'execution') === 'execution'
+      if (contract && shouldValidateOutput) {
+        await this.ensureOutputMatchesContract(
+          contract,
+          outcome.output,
+          { scope: 'capability_output', runId, nodeId: node.id },
+          opts
+        )
+      }
+      return outcome
     }
+
+    const hitl = opts.hitl
+    if (!hitl) {
+      return dispatch()
+    }
+
+    let pendingRecord: HitlRequestRecord | null = null
+    let latestState: HitlRunState = hitl.state
+
+    const result = await withHitlContext(
+      {
+        runId,
+        threadId: hitl.threadId ?? undefined,
+        stepId: node.id,
+        capabilityId: node.capabilityId,
+        hitlService: hitl.service,
+        limit: hitl.limit,
+        onRequest: async (record, state) => {
+          pendingRecord = record
+          latestState = state
+          if (hitl.onRequest) await hitl.onRequest(record, state)
+        },
+        onDenied: async (reason, state) => {
+          latestState = state
+          if (hitl.onDenied) await hitl.onDenied(reason, state)
+        },
+        snapshot: hitl.state
+      },
+      async () => dispatch()
+    )
+
+    if (latestState !== hitl.state) {
+      hitl.state = latestState
+      hitl.updateState?.(latestState)
+    }
+
+    if (pendingRecord && pendingRecord.payload.kind === 'clarify') {
+      await this.pauseForClarification({
+        runId,
+        envelope,
+        plan,
+        opts,
+        runContext,
+        node,
+        nodeOutputs,
+        nodeStatuses,
+        nodeTimings,
+        completedNodeIds,
+        policyActions,
+        policyAttempts,
+        request: pendingRecord
+      })
+    }
+
     return result
   }
 
@@ -1149,6 +1223,23 @@ export class FlexExecutionEngine {
 
     if (facetSnapshot && Object.keys(facetSnapshot).length) {
       userSections.push(`Facet snapshot:\n${stringifyForPrompt(facetSnapshot)}`)
+    }
+
+    const clarifications = runContext
+      .getHitlClarifications()
+      .filter((entry) => entry.nodeId === node.id)
+    if (clarifications.length) {
+      const lines = clarifications.map((entry) => {
+        const askedAt = entry.createdAt || 'unknown'
+        const answered = entry.answer && entry.answer.trim().length ? entry.answer.trim() : null
+        const answeredAt = entry.answeredAt || 'pending'
+        const questionLine = `• Question (${askedAt}): ${entry.question}`
+        const answerLine = answered
+          ? `  Answer (${answeredAt}): ${answered}`
+          : '  Answer: pending operator response.'
+        return `${questionLine}\n${answerLine}`
+      })
+      userSections.push(['HITL clarifications history:'].concat(lines).join('\n'))
     }
 
     if (rationale.length) {
@@ -1882,6 +1973,89 @@ export class FlexExecutionEngine {
     throw new AwaitingHumanInputError()
   }
 
+  private async pauseForClarification(args: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    node: FlexPlanNode
+    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeStatuses: Map<string, FlexPlanNodeStatus>
+    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    completedNodeIds: Set<string>
+    policyActions: PendingPolicyActionState[]
+    policyAttempts: Map<string, number>
+    request: HitlRequestRecord
+  }): Promise<never> {
+    const {
+      runId,
+      plan,
+      opts,
+      runContext,
+      node,
+      nodeOutputs,
+      nodeStatuses,
+      nodeTimings,
+      completedNodeIds,
+      policyActions,
+      policyAttempts,
+      request
+    } = args
+
+    const createdAt = request.createdAt instanceof Date
+      ? request.createdAt.toISOString()
+      : new Date(request.createdAt).toISOString()
+
+    runContext.recordClarificationQuestion({
+      nodeId: node.id,
+      capabilityId: node.capabilityId ?? undefined,
+      questionId: request.id,
+      question: request.payload.question ?? '',
+      createdAt
+    })
+
+    const snapshot = runContext.snapshot()
+
+    await this.persistence.markNode(runId, node.id, {
+      status: 'awaiting_hitl',
+      context: node.bundle
+    })
+    nodeStatuses.set(node.id, 'awaiting_hitl')
+    nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}) })
+
+    const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
+    const pendingState = {
+      completedNodeIds: Array.from(completedNodeIds),
+      nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+      policyActions: this.clonePolicyActions(policyActions),
+      policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+      mode: 'hitl' as RuntimePolicySnapshotMode
+    }
+
+    await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
+      facets: snapshot,
+      schemaHash: opts.schemaHash ?? null,
+      edges: plan.edges,
+      planMetadata: plan.metadata,
+      pendingState
+    })
+
+    await this.persistence.saveRunContext(runId, snapshot)
+    await this.persistence.updateStatus(runId, 'awaiting_hitl')
+
+    try {
+      getLogger().info('flex_clarify_pause', {
+        runId,
+        nodeId: node.id,
+        capabilityId: node.capabilityId,
+        questionId: request.id
+      })
+    } catch {}
+
+    throw new HitlPauseError('Awaiting human clarification')
+  }
+
   private async triggerHitlPause(args: {
     runId: string
     envelope: TaskEnvelope
@@ -2173,9 +2347,10 @@ export class FlexExecutionEngine {
     })
   }
 
-  private extractOutputProvenance(facets: FacetSnapshot, output: Record<string, unknown>) {
+  private extractOutputProvenance(snapshot: RunContextSnapshot, output: Record<string, unknown>) {
     const provenance: Record<string, unknown> = {}
     if (!output) return provenance
+    const facets = snapshot.facets
     for (const key of Object.keys(output)) {
       const entry = facets?.[key]
       if (entry && Array.isArray(entry.provenance)) {

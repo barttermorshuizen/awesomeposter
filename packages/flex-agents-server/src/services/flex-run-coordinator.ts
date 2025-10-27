@@ -39,7 +39,7 @@ import {
 } from './flex-execution-engine'
 import { getHitlService, parseHitlDecisionAction, resolveHitlDecision, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
-import { RunContext, type FacetSnapshot } from './run-context'
+import { RunContext, type RunContextSnapshot } from './run-context'
 import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 import { getTelemetryService } from './telemetry-service'
 
@@ -408,6 +408,28 @@ export class FlexRunCoordinator {
       hitlState = state
       hitlLimit.current = state.requests.filter((r) => r.status !== 'denied').length
       hitlAwaiting = state.pendingRequestId ? state.requests.find((req) => req.id === state.pendingRequestId) || null : null
+
+      for (const request of state.requests) {
+        if (request.payload.kind !== 'clarify') continue
+        const responses = state.responses.filter((res) => res.requestId === request.id)
+        if (!responses.length) continue
+        const latest = responses[responses.length - 1]
+        let answer: string | null = null
+        if (typeof latest.freeformText === 'string' && latest.freeformText.trim().length) {
+          answer = latest.freeformText.trim()
+        } else if (typeof latest.selectedOptionId === 'string' && latest.selectedOptionId.trim().length) {
+          answer = latest.selectedOptionId.trim()
+        } else if (typeof latest.approved === 'boolean') {
+          answer = latest.approved ? 'approved' : 'rejected'
+        }
+        if (answer) {
+          const answeredAt = latest.createdAt instanceof Date
+            ? latest.createdAt.toISOString()
+            : new Date(latest.createdAt).toISOString()
+          runContext.recordClarificationAnswer({ questionId: request.id, answer, answeredAt })
+        }
+      }
+
       const resolvedSet = this.emittedHitlResolutions.get(runId) ?? new Set<string>()
       for (const request of state.requests) {
         if (request.status === 'resolved' && !resolvedSet.has(request.id)) {
@@ -822,7 +844,7 @@ export class FlexRunCoordinator {
         | {
             completedNodeIds: string[]
             nodeOutputs: Record<string, Record<string, unknown>>
-            facets: FacetSnapshot
+            facets: RunContextSnapshot
             policyActions?: PendingPolicyActionState[]
             policyAttempts?: Record<string, number>
             mode?: RuntimePolicySnapshotMode
@@ -1392,7 +1414,7 @@ export class FlexRunCoordinator {
         | {
             completedNodeIds: string[]
             nodeOutputs: Record<string, Record<string, unknown>>
-            facets: FacetSnapshot
+            facets: RunContextSnapshot
             policyActions?: PendingPolicyActionState[]
             policyAttempts?: Record<string, number>
             mode?: RuntimePolicySnapshotMode

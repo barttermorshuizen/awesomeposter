@@ -114,6 +114,11 @@ function normalizeHitlPayload(raw: unknown) {
     } catch {}
   }
 
+  if (input.kind === 'clarify') {
+    input.options = []
+    input.allowFreeForm = true
+  }
+
   return input
 }
 

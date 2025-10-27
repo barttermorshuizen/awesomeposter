@@ -3,7 +3,7 @@ import { sql, notInArray, desc, asc } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
 import type { TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
 import { setOrchestratorPersistence as setLegacyOrchestratorPersistence } from '../../../agents-server/src/services/orchestrator-persistence.js'
-import type { FacetSnapshot } from './run-context'
+import type { RunContextSnapshot } from './run-context'
 import type {
   FlexPlanNodeContracts,
   FlexPlanNodeFacets,
@@ -347,7 +347,7 @@ export type FlexRunRecord = {
   metadata?: Record<string, unknown> | null
   result?: Record<string, unknown> | null
   planVersion?: number
-  contextSnapshot?: FacetSnapshot | null
+  contextSnapshot?: RunContextSnapshot | null
   createdAt?: Date | null
   updatedAt?: Date | null
 }
@@ -361,7 +361,7 @@ type PlanSnapshotState = {
 }
 
 type SavePlanSnapshotOptions = {
-  facets?: FacetSnapshot
+  facets?: RunContextSnapshot
   schemaHash?: string | null
   edges?: FlexPlanEdge[]
   planMetadata?: Record<string, unknown>
@@ -373,7 +373,7 @@ type RecordResultOptions = {
   planVersion?: number
   status?: FlexRunStatus
   schemaHash?: string | null
-  facets?: FacetSnapshot | null
+  facets?: RunContextSnapshot | null
   provenance?: Record<string, unknown> | null
   snapshot?: {
     nodes: FlexPlanNodeSnapshot[]
@@ -390,7 +390,7 @@ export type FlexRunOutputRow = {
   schemaHash: string | null
   status: FlexRunStatus
   output: Record<string, unknown>
-  facets: FacetSnapshot | null
+  facets: RunContextSnapshot | null
   provenance: Record<string, unknown> | null
   recordedAt: Date | null
   updatedAt: Date | null
@@ -400,7 +400,7 @@ export type FlexPlanSnapshotRow = {
   runId: string
   planVersion: number
   snapshot: Record<string, unknown>
-  facets: FacetSnapshot | null
+  facets: RunContextSnapshot | null
   schemaHash: string | null
   pendingNodeIds: string[]
   createdAt: Date | null
@@ -623,7 +623,7 @@ export class FlexRunPersistence {
     }
   }
 
-  async saveRunContext(runId: string, snapshot: FacetSnapshot, options: { tx?: any } = {}) {
+  async saveRunContext(runId: string, snapshot: RunContextSnapshot, options: { tx?: any } = {}) {
     const now = new Date()
     const executor = options.tx ?? this.db
     await executor
@@ -747,7 +747,7 @@ export class FlexRunPersistence {
       schemaHash: row.schemaHash ?? null,
       status: (row.status as FlexRunStatus) ?? 'pending',
       output: (row.outputJson as Record<string, unknown>) ?? {},
-      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      facets: (row.facetSnapshotJson as RunContextSnapshot | null) ?? null,
       provenance: (row.provenanceJson as Record<string, unknown> | null) ?? null,
       recordedAt: row.recordedAt ?? null,
       updatedAt: row.updatedAt ?? null
@@ -776,7 +776,7 @@ export class FlexRunPersistence {
       runId: row.runId,
       planVersion: row.planVersion ?? 0,
       snapshot: (row.snapshotJson as Record<string, unknown>) ?? {},
-      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      facets: (row.facetSnapshotJson as RunContextSnapshot | null) ?? null,
       schemaHash: row.schemaHash ?? null,
       pendingNodeIds: Array.isArray(row.pendingNodeIds) ? [...row.pendingNodeIds] : [],
       createdAt: row.createdAt ?? null,
@@ -826,7 +826,7 @@ export class FlexRunPersistence {
         metadata: (row.metadataJson as Record<string, unknown>) ?? null,
         result: (row.resultJson as Record<string, unknown> | null) ?? null,
         planVersion: row.planVersion ?? 0,
-        contextSnapshot: (row.contextSnapshotJson as FacetSnapshot | undefined) ?? undefined,
+        contextSnapshot: (row.contextSnapshotJson as RunContextSnapshot | undefined) ?? undefined,
         createdAt: row.createdAt ?? null,
         updatedAt: row.updatedAt ?? null
       },
@@ -845,7 +845,7 @@ export class FlexRunPersistence {
       runId: row.runId,
       planVersion: row.planVersion ?? 0,
       snapshot: (row.snapshotJson as Record<string, unknown>) ?? {},
-      facets: (row.facetSnapshotJson as FacetSnapshot | null) ?? null,
+      facets: (row.facetSnapshotJson as RunContextSnapshot | null) ?? null,
       schemaHash: row.schemaHash ?? null,
       pendingNodeIds: Array.isArray(row.pendingNodeIds) ? [...row.pendingNodeIds] : [],
       createdAt: row.createdAt ?? null,

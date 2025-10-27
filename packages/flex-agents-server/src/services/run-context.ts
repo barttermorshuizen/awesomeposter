@@ -1,4 +1,4 @@
-import type { OutputContract } from '@awesomeposter/shared'
+import type { OutputContract, HitlClarificationEntry } from '@awesomeposter/shared'
 import type { FlexPlan, FlexPlanNode } from './flex-planner'
 
 export type FacetProvenanceRecord = {
@@ -16,6 +16,11 @@ export type FacetEntry = {
 
 export type FacetSnapshot = Record<string, FacetEntry>
 
+export type RunContextSnapshot = {
+  facets: FacetSnapshot
+  hitlClarifications: HitlClarificationEntry[]
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -26,22 +31,32 @@ function clone<T>(value: T): T {
 
 export class RunContext {
   private readonly facets = new Map<string, FacetEntry>()
+  private clarifications: HitlClarificationEntry[] = []
 
-  static fromSnapshot(snapshot: FacetSnapshot | null | undefined): RunContext {
+  static fromSnapshot(snapshot: RunContextSnapshot | FacetSnapshot | null | undefined): RunContext {
     const context = new RunContext()
     if (!snapshot) return context
-    for (const [facet, entry] of Object.entries(snapshot)) {
+    const resolvedSnapshot: RunContextSnapshot =
+      snapshot && typeof (snapshot as any).facets === 'object'
+        ? (snapshot as RunContextSnapshot)
+        : { facets: (snapshot as FacetSnapshot) ?? {}, hitlClarifications: [] }
+
+    for (const [facet, entry] of Object.entries(resolvedSnapshot.facets)) {
       context.facets.set(facet, clone(entry))
     }
+    context.clarifications = resolvedSnapshot.hitlClarifications.map((entry) => clone(entry))
     return context
   }
 
-  snapshot(): FacetSnapshot {
-    const result: FacetSnapshot = {}
+  snapshot(): RunContextSnapshot {
+    const facets: FacetSnapshot = {}
     for (const [facet, entry] of this.facets.entries()) {
-      result[facet] = clone(entry)
+      facets[facet] = clone(entry)
     }
-    return result
+    return {
+      facets,
+      hitlClarifications: this.clarifications.map((entry) => clone(entry))
+    }
   }
 
   getFacet(name: string): FacetEntry | undefined {
@@ -50,7 +65,12 @@ export class RunContext {
   }
 
   getAllFacets(): FacetSnapshot {
-    return this.snapshot()
+    const snapshot = this.snapshot()
+    return snapshot.facets
+  }
+
+  getHitlClarifications(): HitlClarificationEntry[] {
+    return this.clarifications.map((entry) => clone(entry))
   }
 
   updateFacet(
@@ -102,6 +122,45 @@ export class RunContext {
         timestamp
       })
     })
+  }
+
+  recordClarificationQuestion(entry: {
+    nodeId: string
+    capabilityId?: string
+    questionId: string
+    question: string
+    createdAt?: string
+  }) {
+    const createdAt = entry.createdAt ?? nowIso()
+    const normalized: HitlClarificationEntry = {
+      nodeId: entry.nodeId,
+      capabilityId: entry.capabilityId,
+      questionId: entry.questionId,
+      question: entry.question,
+      createdAt,
+      answer: undefined,
+      answeredAt: undefined
+    }
+    this.clarifications = this.clarifications
+      .filter((clar) => clar.questionId !== entry.questionId)
+      .concat([normalized])
+  }
+
+  recordClarificationAnswer(entry: {
+    questionId: string
+    answer: string
+    answeredAt?: string
+  }) {
+    const answeredAt = entry.answeredAt ?? nowIso()
+    this.clarifications = this.clarifications.map((clar) =>
+      clar.questionId === entry.questionId
+        ? {
+            ...clar,
+            answer: entry.answer,
+            answeredAt
+          }
+        : clar
+    )
   }
 
   composeFinalOutput(contract: OutputContract, plan?: FlexPlan): Record<string, unknown> {
