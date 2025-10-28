@@ -1,0 +1,38 @@
+schema: 1
+story: '11.1'
+story_title: 'Marketing Capability Taxonomy & Facet Alignment'
+gate: PASS
+status_reason: 'Capability table verified clean; Story 11.1 documentation and risk hand-off complete.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-28T21:41:32Z'
+quality_score: 100
+expires: '2025-11-11T21:41:32Z'
+top_issues: []
+waiver:
+  active: false
+evidence:
+  tests_reviewed: 0
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Documentation-only change; no runtime behavior impacted.'
+  performance:
+    status: PASS
+    notes: 'Documentation-only change; no runtime behavior impacted.'
+  reliability:
+    status: PASS
+    notes: 'Documentation-only change; no runtime behavior impacted.'
+  maintainability:
+    status: PASS
+    notes: 'Capability table confirmed free of control characters; documentation meets standards.'
+recommendations:
+  immediate:
+  future:
+    - action: 'Review the new facet catalog entries for conversational filler text and tighten phrasing to match architecture spec tone.'
+      refs:
+        - docs/architecture/flex-agents-server/512-reference-facet-catalog.md
+      suggested_owner: dev

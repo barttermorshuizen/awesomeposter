@@ -31,6 +31,11 @@ Deliver a curated set of flex server capabilities and facets tailored for market
 - **Mitigation:** Stage capability rollout through sandbox verification, log defects with reproduction steps, and keep fallback to legacy capability paths ready.
 - **Rollback Plan:** Remove or disable the marketing capability registrations while leaving legacy capability catalog intact; rely on existing generic flows until fixes land.
 
+## Open Risks & Assumptions (Story 11.1)
+- Dynamic replanning feedback loop may require additional engineering before launch; current orchestration retries are brittle when planner feedback escalates, so Story 11.2 must budget time for instrumentation and failure-handling tweaks.
+- Introducing the marketing capability taxonomy could expose latent sandbox defects because the system will execute unfamiliar capability IDs and task envelopes; validation needs broader scenario coverage to flush out compatibility gaps.
+- `strategist.Positioning` may demand new supporting tools (web search integrations, embeddings-file accessors, or lightweight statistical analysis helpers); scope increases should be tracked so Story 11.2 can plan sequencing or guardrails.
+
 ## Definition of Done
 - [ ] All stories completed with acceptance criteria met
 - [ ] Existing functionality verified through testing
