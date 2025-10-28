@@ -18,6 +18,7 @@ qaFacetCatalog.resolveMany([...QA_OUTPUT_FACETS], 'output')
 
 export const QA_CAPABILITY = {
   capabilityId: QA_CAPABILITY_ID,
+  agentType: 'ai',
   version: '1.0.0',
   displayName: 'Quality Assurance',
   summary: 'Scores generated drafts for readability, clarity, objective fit, and policy risk, returning structured QA signals.',

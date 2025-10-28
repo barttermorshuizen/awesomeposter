@@ -1,0 +1,168 @@
+{
+  "objective": "Generate LinkedIn copy variants for the Flex HITL clarify test while pausing to confirm missing buyer insights through operator answers.",
+  "inputs": {
+    "channel": "linkedin",
+    "goal": "drive beta waitlist sign-ups for the Flex HITL workflow",
+    "variantCount": 2,
+    "toneOfVoice": "Pragmatic & Helpful",
+    "audienceProfile": {
+      "persona": "Platform engineering leadership",
+      "segments": [],
+      "regions": ["North America"],
+      "painPoints": [
+        "Need proof that human-in-the-loop orchestration scales safely",
+        "Unclear whether to target internal platform teams or external solution partners"
+      ],
+      "requiresClarification": [
+        "Primary audience segment to emphasise in copy",
+        "Success metric to report back after the beta closes"
+      ]
+    },
+    "writerBrief": {
+      "language": "en",
+      "angle": "Show how AwesomePoster flex orchestration keeps humans in control without slowing automation.",
+      "keyPoints": [
+        "Deterministic pause and resume with `hitl.clarify()`",
+        "Operator answers feed straight back into the same node",
+        "Clarification history is persisted for analytics"
+      ],
+      "openClarifications": [
+        {
+          "questionId": "audience-segment",
+          "question": "Which audience segment should we emphasise once the run pauses for clarification?",
+          "reason": "Planner cannot pick between internal platform teams or external partners."
+        },
+        {
+          "questionId": "success-metric",
+          "question": "What single success metric should the copy promise to report after the beta waitlist closes?",
+          "reason": "The brief references sign-ups and qualified leads but requires a definitive answer."
+        }
+      ],
+      "knobs": {
+        "formatType": "text",
+        "variantCount": 2,
+        "hookIntensity": 0.5,
+        "expertiseDepth": 0.5,
+        "structure": {
+          "lengthLevel": 0.4,
+          "scanDensity": 0.45
+        }
+      }
+    },
+    "planKnobs": {
+      "formatType": "text",
+      "variantCount": 2,
+      "hookIntensity": 0.5,
+      "expertiseDepth": 0.5,
+      "structure": {
+        "lengthLevel": 0.4,
+        "scanDensity": 0.45
+      }
+    },
+    "contextBundles": [
+      {
+        "type": "product_snapshot",
+        "payload": {
+          "productName": "AwesomePoster Flex",
+          "featureHighlight": "Node-level `hitl.clarify()` pauses with deterministic resume",
+          "betaWindow": "Q3 launch window",
+          "operatorExperience": "Clarify dialog mirrors approve/reject workflow"
+        }
+      },
+      {
+        "type": "open_questions",
+        "payload": {
+          "items": [
+            {
+              "questionId": "audience-segment",
+              "prompt": "Confirm the target audience focus before continuing execution."
+            },
+            {
+              "questionId": "success-metric",
+              "prompt": "Clarify the KPI we should point to in the closing CTA."
+            }
+          ]
+        }
+      }
+    ],
+    "clarifyExpectations": [
+      {
+        "questionId": "audience-segment",
+        "question": "Which audience segment should we emphasise for this beta waitlist?",
+        "required": true,
+        "reason": "Determines messaging emphasis and CTA wording."
+      },
+      {
+        "questionId": "success-metric",
+        "question": "What success metric will we report back to operators and stakeholders?",
+        "required": true,
+        "reason": "Needed for promise in closing paragraph."
+      }
+    ]
+  },
+  "policies": {
+    "planner": {
+      "directives": {
+        "requireClarifyFor": ["audience-segment", "success-metric"],
+        "preferHumanCapabilities": ["HumanAgent.clarifyBrief"],
+        "disallowStages": []
+      }
+    },
+    "runtime": [
+      {
+        "id": "log_clarify_resume",
+        "trigger": {
+          "kind": "onNodeComplete",
+          "selector": {
+            "capabilityId": "HumanAgent.clarifyBrief"
+          }
+        },
+        "action": {
+          "type": "emit",
+          "event": "hitl_clarify_completed",
+          "payload": {
+            "note": "HITL clarify cycle finished; resume originating node with appended answers.",
+            "story": "8.31"
+          }
+        }
+      }
+    ]
+  },
+  "specialInstructions": [
+    "If `inputs.clarifyExpectations` contains entries with no answer in `runContext.hitlClarifications`, call `hitl.clarify()` with the provided question text and questionId instead of inferring a default.",
+    "When `/api/v1/flex/run.resume` returns, rehydrate the same node with the latest clarification answers and include history in telemetry frames.",
+    "Annotate operator-facing prompts with the questionId so front-end logging can map answers back to the originating node."
+  ],
+  "metadata": {
+    "clientId": "awesomeposter-flex",
+    "runLabel": "hitl-clarify-test"
+  },
+  "constraints": {
+    "testCase": "story-8.31",
+    "resumeExpectation": "rerun_same_node",
+    "simulateMissingInputs": true,
+    "clarifyQuestions": ["audience-segment", "success-metric"]
+  },
+  "outputContract": {
+    "mode": "json_schema",
+    "schema": {
+      "type": "object",
+      "required": ["copyVariants"],
+      "properties": {
+        "copyVariants": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["headline", "body", "callToAction"],
+            "properties": {
+              "headline": { "type": "string", "minLength": 5 },
+              "body": { "type": "string", "minLength": 50 },
+              "callToAction": { "type": "string", "minLength": 5 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

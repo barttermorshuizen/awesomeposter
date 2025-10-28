@@ -18,6 +18,7 @@ contentFacetCatalog.resolveMany([...CONTENT_OUTPUT_FACETS], 'output')
 
 export const CONTENT_CAPABILITY = {
   capabilityId: CONTENT_CAPABILITY_ID,
+  agentType: 'ai',
   version: '1.0.0',
   displayName: 'Copywriter – LinkedIn Variants',
   summary: 'Generates polished LinkedIn post variants using supplied brief, tone, and policy guidance.',
