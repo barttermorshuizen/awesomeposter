@@ -200,13 +200,7 @@ Registry entries advertising an agent’s competencies, IO expectations, cost pr
 #### Facet Definition
 - `Facet` objects are the semantic primitives the planner uses when composing contracts. Each facet defines a reusable slice of meaning – tone, brief, compliance rubric – that can be merged into node contracts.
 - Author and register facets in `packages/shared/src/flex/facets/catalog.ts` using the shared `FacetCatalog` utilities. The catalog is loaded everywhere via `getFacetCatalog()` so the planner, execution layer, and tests read the same source of truth.
-- Core fields:
-  - `name` (machine key) and `title` (human label) keep facet identities stable.
-  - `description` documents what the facet constrains.
-  - `schema` contains the JSON Schema fragment representing the facet’s structure (stored in `FacetDefinition.schema`).
-  - `semantics` or `instruction` describes how downstream agents should interpret the facet.
-  - `metadata` carries versioning, dependencies, and directionality (`input`, `output`, or bidirectional). Optional `propertyKey` lets multiple facets merge into the same JSON path when required.
-
+- Core what
 Example:
 
 ```json
@@ -241,6 +235,7 @@ Registration payloads share a stable contract so the orchestrator can validate a
 ```json
 {
   "capabilityId": "writer.en",
+  "agentType": "ai",
   "version": "2025.03.02",
   "displayName": "Content Writer (English)",
   "summary": "Creates long-form and social copy in English with brand-aware tone controls.",
@@ -264,6 +259,7 @@ Registration payloads share a stable contract so the orchestrator can validate a
 
 **Field overview**
 - `capabilityId` (string, required): globally unique identifier used in plan nodes.
+- `agentType` (string, required "human" | "ai")
 - `version` (string, required): semantic or timestamp version of the agent configuration.
 - `displayName` (string, required): human-readable name shown in tooling and logs.
 - `summary` (string, required): concise capability description.
@@ -675,7 +671,7 @@ TaskEnvelope
 
 **Design principle**: contracts define what must be true; planners decide how to make it true; validators prove it could be true; policies ensure nothing breaks while trying.
 
-## Δ Policy Simplification (Remove Flow-Control Actions)
+## 5.10 Policy Simplification (Remove Flow-Control Actions)
 
 ### Background
 
@@ -763,35 +759,6 @@ If control-flow correction is needed, the policy requests a **replan**, promptin
 
 * When a policy triggers a replan, the engine emits policy\_triggered → plan\_requested → plan\_generated sequence and resumes from the newly validated graph version.
 
----
-
-### Migration Notes
-
-1. Remove all existing runtime policies using goto or node-relative selectors.
-
-2. Replace them with equivalent declarative triggers \+ replan or hitl.
-
-   * Example:
-
-```
-{
-  "id": "qa_low_score",
-  "trigger": {
-    "kind": "onValidationFail",
-    "selector": { "kind": "validation" },
-    "condition": { "<": [{ "var": "qaFindings.overallScore" }, 0.6] }
-  },
-  "action": { "type": "replan", "rationale": "Low QA score" }
-}
-```
-
-2. 
-
-3. Update tests under \_\_tests\_\_/flex-run-coordinator.spec.ts to drop goto expectations.
-
-4. Update shared Action enum validation in @awesomeposter/shared/flex accordingly.
-
----
 
 ### Rationale
 
@@ -805,23 +772,1023 @@ If control-flow correction is needed, the policy requests a **replan**, promptin
 
 * **More declarative consistency:** All changes to flow originate from revised planning, not procedural hops.
 
----
-
-### Summary
-
-| Old Behavior | New Behavior |
-| ----- | ----- |
-| Policies could jump to nodes (goto). | Policies can only pause, replan, fail, or emit. |
-| NodeSelector included relative navigation. | NodeSelector limited to static identifiers (kind, capabilityId). |
-| Execution could mutate plan topology. | Plan topology immutable after validation. |
-| Flow changes procedural. | Flow changes declarative, via new plan graph. |
-
 
 **Design Principle**
 
 *Policies guard the run; planners shape the path.*  
 Once validated, the plan graph is the single source of truth for control flow.  
 
+## 5.11 Reference capability registry
+
+| capabilityId | AgentType | summary | inputTraits | inputContract | outputContract |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| strategist.SocialPosting | AI | Generates a strategic rationale and creative brief for social posts (e.g., new case, new employee). | Reasoning, Planning, Context extraction | post\_context, feedback | creative\_brief, strategic\_rationale, handoff\_summary |
+| strategist.Positioning | AI | Analyzes a competitive positioning and produces a clear value proposition with reasoning. | Analysis, Synthesis, Market Reasoning | positioning\_context, feedback | value\_canvas, positioning\_opportunities, positioning\_recommendation |
+| copywriter.SocialpostDrafting | AI | Drafts social post copy using strategist’s creative brief. | Writing, Tone adaptation, Channel adaptation, | creative\_brief,handoff\_summary, feedback | post\_copy,handoff\_summary |
+| copywriter.Messaging | AI | Takes positioning and creates a messaging stack. | Copy Editing, Style Adaptation | positioning\_context, positioning\_recommendation, feedback | messaging\_stack, handoff\_summary |
+| designer.VisualDesign | Human | Creates visual assets for a post using strategists’ creative brief. | Visual design, Brand alignment | creative\_brief, handoff\_summary, feedback | post\_visual,handoff\_summary |
+| director.SocialPostingReview | Human | Approves final post (copy \+ visuals), or provides feedback on rationale,visuals or copy. | Evaluation, Brand Consistency | post\_context, strategic\_rationale, post\_copy, post\_visual | post, feedback |
+| director.PositioningReview | Human | Approves positioning recommendation and messaging stack, or provides feedback on positioning or messaging stack | Evaluation, Brand strategy | positioning\_context, value\_canvas, positioning\_opportunities, positioning\_recommendation, messaging\_stack | positioning, feedback |
+
+## 5.12 Reference facet catalog 
+
+### Facet post\_context
+
+**name**: post\_context
+
+**title**: Post Context
+
+**description**
+
+Type-specific context for a social post (currently supports new\_case and new\_employee) plus shared narrative and optional attached assets (R2 URLs). Used by Strategist → Copywriter → Designer to plan, draft, and assemble a post.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["type", "data"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["new_case", "new_employee"],
+      "description": "Post variant."
+    },
+    "data": {
+      "type": "object",
+      "description": "Contextual fields for the selected post type.",
+      "properties": {
+        "content_description": {
+          "type": "string",
+          "description": "Free-text narrative describing the core message."
+        },
+        "assets": {
+          "type": "array",
+          "description": "R2 asset URLs (images, PDFs, etc.).",
+          "items": { "type": "string", "format": "uri" }
+        },
+        "case_url": {
+          "type": "string",
+          "description": "URL of the published customer case. (for type==new_case)"
+        },
+        "customer_name": {
+          "type": "string",
+          "description": "Customer/company name. (for type==new_case)"
+        },
+        "employee_name": {
+          "type": "string",
+          "description": "Full name of the new employee. (for type==new_employee)"
+        },
+        "role": {
+          "type": "string",
+          "description": "Job title or position. (for type==new_employee)"
+        },
+        "start_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Employee start date (optional). (for type==new_employee)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "type": "new_case",
+      "data": {
+        "content_description": "Acme Corp achieved a 32% efficiency boost using our platform.",
+        "case_url": "https://companyx.com/cases/acme-efficiency",
+        "customer_name": "Acme Corp",
+        "assets": [
+          "https://r2.companyx.com/social/acme_case_banner.jpg"
+        ]
+      }
+    },
+    {
+      "type": "new_employee",
+      "data": {
+        "content_description": "Jane joins the design team after five years at DesignCo.",
+        "employee_name": "Jane Doe",
+        "role": "UX Designer",
+        "start_date": "2025-10-01",
+        "assets": [
+          "https://r2.companyx.com/employees/jane_doe_portrait.jpg"
+        ]
+      }
+    }
+  ]
+}
+```
+
+**semantics**
+
+* type selects the reasoning frame inside Strategist.SocialPosting.  
+* data.content\_description is the canonical short narrative  
+* data.assets\[\] are source materials (R2 URLs)
+
+**metadata**
+
+* version: 1.0.0  
+* direction: input  
+* requiredByDefault: true
+
+Here’s the facet definition for **creative\_brief**, formatted in the same markdown \+ schema structure you’re using.
+
+### Facet creative\_brief
+
+**name**: creative\_brief
+
+**title**: Creative Brief
+
+**description**
+
+Structured summary of how a social post or campaign should be executed — the strategist’s distilled plan for creative direction. It provides downstream agents (copywriter, designer, reviewer) with the key message, audience focus, tone, and structure.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["core_message", "structure", "tone", "audience"],
+  "properties": {
+    "core_message": {
+      "type": "string",
+      "description": "The central message or idea the content should communicate."
+    },
+    "supporting_points": {
+      "type": "array",
+      "description": "Optional list of subpoints, stats, or proof points that support the core message.",
+      "items": { "type": "string" }
+    },
+    "structure": {
+      "type": "string",
+      "description": "Recommended structure for the post, e.g., 'Problem → Solution → Result → CTA'."
+    },
+    "tone": {
+      "type": "string",
+      "description": "Desired voice or emotional tone (e.g., 'grateful', 'authoritative', 'playful')."
+    },
+    "audience": {
+      "type": "string",
+      "description": "Intended audience or persona (e.g., 'B2B buyers', 'new employees')."
+    },
+    "visual_guidelines": {
+      "type": "object",
+      "description": "High-level guidance for the visual execution of the post.",
+      "properties": {
+        "layout_type": {
+          "type": "string",
+          "enum": ["single_image", "carousel", "video", "animation", "none"],
+          "description": "Recommended layout or post type."
+        },
+        "format": {
+          "type": "string",
+          "enum": ["square", "portrait", "landscape", "story"],
+          "description": "Preferred aspect ratio or format."
+        },
+        "image_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Suggested number of images or frames for carousels."
+        },
+        "design_notes": {
+          "type": "string",
+          "description": "Free-text notes for the designer (e.g., 'feature customer logo prominently')."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "core_message": "Acme Corp achieved 32% higher production efficiency using our platform.",
+      "supporting_points": [
+        "Customer-first partnership",
+        "Data-driven impact"
+      ],
+      "structure": "Problem → Solution → Result → CTA",
+      "tone": "grateful",
+      "audience": "Manufacturing operations leaders",
+      "visual_guidelines": {
+        "layout_type": "carousel",
+        "format": "square",
+        "image_count": 3,
+        "design_notes": "Include before/after charts and customer logo on first frame."
+      }
+    }
+  ]
+}
+```
+
+**semantics**
+
+**metadata**
+
+* version: 1.0.0  
+* direction: bidirectional  
+* requiredByDefault: true
+
+Got it — you want strategic\_rationale to serve as a simple, human- and model-readable text field that explains *why* a plan was made, without structure or nested fields.
+
+Here’s the minimal, consistent facet definition in your schema format:
+
+---
+
+### Facet strategic\_rationale
+
+**name**: strategic\_rationale
+
+**title**: Strategic Rationale
+
+**description**
+
+Plain-text explanation of the reasoning behind a strategist’s recommendations or creative plan.
+
+It captures context and intent so that reviewers understand *why* specific choices were made.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "string",
+  "description": "Free-text explanation of the reasoning and intent behind a strategy or creative decision.",
+  "examples": [
+    "The goal is to reinforce credibility through real customer outcomes. A customer success post with measurable impact performs best for our audience."
+  ]
+}
+```
+
+**semantics**
+
+* Treated as descriptive text, not machine-interpreted structure.
+
+* Copied forward unchanged through downstream steps (copywriter, designer, director).
+
+* Provides understanding for human review and audit and can  be supplied to customer alongside the post.
+
+**metadata**
+
+* direction: bidirectional  
+* requiredByDefault: true
+
+Here’s the facet definition for **handoff\_summary**, following your simplified metadata convention.
+
+---
+
+### Facet handoff\_summary
+
+**name**: handoff\_summary
+
+**title**: Handoff Summary
+
+**description**
+
+A running textual log of decisions, notes, or key observations that each agent appends as work progresses through the task envelope. It provides continuity and traceability between capabilities in a chain.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "array",
+  "description": "Ordered list of textual notes created by agents as work passes between capabilities.",
+  "items": {
+    "type": "string",
+    "description": "A short free-text summary of what was produced, decided, or recommended in this step."
+  },
+  "examples": [
+    [
+      "Strategist: Created plan emphasizing measurable customer results.",
+      "Copywriter: Drafted post highlighting 32% efficiency gain with a grateful tone.",
+      "Designer: Selected banner image showing before/after production metrics."
+    ]
+  ]
+}
+```
+
+**semantics**
+
+* Each generating agent **appends** a new text entry summarizing its contribution.
+
+* The array accumulates across all capability executions within the task envelope.
+
+* Used for handover context, reasoning visibility, and audit trails.
+
+* Human and AI agents can both write to it.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+Agreed — requires\_replan leaks orchestration logic into a domain facet that should stay agnostic.
+
+The **planner** should infer what to do from declarative data, not read an imperative flag.
+
+Here’s the cleaned-up and final version of the feedback facet, without domain leakage and with slightly clearer semantics for planner use.
+
+---
+
+### Facet feedback
+
+**name**: feedback
+
+**title**: Feedback
+
+**description**
+
+Records comments, change requests, or revision notes tied to specific **facets**.
+
+Each entry references the facet affected so the planner can map feedback to producing or consuming capabilities and decide what to recompute—without procedural hints.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "array",
+  "description": "Feedback items associated with specific facets; used for targeted replanning or review.",
+  "items": {
+    "type": "object",
+    "required": ["author", "facet", "message"],
+    "properties": {
+      "author": {
+        "type": "string",
+        "description": "Name or role of the person or agent giving feedback."
+      },
+      "facet": {
+        "type": "string",
+        "description": "Facet key this feedback relates to (e.g., 'post_copy', 'creative_brief', 'strategic_rationale')."
+      },
+      "path": {
+        "type": "string",
+        "description": "Optional JSON pointer within the facet (e.g., '/headline')."
+      },
+      "message": {
+        "type": "string",
+        "description": "Feedback text or change request."
+      },
+      "note": {
+        "type": "string",
+        "description": "Optional note from the agent who acted on the feedback (e.g., 'adjusted headline')."
+      },
+      "severity": {
+        "type": "string",
+        "enum": ["info", "minor", "major", "critical"],
+        "description": "Relative importance or impact of the feedback."
+      },
+      "timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When the feedback was created."
+      },
+      "resolution": {
+        "type": "string",
+        "enum": ["open", "addressed", "dismissed"],
+        "description": "Current resolution state."
+      }
+    },
+    "additionalProperties": false
+  },
+  "examples": [
+    [
+      {
+        "author": "Director",
+        "facet": "post_copy",
+        "path": "/headline",
+        "message": "Tone is too self-promotional; make it more grateful.",
+        "severity": "major",
+        "timestamp": "2025-10-28T09:15:00Z",
+        "resolution": "open"
+      },
+      {
+        "author": "Copywriter",
+        "facet": "post_copy",
+        "message": "Tone feedback addressed.",
+        "note": "Softened headline and CTA phrasing.",
+        "timestamp": "2025-10-28T10:02:00Z",
+        "resolution": "addressed"
+      }
+    ]
+  ]
+}
+```
+
+**semantics**
+
+* facet binds feedback to a well-known contract element.
+
+* The planner uses these references to identify affected graph nodes automatically (no embedded logic or directives).
+
+* path narrows scope for fine-grained feedback targeting.
+
+* Agents addressing items append their own entry with a note and updated resolution.
+
+* Serves both as conversational context and as a change log for future learning loops.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+Understood — keeping post\_copy as a single, minimal text field makes it clean and consistent with how you simplified strategic\_rationale.
+
+Here’s the revised definition.
+
+---
+
+### Facet post\_copy
+
+**name**: post\_copy
+
+**title**: Post Copy
+
+**description**
+
+The written text of a social post. This is the composed copy.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "string",
+  "description": "Full text of the social post",
+  "examples": [
+    "Efficiency by Choice. /n /n We’re grateful to Acme Corp for sharing how they achieved 32% higher efficiency using our platform. Real results, real partnership. /n #partnership #acme"
+  ]
+}
+```
+
+**semantics**
+
+* Overwrites previous versions rather than appending.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+Next in line is **post\_visual** — the Designer’s output facet containing visual assets (R2 URLs).
+
+---
+
+### Facet post\_visual
+
+**name**: post\_visual
+
+**title**: Post Visual
+
+**description**
+
+References to one or more visual assets associated with a social post.
+
+Produced by the Designer agent and consumed by reviewers and publishers.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "array",
+  "description": "List of R2 asset URLs representing the visuals for the post.",
+  "items": {
+    "type": "string",
+    "format": "uri",
+    "description": "Direct URL to a visual asset (e.g., image, PDF, or short video)."
+  },
+  "examples": [
+    [
+      "https://r2.companyx.com/social/acme_case_banner_final.jpg",
+      "https://r2.companyx.com/social/acme_chart.pdf"
+    ]
+  ]
+}
+```
+
+**semantics**
+
+* Produced by designer.VisualDesign; reviewed by director.SocialPostingReview.
+
+* Contains publication-ready asset references (stored in R2).
+
+* The first URL is treated as the primary visual when needed by downstream systems.
+
+* Each execution replaces the array with an updated list of current visual assets (so no versioning)
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+Makes sense — approval and workflow state belong to the runtime layer, not the content facet.
+
+Here’s the cleaned-up and final version of the post facet, focused only on the deliverable content itself.
+
+---
+
+### Facet post
+
+**name**: post
+
+**title**: Social Post
+
+**description**
+
+The complete, ready-to-publish social post content, combining approved text and associated visuals.
+
+Represents the final creative deliverable produced by the review stage.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["copy", "visuals"],
+  "properties": {
+    "copy": {
+      "type": "string",
+      "description": "Final text of the social post."
+    },
+    "visuals": {
+      "type": "array",
+      "description": "R2 asset URLs for the final visuals associated with this post.",
+      "items": { "type": "string", "format": "uri" }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "copy": "We’re grateful to Acme Corp for sharing how they achieved 32% higher efficiency using our platform. Real results, real partnership.",
+      "visuals": ["https://r2.companyx.com/social/acme_case_banner_final.jpg"]
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by director.SocialPostingReview.
+
+* Consumed by publishing or external distribution systems.
+
+* Represents the canonical output of the creative process — content-only, free of workflow or approval metadata.
+
+* Downstream systems attach runtime policy data (approval state, versioning, audit trail) separately within the task envelope.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+Here’s the cleaned-up and final version of the **positioning\_context** facet reflecting your adjustments — no differentiators or resources, focused on market, geography, audience, and competitive dynamics.
+
+---
+
+### Facet positioning\_context
+
+**name**: positioning\_context
+
+**title**: Positioning Context
+
+**description**
+
+Structured input describing a company’s market, audience, and competitive environment.
+
+Provides the grounding context for agents evaluating or refining company positioning.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["company_name", "company_url"],
+  "properties": {
+    "company_name": {
+      "type": "string",
+      "description": "Official name of the company being positioned."
+    },
+    "company_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Primary website or landing page for the company."
+    },
+    "sector": {
+      "type": "string",
+      "description": "Industry or market sector (e.g., 'Industrial IoT', 'B2B SaaS')."
+    },
+    "target_audience": {
+      "type": "string",
+      "description": "Primary audience or buyer persona the positioning should address."
+    },
+    "target_geography": {
+      "type": "string",
+      "description": "Geographic focus or markets where the company operates (e.g., 'Europe', 'North America', 'Global')."
+    },
+    "competing_factors": {
+      "type": "array",
+      "description": "Key factors buyers use to evaluate companies in this space (e.g., price, innovation, reliability).",
+      "items": { "type": "string" }
+    },
+    "competitors": {
+      "type": "array",
+      "description": "List of competitor URLs or profiles for benchmarking.",
+      "items": { "type": "string", "format": "uri" }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "company_name": "Acme Analytics",
+      "company_url": "https://acmeanalytics.io",
+      "sector": "Industrial IoT",
+      "target_audience": "Operations and plant managers in mid-sized manufacturing firms",
+      "target_geography": "Europe",
+      "competing_factors": ["Data reliability", "Ease of integration", "Support responsiveness"],
+      "competitors": [
+        "https://contosoindustrial.com",
+        "https://factoryinsights.ai"
+      ]
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Used primarily by strategist.Positioning and copywriter.Messaging.
+
+* Captures external context: audience, geography, and the competitive landscape.
+
+* competing\_factors describe buyer evaluation dimensions, enabling comparison across competitors.
+
+* competitors provides reference entities for market analysis; data retrieval or scoring is handled dynamically from public information.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+That makes sense — you’re defining **positioning as a quantifiable configuration of competing factors**, not just a narrative statement.
+
+This lets you tie together analytic scoring (objective comparison across factors) and LLM-based qualitative reasoning (fit, differentiation, and plausibility).
+
+Here’s the updated and precise facet definition for that approach.
+
+---
+
+### Facet positioning\_recommendation
+
+**name**: positioning\_recommendation
+
+**title**: Positioning Recommendation
+
+**description**
+
+Represents the recommended company positioning expressed as a set of **competing factors** with target scores.
+
+Each factor reflects how strongly the company should aim to perform relative to competitors.
+
+Includes accompanying rationale that explains why this configuration is optimal based on analytical and language-model reasoning.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["factors", "rationale"],
+  "properties": {
+    "factors": {
+      "type": "array",
+      "description": "List of competing factors with target positioning scores (0–10).",
+      "items": {
+        "type": "object",
+        "required": ["name", "target_score"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the competing factor (e.g., 'ease of integration', 'local consulting partners')."
+          },
+          "target_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Target positioning score for this factor."
+          },
+          "current_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Optional current observed score, used to measure positioning distance."
+          },
+          "trend_alignment": {
+            "type": "string",
+            "enum": ["positive", "neutral", "negative"],
+            "description": "Alignment of this factor with current market trends."
+          },
+          "comment": {
+            "type": "string",
+            "description": "Short reasoning comment for this factor (e.g., 'Integration is a differentiator for industrial clients')."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "fit_analysis": {
+      "type": "string",
+      "description": "Short summary evaluating whether this positioning fits the company’s current capabilities and brand trajectory."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Free-text explanation of why this positioning configuration is recommended."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "factors": [
+        {
+          "name": "ease of integration",
+          "target_score": 8.5,
+          "current_score": 7,
+          "trend_alignment": "positive",
+          "comment": "Integration remains a strong buying driver in B2B analytics."
+        },
+        {
+          "name": "local consulting partners",
+          "target_score": 8,
+          "current_score": 6.5,
+          "trend_alignment": "neutral",
+          "comment": "Expanding partnerships will increase accessibility and trust in regional markets."
+        },
+        {
+          "name": "AI-driven insights",
+          "target_score": 7.5,
+          "current_score": 8,
+          "trend_alignment": "positive",
+          "comment": "Already strong, should maintain but not overspend relative to competitors."
+        }
+      ],
+      "fit_analysis": "Recommended configuration aligns with Acme’s operational strengths and market direction, with manageable distance from current positioning.",
+      "rationale": "Based on statistical benchmarking of 12 competitors and qualitative LLM reasoning, this balance improves differentiation and trend alignment while maintaining authenticity."
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by strategist.Positioning.
+
+* Consumed by copywriter.Messaging and director.PositioningReview.
+
+* factors\[\] quantify desired positioning targets; numeric values allow comparison, tracking, and visual mapping.
+
+* fit\_analysis describes feasibility relative to the company’s current state.
+
+* rationale captures overall justification and ties the quantitative and qualitative reasoning together.
+
+* Enables data-driven positioning recommendations while preserving interpretability for human review.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+### Facet messaging\_stack
+
+**name**: messaging\_stack
+
+**title**: Messaging Stack
+
+**description**
+
+Translates the company’s positioning into a structured hierarchy of key messages.
+
+Each entry defines one message pillar, an associated proof point, and the suggested phrasing used to express it publicly.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["core_message", "messages"],
+  "properties": {
+    "core_message": {
+      "type": "string",
+      "description": "The high-level value proposition that summarizes the company's market position."
+    },
+    "message_pillars": {
+      "type": "array",
+      "description": "Message pillars derived from the positioning recommendation.",
+      "items": {
+        "type": "object",
+        "required": ["pillar", "proof_point", "message"],
+        "properties": {
+          "pillar": {
+            "type": "string",
+            "description": "Name or short summary of the message pillar."
+          },
+          "proof_point": {
+            "type": "string",
+            "description": "Short fact, data point, or example supporting this pillar."
+          },
+          "message": {
+            "type": "string",
+            "description": "20–30 word phrasing showing how this message should be expressed in copy."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tone": {
+      "type": "string",
+      "description": "Recommended tone or voice for communicating the overall message stack (e.g., 'authoritative', 'confident', 'pragmatic')."
+    },
+    "alignment_summary": {
+      "type": "string",
+      "description": "Short explanation linking each message to the underlying positioning factors."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "core_message": "The trusted partner helping manufacturers turn industrial data into operational excellence.",
+      "message_pillars": [
+        {
+          "pillar": "Seamless integration",
+          "proof_point": "Connects with all major MES and SCADA systems.",
+          "message": "We make factory data flow effortlessly, so insights reach the people who can act on them fastest."
+        },
+        {
+          "pillar": "Local expertise",
+          "proof_point": "Partner network in 12 European markets.",
+          "message": "Our local partners combine global tech with regional know-how to deliver impact that fits each plant."
+        },
+        {
+          "pillar": "Reliable results",
+          "proof_point": "Average 30% efficiency gains across deployments.",
+          "message": "Every engagement is measured by one thing: consistent, proven results on the factory floor."
+        }
+      ]
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by copywriter.Messaging; consumed by director.PositioningReview.
+
+* core\_message expresses the overarching proposition.
+
+* Each item in message\_pillars\[\] forms a coherent unit: pillar → proof → phrasing.
+
+* Encourages clear alignment between strategic factors and creative execution.
+
+**metadata**
+
+* direction: bidirectional
+
+* requiredByDefault: true
+
+The next logical facet in the positioning workflow is **positioning** — the final, reviewed, and approved positioning output that integrates all preceding reasoning and messaging.
+
+---
+
+### Facet: positioning
+
+**name**: positioning
+
+**title**: Final Positioning
+
+**description**
+
+Represents the company’s approved market positioning after review.
+
+It consolidates the quantitative factor-based recommendation and the qualitative messaging into a single, publishable strategic artifact.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["positioning_summary", "factors", "messaging_stack"],
+  "properties": {
+    "positioning_summary": {
+      "type": "string",
+      "description": "A concise paragraph summarizing the company’s agreed market position and differentiation focus."
+    },
+    "factors": {
+      "type": "array",
+      "description": "Set of competing factors and their final target scores after review.",
+      "items": {
+        "type": "object",
+        "required": ["name", "target_score"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Competing factor name (e.g., 'ease of integration', 'local expertise')."
+          },
+          "target_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Final agreed positioning score for this factor."
+          },
+          "trend_alignment": {
+            "type": "string",
+            "enum": ["positive", "neutral", "negative"],
+            "description": "Alignment of the factor with market trends."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "messaging_stack": {
+      "type": "object",
+      "description": "The approved messaging structure derived from this positioning.",
+      "properties": {
+        "core_message": { "type": "string" },
+        "message_pillars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pillar", "proof_point", "message"],
+            "properties": {
+              "pillar": { "type": "string" },
+              "proof_point": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["core_message", "message_pillars"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "positioning_summary": "Acme Analytics is Europe’s most reliable industrial data partner, helping manufacturers achieve measurable efficiency through seamless integration and local expertise.",
+      "factors": [
+        {
+          "name": "ease of integration",
+          "target_score": 8.5,
+          "trend_alignment": "positive"
+        },
+        {
+          "name": "local consulting partners",
+          "target_score": 8.0,
+          "trend_alignment": "neutral"
+        },
+        {
+          "name": "reliability",
+          "target_score": 9.0,
+          "trend_alignment": "positive"
+        }
+      ],
+      "messaging_stack": {
+        "core_message": "The trusted partner helping manufacturers turn industrial data into operational excellence.",
+        "message_pillars": [
+          {
+            "pillar": "Seamless integration",
+            "proof_point": "Connects with all major MES and SCADA systems.",
+            "message": "We make factory data flow effortlessly, so insights reach the people who can act on them fastest."
+          },
+          {
+            "pillar": "Local expertise",
+            "proof_point": "Partner network in 12 European markets.",
+            "message": "Our local partners combine global tech with regional know-how to deliver impact that fits each plant."
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by director.PositioningReview after approval.
+
+* Combines the quantitative factor model from positioning\_recommendation and the narrative framework from messaging\_stack.
+
+* Serves as the single source of truth for future brand, marketing, and product communication decisions.
+
+* Downstream systems or agents (e.g., campaign planners, content generators) can consume this facet to ensure consistency.
+
+**metadata**
+
+* direction: output
+
+* requiredByDefault: true
 
 ## 6. Component Responsibilities
 - `FlexRunController`: validates envelopes, seeds correlation IDs, and emits initial SSE frames.
