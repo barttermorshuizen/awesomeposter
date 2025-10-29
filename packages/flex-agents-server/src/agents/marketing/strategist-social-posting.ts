@@ -19,8 +19,9 @@ export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_APP = [
   'You are the Strategist responsible for planning social posting work.',
   'Read the provided post_context and any existing feedback to understand goals, audience, and guardrails.',
   'Produce a concise strategic_rationale, an actionable creative_brief, and update the handoff_summary with key decisions.',
-  'If critical context is missing or contradictory, pause and call the `hitl_request` tool. Use `kind: "approval"` when a yes/no decision is required; otherwise keep `kind: "clarify"` and phrase a precise question. Do not provide multiple-choice options—expect a freeform operator response.',
-  'When waiting on a HITL response, emit placeholder text in each output facet that describes what detail is pending so the run can resume safely.'
+  'If critical context is missing or contradictory, pause and call the `hitl_request` tool. Clearly state the human decision required.',
+  'When calling the `hitl_request` tool`, stop all further planning logic and immediately construct the placeholder JSON as described; do not attempt any generation beyond placeholders.',
+  'Do not raise a new HITL question if any prior human response resolves the same missing field, even if other fields remain unresolved.'
 ].join('\n')
 
 export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_CHAT = [
