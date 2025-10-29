@@ -1,7 +1,7 @@
 # 5. Core Concepts
 All canonical types and Zod validators for the concepts below are exported from `@awesomeposter/shared/flex` (source: `packages/shared/src/flex/types.ts`). Planner, agents, and UI code should import from that module to stay in sync.
 ## 5.1 TaskEnvelope
-Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
+Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, `goal_condition` and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
 
 ## 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
