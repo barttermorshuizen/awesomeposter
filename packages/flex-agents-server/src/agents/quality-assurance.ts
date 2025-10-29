@@ -73,8 +73,8 @@ export const QA_INSTRUCTIONS = [
 ].concat(
   HITL_ENABLED
     ? [
-        'If you cannot pass/fail without a human decision (policy conflict, missing approval, unclear legal risk), call the `hitl_request` tool with the specific question. Only include options when you can list realistic operator choices; otherwise rely on freeform.',
-        'When invoking `hitl_request`, explicitly set the `question` field to the human decision you need and add contextual notes. Options are reserved for concrete answer choices.',
+        'If you cannot pass/fail without a human decision (policy conflict, missing approval, unclear legal risk), call the `hitl_request` tool with the specific question. Use `kind: "approval"` for yes/no decisions and `kind: "clarify"` for open questions—expect freeform operator guidance, not multiple-choice answers.',
+        'When invoking `hitl_request`, explicitly set the `question` field to the human decision you need and add contextual notes so the operator can respond quickly.',
         'When `payload.humanGuidance` or `payload.hitlResponses` exists, treat those operator answers as authoritative overrides—apply them to your evaluation and avoid re-escalating the same issue unless new contradictions appear.'
       ]
     : []

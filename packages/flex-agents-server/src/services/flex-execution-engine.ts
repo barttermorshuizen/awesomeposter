@@ -22,7 +22,7 @@ import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus 
 import { withHitlContext } from './hitl-context'
 import { parseHitlDecisionAction, resolveHitlDecision as resolveHitlDecisionDetail, type HitlService } from './hitl-service'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
-import { getAgents, resolveCapabilityPrompt } from './agents-container'
+import { getRuntime, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
 import { RunContext, type RunContextSnapshot } from './run-context'
@@ -295,7 +295,7 @@ export class FlexExecutionEngine {
     }
   ) {
     this.ajv = options?.ajv ?? new Ajv({ allErrors: true })
-    this.runtime = options?.runtime ?? getAgents().runtime
+    this.runtime = options?.runtime ?? getRuntime()
     this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
     this.facetCompiler = new FacetContractCompiler({ catalog: getFacetCatalog() })
   }
@@ -880,8 +880,8 @@ export class FlexExecutionEngine {
       hitl.updateState?.(latestState)
     }
 
-    if (pendingRecord && pendingRecord.payload.kind === 'clarify') {
-      await this.pauseForClarification({
+    if (pendingRecord) {
+      await this.pauseForHitlRequest({
         runId,
         envelope,
         plan,
@@ -1973,7 +1973,7 @@ export class FlexExecutionEngine {
     throw new AwaitingHumanInputError()
   }
 
-  private async pauseForClarification(args: {
+  private async pauseForHitlRequest(args: {
     runId: string
     envelope: TaskEnvelope
     plan: FlexPlan
@@ -2045,15 +2045,16 @@ export class FlexExecutionEngine {
     await this.persistence.updateStatus(runId, 'awaiting_hitl')
 
     try {
-      getLogger().info('flex_clarify_pause', {
+      getLogger().info('flex_hitl_pause', {
         runId,
         nodeId: node.id,
         capabilityId: node.capabilityId,
-        questionId: request.id
+        questionId: request.id,
+        kind: request.payload.kind
       })
     } catch {}
 
-    throw new HitlPauseError('Awaiting human clarification')
+    throw new HitlPauseError('Awaiting human input')
   }
 
   private async triggerHitlPause(args: {

@@ -1,6 +1,9 @@
 import {
   TaskEnvelopeSchema,
   getFacetCatalog,
+  getMarketingCapabilityCatalog,
+  getMarketingCapabilitiesSnapshot,
+  MARKETING_CATALOG_TAG,
   type FacetDefinition,
   type TaskEnvelope
 } from '@awesomeposter/shared'
@@ -20,7 +23,7 @@ type CapabilityCatalogEntry = {
   description: string
   prompt?: {
     instructions: string
-    toolsAllowlist: string[]
+    toolsAllowlist?: string[]
   } | null
 }
 
@@ -41,7 +44,7 @@ function mapFacetDefinition(definition: FacetDefinition): FacetDescriptor {
     description,
     schema,
     semantics,
-    ...(metadata ? { metadata } : {})
+    metadata
   }
 }
 
@@ -106,30 +109,57 @@ export default defineEventHandler(async (event) => {
 
   requireFlexSandboxEnabled()
 
-  const [{ getFlexCapabilityRegistryService }, agentsContainer] = await Promise.all([
-    import('../../../../../src/services/flex-capability-registry'),
-    import('../../../../../src/services/agents-container')
-  ])
-  const { getCapabilityRegistry, resolveCapabilityPrompt } = agentsContainer
-
   const facetCatalog = getFacetCatalog()
-  const registry = getFlexCapabilityRegistryService()
+  const useLegacyCatalog = process.env.FLEX_SANDBOX_LEGACY_CATALOG === 'true'
 
-  const [facets, snapshot, templates] = await Promise.all([
-    Promise.resolve(facetCatalog.list().map(mapFacetDefinition)),
-    registry.getSnapshot(),
+  if (useLegacyCatalog) {
+    const [{ getFlexCapabilityRegistryService }, agentsContainer] = await Promise.all([
+      import('../../../../../src/services/flex-capability-registry'),
+      import('../../../../../src/services/agents-container')
+    ])
+
+    const registry = getFlexCapabilityRegistryService()
+    const { getCapabilityRegistry, resolveCapabilityPrompt } = agentsContainer
+
+    const [facets, snapshot, templates] = await Promise.all([
+      Promise.resolve(facetCatalog.list().map(mapFacetDefinition)),
+      registry.getSnapshot(),
+      loadTemplates()
+    ])
+
+    const capabilityCatalog: CapabilityCatalogEntry[] = getCapabilityRegistry().map((entry) => {
+      const prompt = resolveCapabilityPrompt(entry.id)
+      return {
+        id: entry.id,
+        name: entry.name,
+        description: entry.description,
+        ...(prompt ? { prompt } : {})
+      }
+    })
+
+    return {
+      generatedAt: new Date().toISOString(),
+      facets,
+      templates,
+      capabilityCatalog,
+      capabilities: {
+        active: snapshot.active.map((record) => ({ ...record })),
+        all: snapshot.all.map((record) => ({ ...record }))
+      }
+    }
+  }
+
+  const [facets, templates] = await Promise.all([
+    Promise.resolve(
+      facetCatalog
+        .list({ tag: MARKETING_CATALOG_TAG })
+        .map(mapFacetDefinition)
+    ),
     loadTemplates()
   ])
 
-  const capabilityCatalog: CapabilityCatalogEntry[] = getCapabilityRegistry().map((entry) => {
-    const prompt = resolveCapabilityPrompt(entry.id)
-    return {
-      id: entry.id,
-      name: entry.name,
-      description: entry.description,
-      ...(prompt ? { prompt } : {})
-    }
-  })
+  const capabilityCatalog: CapabilityCatalogEntry[] = getMarketingCapabilityCatalog()
+  const snapshot = getMarketingCapabilitiesSnapshot()
 
   return {
     generatedAt: new Date().toISOString(),

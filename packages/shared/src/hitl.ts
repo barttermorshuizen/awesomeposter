@@ -5,7 +5,7 @@ import { FlexFacetProvenanceSchema, JsonSchemaContractSchema, OutputContractSche
 export const HitlUrgencyEnum = z.enum(['low', 'normal', 'high'])
 export type HitlUrgency = z.infer<typeof HitlUrgencyEnum>
 
-export const HitlRequestKindEnum = z.enum(['question', 'approval', 'choice', 'clarify'])
+export const HitlRequestKindEnum = z.enum(['approval', 'clarify'])
 export type HitlRequestKind = z.infer<typeof HitlRequestKindEnum>
 
 export const HitlOriginAgentEnum = z.enum(['strategy', 'generation', 'qa'])
@@ -20,9 +20,8 @@ export type HitlOption = z.infer<typeof HitlOptionSchema>
 
 export const HitlRequestPayloadSchema = z.object({
   question: z.string().min(1),
-  kind: HitlRequestKindEnum.default('question'),
-  options: z.array(HitlOptionSchema).default([]),
-  allowFreeForm: z.boolean().default(false),
+  kind: HitlRequestKindEnum.default('clarify'),
+  allowFreeForm: z.boolean().default(true),
   urgency: HitlUrgencyEnum.default('normal'),
   additionalContext: z.string().optional()
 })

@@ -19,7 +19,7 @@ const HITL_ENABLED = process.env.ENABLE_HITL === 'true'
 export const STRATEGY_INSTRUCTIONS_APP = [
   'You are the Strategy Manager agent for social content. Your job is to create a rationale, a detailed writer brief and a strict knob configuration for the Content Creator agent based on the provided Client Profile and Brief',
   'Before planning, validate the brief: if the objective is missing, extremely short (< 10 characters), or obviously placeholder text (e.g., "tbd", "???", "kkk"), or if the audienceId is empty/unknown, you must pause and escalate.',
-  'Escalate by calling hitl_request with a concise human-readable question that states exactly what decision the operator needs to make. Only include options when you can present concrete answer choices the operator might select; otherwise rely on the operator\'s freeform answer.',
+  'Escalate by calling hitl_request with a concise human-readable question that states exactly what decision the operator needs to make. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for open questions—do not provide multiple-choice options.',
   'After raising hitl_request (including clarify questions), still return a single JSON object that adheres to the output contract. Populate each required field with a safe placeholder that explains what human detail is pending rather than emitting plain text or leaving fields out.',
   'Plan using the 4‑knob system and enforce strict knob typing.',
   'Never invent assets or client data. Use tools to analyze assets before choosing a format.',
@@ -78,7 +78,7 @@ export const STRATEGY_INSTRUCTIONS_APP = [
   HITL_ENABLED
     ? [
         'If required brief data is missing (no objective, meaningless/placeholder objective, unknown audience), call the `hitl_request` tool. DO NOT continue planning without human clarification.',
-        'When you invoke `hitl_request`, set the `question` field to a single sentence summarising the human decision. Provide options only when you know the likely answers (e.g., two viable objectives); otherwise leave options empty so the operator can respond in freeform.',
+        'When you invoke `hitl_request`, set the `question` field to a single sentence summarising the human decision. Use `kind: "approval"` when the operator must deliver a yes/no decision; otherwise use `kind: "clarify"` and allow a freeform response.',
         'If `payload.humanGuidance` or `payload.hitlResponses` contains operator answers, treat the most recent response as the source of truth. Resolve conflicts in favour of that guidance and do NOT raise the same HITL question again unless the operator explicitly requests a change.'
       ]
     : []
@@ -95,8 +95,7 @@ export const STRATEGY_INSTRUCTIONS_CHAT = [
   HITL_ENABLED
     ? [
         'Escalate with the `hitl_request` tool when a human decision is required (e.g., conflicting guardrails or missing approvals) instead of improvising.',
-        'Always populate the `question` field when calling `hitl_request`; never leave it empty.',
-        'Only attach options when you can enumerate likely operator answers; otherwise leave options empty so the operator can respond via freeform.',
+        'Always populate the `question` field when calling `hitl_request`; never leave it empty. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for follow-up questions—do not attach multiple-choice options.',
         'When hitl responses are provided (payload.humanGuidance or payload.hitlResponses), regard them as the latest operator guidance and give them precedence over legacy brief data or prior assumptions.'
       ]
     : []

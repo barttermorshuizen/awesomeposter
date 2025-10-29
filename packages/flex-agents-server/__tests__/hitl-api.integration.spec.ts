@@ -9,8 +9,7 @@ import { withHitlContext } from '../src/services/hitl-context'
 
 const basePayload = {
   question: 'Need operator response?',
-  kind: 'question',
-  options: [],
+  kind: 'clarify',
   allowFreeForm: true,
   urgency: 'normal'
 }

@@ -86,8 +86,8 @@ export const CONTENT_INSTRUCTIONS_APP = [
 ].concat(
   HITL_ENABLED
     ? [
-        'If brand, legal, or tone decisions cannot be resolved safely, pause and call the `hitl_request` tool with the question. Only attach draft options when you can present ready-to-send alternatives the operator might approve; otherwise expect a freeform response.',
-        'When you invoke `hitl_request`, ensure the `question` field clearly states the decision the operator must make. Options are for concrete draft alternatives; otherwise leave them empty.',
+        'If brand, legal, or tone decisions cannot be resolved safely, pause and call the `hitl_request` tool. Use `kind: "approval"` when you need a yes/no decision and `kind: "clarify"` for open questions—do not attach multiple-choice options.',
+        'When you invoke `hitl_request`, ensure the `question` field clearly states the decision the operator must make and provide any relevant context needed for a quick response.',
         'Whenever `payload.humanGuidance` or `payload.hitlResponses` is present, treat those operator answers as the highest-priority guidance. Apply them before relying on legacy brief data, and do not escalate the same question again unless new clarification is required.'
       ]
     : []
@@ -104,8 +104,7 @@ export const CONTENT_INSTRUCTIONS_CHAT = [
   HITL_ENABLED
     ? [
         'If the user requests content that conflicts with policy or needs human approval, invoke the `hitl_request` tool to escalate rather than guessing.',
-        'Always populate the `question` field when calling `hitl_request`; describe the decision in one concise sentence.',
-        'Only include options when you can offer concrete drafts or answer choices; otherwise rely on the operator\'s freeform reply.',
+        'Always populate the `question` field when calling `hitl_request`; describe the decision in one concise sentence. Use `kind: "approval"` for yes/no decisions and `kind: "clarify"` for follow-up questions—expect a freeform reply.',
         'When you receive humanGuidance or hitlResponses in the payload, assume those operator directives outrank earlier instructions and incorporate them immediately.'
       ]
     : []

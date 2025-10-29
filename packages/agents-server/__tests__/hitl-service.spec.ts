@@ -7,8 +7,7 @@ import { resetHitlRepository } from '../src/services/hitl-repository'
 
 const basePayload = {
   question: 'Need a human decision?',
-  kind: 'question',
-  options: [],
+  kind: 'clarify',
   allowFreeForm: true,
   urgency: 'normal'
 } as const

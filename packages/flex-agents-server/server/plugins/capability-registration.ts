@@ -1,10 +1,6 @@
-import { STRATEGY_CAPABILITY } from '../../src/agents/strategy-manager'
-import { CONTENT_CAPABILITY } from '../../src/agents/content-generator'
-import { QA_CAPABILITY } from '../../src/agents/quality-assurance'
-import { HUMAN_CLARIFY_CAPABILITY } from '../../src/agents/human-clarify-brief'
+import type { CapabilityRegistration } from '@awesomeposter/shared'
 import { getLogger } from '../../src/services/logger'
-
-const CAPABILITIES = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY, HUMAN_CLARIFY_CAPABILITY]
+import { getCapabilityRegistrationsForSelfRegister, isLegacyMode } from '../../src/agents/runtime-capabilities'
 
 export default defineNitroPlugin((nitro) => {
   const logger = getLogger()
@@ -27,7 +23,10 @@ export default defineNitroPlugin((nitro) => {
       ? Math.max(0, Number(process.env.FLEX_CAPABILITY_SELF_REGISTER_INITIAL_DELAY_MS))
       : 1500
 
-  const registerCapability = async (payload: typeof CAPABILITIES[number], startingAttempt = 1): Promise<boolean> => {
+  const useLegacyCatalog = isLegacyMode()
+  const capabilities: CapabilityRegistration[] = getCapabilityRegistrationsForSelfRegister()
+
+  const registerCapability = async (payload: CapabilityRegistration, startingAttempt = 1): Promise<boolean> => {
     let attempt = startingAttempt
     while (attempt < startingAttempt + maxAttempts) {
       try {
@@ -75,7 +74,7 @@ export default defineNitroPlugin((nitro) => {
   }
 
   const registerAll = async (startingAttempt = 1) => {
-    for (const capability of CAPABILITIES) {
+    for (const capability of capabilities) {
       let attempt = startingAttempt
       while (!(await registerCapability(capability, attempt))) {
         attempt += maxAttempts

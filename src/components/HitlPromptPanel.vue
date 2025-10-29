@@ -90,16 +90,7 @@ function ensureValid(): boolean {
     return true
   }
 
-  if (request.options.length > 0) {
-    if (!request.allowFreeForm && !selectedOptionId.value) {
-      validationError.value = 'Choose one of the provided options.'
-      return false
-    }
-    if (request.allowFreeForm && !selectedOptionId.value && freeformText.value.trim().length === 0) {
-      validationError.value = 'Select an option or provide a free-form response.'
-      return false
-    }
-  } else if (freeformText.value.trim().length === 0) {
+  if (freeformText.value.trim().length === 0) {
     validationError.value = 'Provide a response before submitting.'
     return false
   }
@@ -107,13 +98,12 @@ function ensureValid(): boolean {
   return true
 }
 
-function computeResponseType(): 'option' | 'approval' | 'rejection' | 'freeform' {
+function computeResponseType(): 'approval' | 'rejection' | 'freeform' {
   const request = activeRequest.value
   if (!request) return 'freeform'
   if (request.kind === 'approval') {
     return approvalDecision.value === 'approve' ? 'approval' : 'rejection'
   }
-  if (selectedOptionId.value) return 'option'
   return 'freeform'
 }
 

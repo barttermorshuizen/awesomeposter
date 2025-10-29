@@ -5,6 +5,10 @@ import { fetchNodeRequestHandler } from 'node-mock-http'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
+import {
+  getMarketingCapabilityIds,
+  getMarketingCapabilityCatalog
+} from '@awesomeposter/shared'
 import { isFlexSandboxEnabled } from '../src/utils/flex-sandbox'
 
 const ROUTE_PATH = '../routes/api/v1/flex/sandbox/metadata.get'
@@ -73,6 +77,57 @@ describe('GET /api/v1/flex/sandbox/metadata', () => {
       process.env.VITE_USE_FLEX_DEV_SANDBOX = 'true'
       process.env.FLEX_SANDBOX_TEMPLATE_DIR = tempDir
 
+      const { default: handler } = await import(ROUTE_PATH)
+      const request = makeRequest(handler as any)
+      const res = await request()
+      expect(res.status).toBe(200)
+
+      const marketingIds = getMarketingCapabilityIds()
+      const catalogIds = getMarketingCapabilityCatalog().map((entry) => entry.id)
+
+      expect(res.body).toMatchObject({
+        facets: expect.arrayContaining([
+          expect.objectContaining({ name: 'post_context' }),
+          expect.objectContaining({ name: 'creative_brief' }),
+          expect.objectContaining({ name: 'post_copy' })
+        ]),
+        capabilities: {
+          active: expect.arrayContaining(marketingIds.map((id) => expect.objectContaining({ capabilityId: id }))),
+          all: expect.arrayContaining(marketingIds.map((id) => expect.objectContaining({ capabilityId: id })))
+        },
+        capabilityCatalog: expect.arrayContaining(
+          catalogIds.map((id) => expect.objectContaining({ id }))
+        ),
+        templates: expect.arrayContaining([
+          expect.objectContaining({
+            id: expect.stringContaining('sample'),
+            filename: 'flex-sample.json',
+            envelope: expect.objectContaining({ objective: 'Inspect planner output' })
+          })
+        ])
+      })
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to legacy registry when FLEX_SANDBOX_LEGACY_CATALOG=true', async () => {
+    const tempDir = await fs.mkdtemp(join(tmpdir(), 'flex-sandbox-legacy-'))
+    try {
+      const templatePath = join(tempDir, 'flex-legacy.json')
+      await fs.writeFile(
+        templatePath,
+        JSON.stringify({
+          objective: 'Legacy planner output'
+        }),
+        'utf8'
+      )
+
+      process.env.USE_FLEX_DEV_SANDBOX = 'true'
+      process.env.VITE_USE_FLEX_DEV_SANDBOX = 'true'
+      process.env.FLEX_SANDBOX_TEMPLATE_DIR = tempDir
+      process.env.FLEX_SANDBOX_LEGACY_CATALOG = 'true'
+
       const snapshot = {
         active: [
           {
@@ -137,27 +192,12 @@ describe('GET /api/v1/flex/sandbox/metadata', () => {
       const request = makeRequest(handler as any)
       const res = await request()
       expect(res.status).toBe(200)
-      expect(res.body).toMatchObject({
-        facets: expect.arrayContaining([
-          expect.objectContaining({ name: 'objectiveBrief' }),
-          expect.objectContaining({ name: 'copyVariants' })
-        ]),
-        capabilityCatalog: expect.arrayContaining([
-          expect.objectContaining({ id: 'strategy', name: 'Strategy' }),
-          expect.objectContaining({ id: 'qa', name: 'QA' })
-        ]),
-        capabilities: {
-          active: expect.arrayContaining([expect.objectContaining({ capabilityId: 'writer.v1' })]),
-          all: expect.arrayContaining([expect.objectContaining({ capabilityId: 'writer.v1' })])
-        },
-        templates: expect.arrayContaining([
-          expect.objectContaining({
-            id: expect.stringContaining('sample'),
-            filename: 'flex-sample.json',
-            envelope: expect.objectContaining({ objective: 'Inspect planner output' })
-          })
-        ])
-      })
+      expect(res.body.capabilityCatalog).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'strategy' }), expect.objectContaining({ id: 'qa' })])
+      )
+      expect(res.body.capabilities.active).toEqual(
+        expect.arrayContaining([expect.objectContaining({ capabilityId: 'writer.v1' })])
+      )
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }

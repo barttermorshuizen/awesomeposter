@@ -1,7 +1,6 @@
 import type { AgentRunRequest, AgentEvent } from '@awesomeposter/shared';
 import { AgentRuntime } from './agent-runtime';
-import { getAgents } from './agents-container';
-import { runOrchestratorEngine } from './orchestrator-engine';
+import { getRuntime } from './agents-container';
 
 export class OrchestratorAgent {
   constructor(private runtime: AgentRuntime) {}
@@ -11,11 +10,11 @@ export class OrchestratorAgent {
     onEvent: (e: AgentEvent) => void,
     correlationId?: string
   ): Promise<{ final: any; metrics?: any }> {
-    return runOrchestratorEngine(this.runtime, req, onEvent, correlationId);
+    throw new Error('Legacy orchestrator removed; use FlexRunCoordinator instead.');
   }
 }
 
 export function getOrchestrator() {
-  const { runtime } = getAgents();
+  const runtime = getRuntime();
   return new OrchestratorAgent(runtime);
 }

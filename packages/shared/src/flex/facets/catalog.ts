@@ -602,6 +602,469 @@ const defaultDefinitions: FacetDefinition[] = [
   }
 ]
 
+const marketingFacetDefinitions: FacetDefinition[] = [
+  {
+    name: 'post_context',
+    title: 'Post Context',
+    description:
+      'Structured brief of the campaign objective, audience, channels, and supporting assets used to plan social posts.',
+    schema: {
+      type: 'object',
+      properties: {
+        campaign: { type: 'string', minLength: 1 },
+        type: {
+          type: 'string',
+          description: 'Canonical post scenario.',
+          enum: ['launch', 'announcement', 'event', 'case_study', 'hiring', 'thought_leadership']
+        },
+        summary: { type: 'string', minLength: 1 },
+        audience: {
+          type: 'object',
+          properties: {
+            persona: { type: 'string' },
+            industry: { type: 'string' },
+            regions: { type: 'array', items: { type: 'string' } }
+          },
+          additionalProperties: true
+        },
+        channels: { type: 'array', items: { type: 'string' } },
+        assets: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', minLength: 1 },
+              uri: { type: 'string', minLength: 1 },
+              type: { type: 'string' }
+            },
+            required: ['label', 'uri'],
+            additionalProperties: true
+          }
+        },
+        dueDate: { type: 'string', format: 'date-time' },
+        notes: { type: 'string' }
+      },
+      required: ['type', 'summary'],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Supplies campaign inputs that every downstream capability references.',
+      instruction:
+        'Read the campaign type, summary, and audience fields to ground strategy decisions. Use attached assets for factual grounding.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'input',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'feedback',
+    title: 'Feedback',
+    description: 'Threaded feedback items tied to specific facets so replanning can target affected work.',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          author: { type: 'string', minLength: 1 },
+          facet: { type: 'string', minLength: 1 },
+          message: { type: 'string', minLength: 1 },
+          severity: { type: 'string', enum: ['info', 'minor', 'major', 'critical'] },
+          timestamp: { type: 'string', format: 'date-time' },
+          resolution: { type: 'string', enum: ['open', 'addressed', 'dismissed'] },
+          path: { type: 'string' },
+          note: { type: 'string' }
+        },
+        required: ['author', 'facet', 'message'],
+        additionalProperties: true
+      }
+    },
+    semantics: {
+      summary: 'Provides a structured trail of reviewer comments mapped to facets.',
+      instruction:
+        'Append new entries when review feedback arrives or when work has addressed the item. Keep facet references accurate for replanning.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'creative_brief',
+    title: 'Creative Brief',
+    description: 'Executive summary of the strategy direction for writers and designers.',
+    schema: {
+      type: 'object',
+      properties: {
+        core_message: { type: 'string', minLength: 1 },
+        supporting_points: { type: 'array', items: { type: 'string' } },
+        tone: { type: 'string' },
+        structure: { type: 'string' },
+        audience: { type: 'string' },
+        call_to_action: { type: 'string' },
+        visual_guidelines: {
+          type: 'object',
+          properties: {
+            format: { type: 'string', enum: ['square', 'portrait', 'landscape', 'story'] },
+            image_count: { type: 'integer', minimum: 1 },
+            notes: { type: 'string' }
+          },
+          additionalProperties: true
+        }
+      },
+      required: ['core_message', 'tone', 'audience'],
+      additionalProperties: false
+    },
+    semantics: {
+      summary: 'Guides downstream creatives with consistent direction.',
+      instruction:
+        'Produce or update the brief so writers and designers can execute without ambiguity. Capture structure, tone, and must-have talking points.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'strategic_rationale',
+    title: 'Strategic Rationale',
+    description: 'Plain-text reasoning for campaign choices.',
+    schema: {
+      type: 'string',
+      minLength: 1
+    },
+    semantics: {
+      summary: 'Explains the “why” for decisions in a human-readable paragraph.',
+      instruction: 'Capture the reasoning behind the current plan so reviewers understand trade-offs and intent.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'handoff_summary',
+    title: 'Handoff Summary',
+    description: 'Rolling log of notable decisions and status updates between capabilities.',
+    schema: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    semantics: {
+      summary: 'Keeps every agent informed across the orchestration chain.',
+      instruction: 'Append an entry summarising your contribution or outstanding risks when completing the capability.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'positioning_context',
+    title: 'Positioning Context',
+    description: 'Market and competitive intelligence used to evolve positioning.',
+    schema: {
+      type: 'object',
+      properties: {
+        company: { type: 'string', minLength: 1 },
+        market: { type: 'string' },
+        competitors: { type: 'array', items: { type: 'string' } },
+        differentiators: { type: 'array', items: { type: 'string' } },
+        challenges: { type: 'array', items: { type: 'string' } },
+        research: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              summary: { type: 'string' },
+              url: { type: 'string' }
+            },
+            additionalProperties: true
+          }
+        }
+      },
+      required: ['company'],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Provides the raw material for positioning analysis.',
+      instruction:
+        'Use the context to benchmark positioning ideas. Update the facet when new research or stakeholder input arrives.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'input',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'value_canvas',
+    title: 'Value Canvas',
+    description: 'Snapshot of customer segments, pains, and value propositions used in positioning.',
+    schema: {
+      type: 'object',
+      properties: {
+        segments: { type: 'array', items: { type: 'string' } },
+        pains: { type: 'array', items: { type: 'string' } },
+        gains: { type: 'array', items: { type: 'string' } },
+        proof: { type: 'array', items: { type: 'string' } }
+      },
+      additionalProperties: false
+    },
+    semantics: {
+      summary: 'Summarises the customer value map for quick reference.',
+      instruction: 'Keep the canvas aligned with the latest research so messaging and campaigns stay on brief.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'positioning_opportunities',
+    title: 'Positioning Opportunities',
+    description: 'Quantified opportunities or risks discovered during positioning analysis.',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', minLength: 1 },
+          impact: { type: 'number' },
+          confidence: { type: 'number' },
+          notes: { type: 'string' }
+        },
+        required: ['name'],
+        additionalProperties: false
+      }
+    },
+    semantics: {
+      summary: 'Highlights the biggest areas of leverage or concern for marketers.',
+      instruction:
+        'List opportunities with impact/confidence context so strategists and directors can prioritise follow-up.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'positioning_recommendation',
+    title: 'Positioning Recommendation',
+    description: 'End-to-end positioning statement with rationale.',
+    schema: {
+      type: 'object',
+      properties: {
+        statement: { type: 'string', minLength: 1 },
+        differentiators: { type: 'array', items: { type: 'string' } },
+        proof_points: { type: 'array', items: { type: 'string' } },
+        rationale: { type: 'string' }
+      },
+      required: ['statement'],
+      additionalProperties: false
+    },
+    semantics: {
+      summary: 'Communicates the recommended position to downstream teams.',
+      instruction: 'Provide a concise statement supported by differentiators and rationale so messaging stays aligned.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'messaging_stack',
+    title: 'Messaging Stack',
+    description: 'Structured hierarchy of messaging pillars and supporting copy guidance.',
+    schema: {
+      type: 'object',
+      properties: {
+        core_message: { type: 'string', minLength: 1 },
+        message_pillars: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              pillar: { type: 'string', minLength: 1 },
+              proof_point: { type: 'string' },
+              message: { type: 'string' }
+            },
+            required: ['pillar', 'message'],
+            additionalProperties: false
+          }
+        },
+        tone: { type: 'string' }
+      },
+      required: ['core_message', 'message_pillars'],
+      additionalProperties: false
+    },
+    semantics: {
+      summary: 'Bridges positioning outputs with campaign-ready copy guidance.',
+      instruction:
+        'Detail message pillars and proof points so writers can spin up content without reinterpreting strategy.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'positioning',
+    title: 'Approved Positioning',
+    description: 'Final approved positioning package combining narrative summary, quantitative factors, and aligned messaging stack.',
+    schema: {
+      type: 'object',
+      properties: {
+        positioning_summary: { type: 'string', minLength: 1 },
+        factors: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', minLength: 1 },
+              score: { type: 'number' },
+              rationale: { type: 'string' }
+            },
+            required: ['name'],
+            additionalProperties: false
+          }
+        },
+        messaging_stack: {
+          type: 'object',
+          properties: {
+            core_message: { type: 'string', minLength: 1 },
+            message_pillars: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  pillar: { type: 'string', minLength: 1 },
+                  proof_point: { type: 'string' },
+                  message: { type: 'string' }
+                },
+                required: ['pillar', 'message'],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ['core_message', 'message_pillars'],
+          additionalProperties: false
+        }
+      },
+      required: ['positioning_summary', 'factors', 'messaging_stack'],
+      additionalProperties: false
+    },
+    semantics: {
+      summary: 'Captures the approved positioning output after director review for downstream distribution.',
+      instruction:
+        'Populate when the positioning package is approved. Ensure factors and messaging align with the final decision, and update positioning_summary with the public-facing articulation.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'output',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'post_copy',
+    title: 'Post Copy',
+    description: 'Final or in-progress social copy text.',
+    schema: {
+      type: 'string',
+      minLength: 1
+    },
+    semantics: {
+      summary: 'Holds the latest social copy for review or publication.',
+      instruction: 'Overwrite with the current approved draft. Maintain consistent formatting for downstream tools.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'post_visual',
+    title: 'Post Visual',
+    description: 'References to visual assets that accompany the social post.',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          uri: { type: 'string', minLength: 1 },
+          label: { type: 'string' },
+          format: { type: 'string' }
+        },
+        required: ['uri'],
+        additionalProperties: true
+      }
+    },
+    semantics: {
+      summary: 'Tracks the canonical assets designers deliver and reviewers approve.',
+      instruction: 'Update with the latest asset URLs. Include descriptive labels for directors and publishers.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'bidirectional',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'post',
+    title: 'Social Post',
+    description: 'Final approved social post ready for distribution.',
+    schema: {
+      type: 'object',
+      properties: {
+        copy: { type: 'string', minLength: 1 },
+        visuals: { type: 'array', items: { type: 'string', minLength: 1 } },
+        scheduledFor: { type: 'string', format: 'date-time' },
+        approvals: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['copy'],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Represents the final deliverable after director approval.',
+      instruction:
+        'Publishers consume this facet. Ensure copy and visuals reflect the approved state before marking the capability complete.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'output',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  }
+]
+
+defaultDefinitions.push(...marketingFacetDefinitions)
+
 let defaultCatalog: FacetCatalog | null = null
 
 export function getFacetCatalog(): FacetCatalog {

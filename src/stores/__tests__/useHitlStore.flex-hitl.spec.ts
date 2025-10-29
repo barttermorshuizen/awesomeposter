@@ -6,7 +6,6 @@ import { storeToRefs } from 'pinia'
 const basePayload = {
   question: 'Need approval? ',
   kind: 'approval' as const,
-  options: [],
   allowFreeForm: true,
   urgency: 'normal' as const
 }
@@ -133,9 +132,8 @@ describe('useHitlStore', () => {
     store.startTrackingRequest({
       requestId: 'req_2',
       payload: {
-        question: 'Pick option',
-        kind: 'choice',
-        options: [{ id: 'opt_a', label: 'A' }],
+        question: 'Approve draft?',
+        kind: 'approval',
         allowFreeForm: false,
         urgency: 'normal'
       },
@@ -154,8 +152,8 @@ describe('useHitlStore', () => {
     })
 
     await store.submitResponse({
-      responseType: 'option',
-      selectedOptionId: 'opt_a'
+      responseType: 'approval',
+      approved: true
     })
 
     expect(fetchMock).toHaveBeenCalled()
@@ -168,9 +166,9 @@ describe('useHitlStore', () => {
       responses: [
         {
           requestId: 'req_2',
-          responseType: 'option',
-          approved: undefined,
-          selectedOptionId: 'opt_a',
+          responseType: 'approval',
+          approved: true,
+          selectedOptionId: undefined,
           freeformText: undefined,
           metadata: undefined,
           responderId: undefined,

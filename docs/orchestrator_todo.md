@@ -1,8 +1,16 @@
-# Orchestrator MVP TODO (Persistent)
+# Legacy Orchestrator TODO (Archived)
 
-This checklist mirrors the active task Reminders and will be kept in sync. It implements the spec in [orchestrator_requirements.md](awesomeposter/docs/orchestrator_requirements.md:1). Edit via PR; the assistant will reconcile changes.
+> **Legacy Notice**  
+> The Flex marketing runtime (`FlexRunCoordinator`, capability registry, and TaskEnvelope policies) replaced the legacy orchestrator. This document is retained for historical traceability only. Active orchestration work now lives in:
+> - `docs/flex-agentic-architecture201025.md`
+> - `docs/architecture/flex-agents-server/11-capability-registry-agent-contracts.md`
+> - `docs/stories/11.2.flex-marketing-capability-catalog.md`
+>
+> The checklist below is archived and should not be used to drive new work.
 
-## Checklist
+## Legacy checklist (for reference)
+
+> Former backlog retained verbatim for auditability. Items that remain unchecked were superseded rather than completed.
 
 ### 1) Consolidate Data Models
 

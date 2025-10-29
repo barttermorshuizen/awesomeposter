@@ -23,7 +23,6 @@ describe('HitlPromptPanel', () => {
       payload: {
         question: 'Approve publishing?',
         kind: 'approval',
-        options: [],
         allowFreeForm: true,
         urgency: 'normal'
       },

@@ -228,7 +228,9 @@ export class FlexPlanner {
       const entries = Object.entries(state.facets)
       const recent = entries.slice(-12)
       recent.forEach(([facet, entry]) => {
-        const provenance = entry.provenance.at(-1)
+        const provenance = Array.isArray(entry.provenance)
+          ? entry.provenance[entry.provenance.length - 1]
+          : undefined
         facetValues.push({
           facet,
           sourceNodeId: provenance?.nodeId ?? 'unknown',

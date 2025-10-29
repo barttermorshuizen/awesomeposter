@@ -301,12 +301,21 @@ export const useHitlStore = defineStore('hitl', () => {
         }
 
         if (!existing || !sameRequest) {
+          const payloadOptions = Array.isArray((payload as any)?.options)
+            ? ((payload as any)?.options as Array<{ id: string; label: string; description?: string }>)
+            : Array.isArray((existing as any)?.options)
+            ? ((existing as any)?.options as Array<{ id: string; label: string; description?: string }>)
+            : []
+
           activeRequest.value = {
             id: match.pendingRequest.id,
             question: payload?.question ?? existing?.question ?? '',
             kind: payload?.kind ?? existing?.kind ?? 'approval',
-            allowFreeForm: payload?.allowFreeForm ?? existing?.allowFreeForm ?? false,
-            options: (payload?.options ?? existing?.options ?? []).map((option) => ({ ...option })),
+            allowFreeForm:
+              payload?.allowFreeForm ??
+              existing?.allowFreeForm ??
+              (payload?.kind ?? existing?.kind) === 'clarify',
+            options: payloadOptions.map((option) => ({ ...option })),
             originAgent: match.pendingRequest.originAgent ?? existing?.originAgent ?? 'strategy',
             urgency: payload?.urgency ?? existing?.urgency ?? 'normal',
             additionalContext: payload?.additionalContext,
@@ -322,10 +331,15 @@ export const useHitlStore = defineStore('hitl', () => {
             existing.createdAt = createdAtValue
           }
           if (payload) {
+            const nextOptions = Array.isArray((payload as any)?.options)
+              ? ((payload as any)?.options as Array<{ id: string; label: string; description?: string }>)
+              : []
             existing.question = payload.question
-            existing.options = (payload.options ?? []).map((option) => ({ ...option }))
+            existing.options = nextOptions.map((option) => ({ ...option }))
             existing.kind = payload.kind
-            existing.allowFreeForm = Boolean(payload.allowFreeForm)
+            existing.allowFreeForm = Boolean(
+              payload.allowFreeForm ?? (payload.kind === 'clarify')
+            )
             existing.urgency = payload.urgency
             existing.additionalContext = payload.additionalContext
           }

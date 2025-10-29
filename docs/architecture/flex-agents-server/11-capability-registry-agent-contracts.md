@@ -12,6 +12,18 @@
 - Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
 - SSE telemetry for `plan_generated` events now echoes per-node contract modes and facet coverage so downstream consumers can observe the facet-derived contract model in real time.
 
+## Marketing Catalog Rollout & Rollback
+
+- The curated marketing capability library lives in `packages/shared/src/flex/marketing-catalog.ts`. It exposes six marketing-aligned entries (`strategist.SocialPosting`, `strategist.Positioning`, `copywriter.SocialpostDrafting`, `copywriter.Messaging`, `designer.VisualDesign`, `director.SocialPostingReview`) and the sandbox metadata route now responds with this set by default.
+- Facets tagged with `["marketing-agency", "sandbox"]` are served through the same route by filtering the shared `FacetCatalog`. UI surfaces only render those tagged facets, keeping the legacy definitions available for regression fixtures.
+- Deployment checklist:
+  1. Ensure the environment leaves `FLEX_SANDBOX_LEGACY_CATALOG` unset or `false` so the new marketing catalog is served.
+  2. Run `npm run test:unit -- packages/flex-agents-server/__tests__/flex-sandbox-metadata.spec.ts` to verify the metadata response.
+  3. Spot-check the flex sandbox UI to confirm capability cards reflect the marketing taxonomy and that templates still load.
+- Rollback plan:
+  - Set `FLEX_SANDBOX_LEGACY_CATALOG=true` and redeploy. The metadata route will revert to the previous self-registered capability snapshot without code changes.
+  - If deeper schema mismatches occur, revert `packages/shared/src/flex/marketing-catalog.ts` alongside the metadata route to restore the legacy catalog entirely.
+
 ## Facet Catalog
 
 Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts`. The exported `FacetCatalog` supplies typed lookups (`get`, `list`, `resolveMany`) while enforcing directionality (`input`, `output`, `bidirectional`) and uniqueness. Extend this module whenever new facets are introduced—planner helpers automatically start serving the new schema fragments without additional wiring.

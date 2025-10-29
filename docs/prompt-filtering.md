@@ -1,22 +1,23 @@
 # Prompt filtering and handoff scoping plan
 
+> **Legacy Notice**  
+> This document captured the legacy orchestrator prompt-filtering backlog. The Flex runtime now scopes prompts through capability-specific instruction templates, TaskEnvelope facets, and runtime policies managed by `FlexRunCoordinator`. References to `orchestrator-engine.ts` remain for historical traceability only. See `docs/flex-agentic-architecture201025.md` and `docs/architecture/flex-agents-server/11-capability-registry-agent-contracts.md` for current behaviour.
+
 Status
 - Goal: ensure Strategy Manager only sees Strategy‑scoped context while using OpenAI Agents SDK handoffs and filtering.
 - Constraint: both system and user messages propagate across handoffs by default; rely on handoff inputFilter, not only on how the local prompt is assembled.
 
-Why this is needed
-- Cross‑role guidance appears in Strategy traces because the Triage agent’s system prompt and orchestration details get propagated on handoff.
-- Even if we avoid injecting the orchestrator system text into a local prompt, user messages and earlier system messages still propagate on handoff.
-- The SDK solution is to attach an inputFilter to the Handoff to curate the conversation history forwarded to the next agent.
+Why this was needed (legacy context)
+- Cross‑role guidance appeared in Strategy traces because the Triage agent’s system prompt and orchestration details propagated on handoff.
+- Even when the legacy orchestrator avoided injecting system text directly, user messages and earlier system prompts still travelled with the handoff.
+- The mitigation was to attach an inputFilter to each handoff so that only role-appropriate context survived.
 
 Key references in this codebase
-- Orchestrated run loop and Triage agent creation lives in [OrchestratorAgent.run()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:15).
-- Current Triage instructions block [TRIAGE_INSTRUCTIONS](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:146).
-- Orchestrator system prompt builder [buildSystemPrompt()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:483).
-- Strategy agent construction [createStrategyAgent()](awesomeposter/packages/agents-server/src/agents/strategy-manager.ts:37) with allowlist [STRATEGY_TOOLS](awesomeposter/packages/agents-server/src/agents/strategy-manager.ts:8).
-- Runtime tool allowlist intersection [AgentRuntime.getAgentTools()](awesomeposter/packages/agents-server/src/services/agent-runtime.ts:59).
+- **Legacy**: Orchestrated run loop and Triage agent creation lived in `packages/agents-server/src/services/orchestrator-agent.ts`.
+- **Current**: Capability-specific instructions and tool allowlists live alongside marketing capability modules under `packages/flex-agents-server/src/agents/marketing/**`.
+- **Current**: Runtime tool registration is centralised in `packages/flex-agents-server/src/services/agent-runtime.ts`; per-capability allowlists only expose `hitl_request`.
 
-Design overview
+Design overview (legacy)
 
 1) Sentinel boundary markers for orchestrator system instructions
 - Introduce explicit boundary markers that wrap orchestrator‑authored system guidance, so they’re trivial to strip in filters:
@@ -24,7 +25,7 @@ Design overview
   - <<<AP_ORCH_SYS_END>>>
 - Place ALL orchestrator system guidance, final delivery spec, thresholds, and cross‑role notes strictly between these markers inside [buildSystemPrompt()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:483).
 
-2) Handoff inputFilter pipeline
+2) Handoff inputFilter pipeline (legacy)
 - Use the SDK’s handoff inputFilter to curate history passed to Strategy, Content, QA.
 - Pipeline stages:
   - Stage A: filterHistory to remove system messages and cap depth.
@@ -35,14 +36,14 @@ Design overview
 3) Role‑scoped allowlists remain authoritative
 - Strategy, Content, QA already have strict tool allowlists. Keep these as the primary enforcement, and rely on filters to reduce prompt leakage for reliability and trace clarity.
 
-Developer ergonomics
+Developer ergonomics (legacy)
 
 - Boundaries by construction:
   - Developers never manually paste cross‑role guidance outside the sentinel section. This makes the filter rule simple and robust.
 - Single utility for filtering:
   - Centralize all filtering in a small helper to avoid drift in different handoffs and enforcement prompts.
 
-Proposed implementation steps
+Legacy implementation steps
 
 A) Wrap orchestrator system prompt in sentinel markers
 - Edit [buildSystemPrompt()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:483):
@@ -90,7 +91,7 @@ F) Logging hygiene
 - We keep agent event tracing as is. Because handoffs apply inputFilter before the next agent runs, the trace for that agent will not contain sentinel content or cross‑role sections.
 - If desired, logs may additionally redact sentinel sections for safety by post‑processing emitted text deltas.
 
-Filtering details
+Filtering details (legacy)
 
 Sentinel strategy
 - Markers:
@@ -126,7 +127,7 @@ Triage -- handoff --> QA
 QAInputFilter -- filterHistory and stripSentinel --> QA
 ```
 
-Test plan
+Legacy test plan
 
 1) Unit test filters
 - Given text with sentinel‑bounded sections, stripSentinelSections removes all such sections and leaves other text intact.
@@ -145,14 +146,14 @@ Test plan
 4) Edge case
 - If a user restates orchestrator instructions in their own words, they may still propagate. This is acceptable; Guardrails are enforced by allowlists and QA. We are filtering only orchestrator‑authored system guidance and orchestration meta.
 
-Risks and mitigations
+Legacy risks and mitigations
 
 - Risk: Over‑filtering drops needed context
   - Mitigate via maxMessages tuning and adding explicit allow rules for briefId context lines.
 - Risk: Developers forget to wrap new orchestrator guidance in sentinels
   - Add a lint or test that asserts the system prompt returned by [buildSystemPrompt()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:483) contains both markers.
 
-Rollout plan
+Legacy rollout plan
 
 - Phase 1: Add sentinels in [buildSystemPrompt()](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:483).
 - Phase 2: Introduce [prompt-filters.ts](awesomeposter/packages/agents-server/src/utils/prompt-filters.ts) and convert handoffs to Handoff with inputFilter at [orchestrator-agent.ts](awesomeposter/packages/agents-server/src/services/orchestrator-agent.ts:168).

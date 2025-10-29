@@ -156,7 +156,7 @@ const isHitlOriginAgent = (value: string | undefined): value is 'strategy' | 'ge
   value === 'strategy' || value === 'generation' || value === 'qa'
 
 const isHitlKind = (value: string | undefined): value is HitlRequestPayload['kind'] =>
-  value === 'question' || value === 'approval' || value === 'choice'
+  value === 'approval' || value === 'clarify'
 
 const isHitlUrgency = (value: string | undefined): value is HitlRequestPayload['urgency'] =>
   value === 'low' || value === 'normal' || value === 'high'
@@ -413,26 +413,14 @@ const parseHitlRequestPayload = (payload: unknown): HitlRequestEventPayload | nu
   if (!isRecord(payloadData)) return null
 
   const question = toStringOrUndefined(payloadData.question) || 'Operator assistance required.'
-  const kindRaw = toStringOrUndefined(payloadData.kind) || 'question'
-  const kind = isHitlKind(kindRaw) ? kindRaw : 'question'
-
-  const optionsRaw = Array.isArray(payloadData.options) ? payloadData.options : []
-  const options = optionsRaw
-    .map((option): { id: string; label: string; description?: string } | null => {
-      if (!isRecord(option)) return null
-      const optionId = toStringOrUndefined(option.id) || toStringOrUndefined(option.value)
-      const label = toStringOrUndefined(option.label) || toStringOrUndefined(option.title)
-      if (!optionId || !label) return null
-      const description = toStringOrUndefined(option.description) || toStringOrUndefined(option.detail)
-      return description ? { id: optionId, label, description } : { id: optionId, label }
-    })
-    .filter((option): option is { id: string; label: string; description?: string } => option !== null)
+  const kindRaw = toStringOrUndefined(payloadData.kind) || 'clarify'
+  const kind = isHitlKind(kindRaw) ? kindRaw : 'clarify'
 
   const allowFreeForm = typeof payloadData.allowFreeForm === 'boolean'
     ? payloadData.allowFreeForm
     : typeof payloadData.allow_free_form === 'boolean'
     ? payloadData.allow_free_form
-    : false
+    : kind === 'clarify'
 
   const urgencyRaw = toStringOrUndefined(payloadData.urgency) || 'normal'
   const urgency = isHitlUrgency(urgencyRaw) ? urgencyRaw : 'normal'
@@ -443,7 +431,7 @@ const parseHitlRequestPayload = (payload: unknown): HitlRequestEventPayload | nu
   const parsedPayload: HitlRequestPayload = {
     question,
     kind,
-    options,
+    options: [],
     allowFreeForm,
     urgency,
     ...(additionalContext ? { additionalContext } : {})
