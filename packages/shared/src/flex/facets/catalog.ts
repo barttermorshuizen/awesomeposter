@@ -1012,15 +1012,10 @@ const marketingFacetDefinitions: FacetDefinition[] = [
     description: 'References to visual assets that accompany the social post.',
     schema: {
       type: 'array',
+      description: 'List of asset URLs representing the visuals delivered for the post.',
       items: {
-        type: 'object',
-        properties: {
-          uri: { type: 'string', minLength: 1 },
-          label: { type: 'string' },
-          format: { type: 'string' }
-        },
-        required: ['uri'],
-        additionalProperties: true
+        type: 'string',
+        format: 'uri'
       }
     },
     semantics: {

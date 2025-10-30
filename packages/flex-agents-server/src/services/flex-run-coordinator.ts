@@ -1057,9 +1057,79 @@ export class FlexRunCoordinator {
         }
 
         const completionInstant = new Date(submission.submittedAt ?? Date.now())
+        const contextBundle = (humanNode.context && typeof humanNode.context === 'object'
+          ? JSON.parse(JSON.stringify(humanNode.context))
+          : (humanNode.bundle && typeof humanNode.bundle === 'object'
+              ? JSON.parse(JSON.stringify(humanNode.bundle))
+              : { runId, nodeId: humanNode.id })) as ContextBundle & Record<string, unknown>
+
+        if (!contextBundle.runId) {
+          contextBundle.runId = runId
+        }
+        contextBundle.nodeId = humanNode.id
+
+        const assignmentContext =
+          contextBundle.assignment && typeof contextBundle.assignment === 'object'
+            ? (contextBundle.assignment as Record<string, unknown>)
+            : ((contextBundle.assignment = {}) as Record<string, unknown>)
+
+        assignmentContext.status = 'completed'
+        assignmentContext.submittedAt = completionInstant.toISOString()
+        assignmentContext.updatedAt = completionInstant.toISOString()
+        if (!assignmentContext.assignmentId) {
+          assignmentContext.assignmentId = `${runId}:${humanNode.id}`
+        }
+        if (!assignmentContext.runId) {
+          assignmentContext.runId = runId
+        }
+        if (!assignmentContext.nodeId) {
+          assignmentContext.nodeId = humanNode.id
+        }
+
+        const metadataContext =
+          assignmentContext.metadata && typeof assignmentContext.metadata === 'object'
+            ? (assignmentContext.metadata as Record<string, unknown>)
+            : {}
+        if (submission.note && submission.note.trim().length) {
+          metadataContext.submissionNote = submission.note
+        }
+        assignmentContext.metadata = metadataContext
+
+        const submissionOutputClone = JSON.parse(JSON.stringify(submissionOutput))
+        contextBundle.currentOutput = submissionOutputClone
+        contextBundle.output = submissionOutputClone
+        contextBundle.priorOutputs = submissionOutputClone
+        contextBundle.outputs = submissionOutputClone
+        if (contextBundle.inputs && typeof contextBundle.inputs === 'object') {
+          contextBundle.currentInputs = JSON.parse(JSON.stringify(contextBundle.inputs))
+          contextBundle.input = JSON.parse(JSON.stringify(contextBundle.inputs))
+          contextBundle.inputs = JSON.parse(JSON.stringify(contextBundle.inputs))
+        }
+        if (!contextBundle.facets || typeof contextBundle.facets !== 'object') {
+          contextBundle.facets = {
+            input: Array.isArray(humanNode.facets?.input) ? [...humanNode.facets.input] : [],
+            output: Array.isArray(humanNode.facets?.output) ? [...humanNode.facets.output] : []
+          }
+        }
+        if (!contextBundle.contracts || typeof contextBundle.contracts !== 'object') {
+          contextBundle.contracts = {
+            ...(humanNode.contracts?.input ? { input: JSON.parse(JSON.stringify(humanNode.contracts.input)) } : {}),
+            ...(humanNode.contracts?.output
+              ? { output: JSON.parse(JSON.stringify(humanNode.contracts.output)) }
+              : {})
+          }
+        }
+        if (!contextBundle.facetProvenance || typeof contextBundle.facetProvenance !== 'object') {
+          contextBundle.facetProvenance = JSON.parse(
+            JSON.stringify(humanNode.provenance ?? {})
+          ) as Record<string, unknown>
+        }
+        contextBundle.runContextSnapshot = runContext.snapshot()
+
         await this.persistence.markNode(runId, humanNode.id, {
           status: 'completed',
           output: submissionOutput,
+          context: contextBundle as ContextBundle,
           completedAt: completionInstant
         })
         await this.persistence.updateStatus(runId, 'running')

@@ -22,17 +22,49 @@ const enumOptions = computed<string[]>(() => {
 const arrayValues = ref<string[]>([])
 const jsonDraft = ref('')
 
+const arrayItemsSchema = computed<Record<string, unknown> | null>(() => {
+  if (schemaType.value !== 'array') return null
+  const items = props.schema?.items
+  return items && typeof items === 'object' ? (items as Record<string, unknown>) : null
+})
+
+const arrayItemType = computed<string | undefined>(() => {
+  const items = arrayItemsSchema.value
+  if (!items) return undefined
+  const type = items.type
+  if (Array.isArray(type)) {
+    const candidate = type.find((entry) => typeof entry === 'string')
+    return typeof candidate === 'string' ? candidate : undefined
+  }
+  return typeof type === 'string' ? type : undefined
+})
+
+const arrayStringMode = computed<boolean>(() => {
+  if (schemaType.value !== 'array') return false
+  if (!arrayItemsSchema.value) return true
+  return arrayItemType.value === 'string'
+})
+
 watch(
   () => props.modelValue,
   (value) => {
     if (schemaType.value === 'array') {
-      if (Array.isArray(value)) {
-        arrayValues.value = value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+      if (arrayStringMode.value) {
+        if (Array.isArray(value)) {
+          arrayValues.value = value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+        } else {
+          arrayValues.value = []
+        }
+        jsonDraft.value = ''
       } else {
+        try {
+          jsonDraft.value = Array.isArray(value) ? JSON.stringify(value, null, 2) : ''
+        } catch {
+          jsonDraft.value = ''
+        }
         arrayValues.value = []
       }
-    }
-    if (schemaType.value === 'object') {
+    } else if (schemaType.value === 'object') {
       try {
         jsonDraft.value = value ? JSON.stringify(value, null, 2) : ''
       } catch {
@@ -132,7 +164,7 @@ function onJsonBlur() {
       />
     </template>
 
-    <template v-else-if="schemaType === 'array'">
+    <template v-else-if="schemaType === 'array' && arrayStringMode">
       <v-combobox
         v-model="arrayValues"
         :label="definition.title"
@@ -143,6 +175,19 @@ function onJsonBlur() {
         :readonly="readonly"
         :disabled="readonly"
         @update:model-value="onUpdateArray"
+      />
+    </template>
+
+    <template v-else-if="schemaType === 'array'">
+      <v-textarea
+        v-model="jsonDraft"
+        :label="`${definition.title} (JSON)`"
+        variant="outlined"
+        :rows="6"
+        :readonly="readonly"
+        :disabled="readonly"
+        auto-grow
+        @blur="onJsonBlur"
       />
     </template>
 
