@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import { scheduleCapabilitySelfRegistration } from '../src/services/capability-registration'
-import { STRATEGY_CAPABILITY } from '../src/agents/strategy-manager'
+import { STRATEGIST_SOCIAL_POSTING_CAPABILITY } from '../src/agents/marketing/strategist-social-posting'
 import * as loggerModule from '../src/services/logger'
 
 const originalFetch = global.fetch
@@ -43,7 +43,7 @@ describe('scheduleCapabilitySelfRegistration', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     vi.spyOn(loggerModule, 'getLogger').mockReturnValue(logger as any)
 
-    scheduleCapabilitySelfRegistration(STRATEGY_CAPABILITY)
+    scheduleCapabilitySelfRegistration(STRATEGIST_SOCIAL_POSTING_CAPABILITY)
 
     // Execute the immediate attempt
     await vi.runOnlyPendingTimersAsync()
@@ -52,11 +52,11 @@ describe('scheduleCapabilitySelfRegistration', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://flex.local/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(STRATEGY_CAPABILITY)
+      body: JSON.stringify(STRATEGIST_SOCIAL_POSTING_CAPABILITY)
     })
     expect(logger.info).toHaveBeenCalledWith(
       'flex_capability_self_registered',
-      expect.objectContaining({ capabilityId: STRATEGY_CAPABILITY.capabilityId, attempt: 1 })
+      expect.objectContaining({ capabilityId: STRATEGIST_SOCIAL_POSTING_CAPABILITY.capabilityId, attempt: 1 })
     )
 
     // Fast-forward to the refresh interval and ensure the call repeats
@@ -76,13 +76,13 @@ describe('scheduleCapabilitySelfRegistration', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     vi.spyOn(loggerModule, 'getLogger').mockReturnValue(logger as any)
 
-    scheduleCapabilitySelfRegistration(STRATEGY_CAPABILITY)
+    scheduleCapabilitySelfRegistration(STRATEGIST_SOCIAL_POSTING_CAPABILITY)
 
     // First attempt (failure)
     await vi.runOnlyPendingTimersAsync()
     expect(logger.warn).toHaveBeenCalledWith(
       'flex_capability_self_register_failed',
-      expect.objectContaining({ capabilityId: STRATEGY_CAPABILITY.capabilityId, attempt: 1 })
+      expect.objectContaining({ capabilityId: STRATEGIST_SOCIAL_POSTING_CAPABILITY.capabilityId, attempt: 1 })
     )
 
     // Retry attempt
@@ -90,7 +90,7 @@ describe('scheduleCapabilitySelfRegistration', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(logger.info).toHaveBeenCalledWith(
       'flex_capability_self_registered',
-      expect.objectContaining({ capabilityId: STRATEGY_CAPABILITY.capabilityId, attempt: 2 })
+      expect.objectContaining({ capabilityId: STRATEGIST_SOCIAL_POSTING_CAPABILITY.capabilityId, attempt: 2 })
     )
   })
 })

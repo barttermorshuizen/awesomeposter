@@ -28,19 +28,6 @@ import { DESIGNER_VISUAL_DESIGN_CAPABILITY } from './marketing/designer-visual-d
 import { DIRECTOR_SOCIAL_REVIEW_CAPABILITY } from './marketing/director-social-review'
 import { DIRECTOR_POSITIONING_REVIEW_CAPABILITY } from './marketing/director-positioning-review'
 import { HUMAN_CLARIFY_CAPABILITY, HUMAN_CLARIFY_INSTRUCTIONS_APP } from '../agents/human-clarify-brief'
-import {
-  STRATEGY_CAPABILITY,
-  STRATEGY_INSTRUCTIONS_APP,
-  STRATEGY_TOOLS,
-  createStrategyAgent
-} from '../agents/strategy-manager'
-import {
-  CONTENT_CAPABILITY,
-  CONTENT_INSTRUCTIONS_APP,
-  CONTENT_TOOLS,
-  createContentAgent
-} from '../agents/content-generator'
-import { QA_CAPABILITY, QA_INSTRUCTIONS, QA_TOOLS, createQaAgent } from '../agents/quality-assurance'
 
 export type RuntimeCapabilityEntry = {
   capabilityId: string
@@ -133,57 +120,10 @@ const MARKETING_HUMAN_ENTRIES: RuntimeCapabilityEntry[] = [
   }
 ]
 
-export const MARKETING_RUNTIME_CAPABILITIES: RuntimeCapabilityEntry[] = [...MARKETING_AI_ENTRIES, ...MARKETING_HUMAN_ENTRIES]
-
-const LEGACY_AI_ENTRIES: RuntimeCapabilityEntry[] = [
-  {
-    capabilityId: STRATEGY_CAPABILITY.capabilityId,
-    displayName: STRATEGY_CAPABILITY.displayName,
-    agentType: 'ai',
-    registration: STRATEGY_CAPABILITY,
-    instructions: STRATEGY_INSTRUCTIONS_APP,
-    toolsAllowlist: [...STRATEGY_TOOLS],
-    createAgent: createStrategyAgent
-  },
-  {
-    capabilityId: CONTENT_CAPABILITY.capabilityId,
-    displayName: CONTENT_CAPABILITY.displayName,
-    agentType: 'ai',
-    registration: CONTENT_CAPABILITY,
-    instructions: CONTENT_INSTRUCTIONS_APP,
-    toolsAllowlist: [...CONTENT_TOOLS],
-    createAgent: createContentAgent
-  },
-  {
-    capabilityId: QA_CAPABILITY.capabilityId,
-    displayName: QA_CAPABILITY.displayName,
-    agentType: 'ai',
-    registration: QA_CAPABILITY,
-    instructions: QA_INSTRUCTIONS,
-    toolsAllowlist: [...QA_TOOLS],
-    createAgent: createQaAgent
-  }
-]
-
-const LEGACY_HUMAN_ENTRIES: RuntimeCapabilityEntry[] = [
-  {
-    capabilityId: HUMAN_CLARIFY_CAPABILITY.capabilityId,
-    displayName: HUMAN_CLARIFY_CAPABILITY.displayName,
-    agentType: 'human',
-    registration: HUMAN_CLARIFY_CAPABILITY,
-    instructions: HUMAN_CLARIFY_INSTRUCTIONS_APP,
-    toolsAllowlist: []
-  }
-]
-
-export const LEGACY_RUNTIME_CAPABILITIES: RuntimeCapabilityEntry[] = [...LEGACY_AI_ENTRIES, ...LEGACY_HUMAN_ENTRIES]
-
-export function isLegacyMode(): boolean {
-  return process.env.FLEX_SANDBOX_LEGACY_CATALOG === 'true'
-}
+export const RUNTIME_CAPABILITIES: RuntimeCapabilityEntry[] = [...MARKETING_AI_ENTRIES, ...MARKETING_HUMAN_ENTRIES]
 
 export function getRuntimeCapabilityEntries(): RuntimeCapabilityEntry[] {
-  return isLegacyMode() ? LEGACY_RUNTIME_CAPABILITIES : MARKETING_RUNTIME_CAPABILITIES
+  return RUNTIME_CAPABILITIES
 }
 
 export function getCapabilityRegistrationsForSelfRegister(): CapabilityRegistration[] {

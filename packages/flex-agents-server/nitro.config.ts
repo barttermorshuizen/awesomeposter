@@ -20,7 +20,7 @@ const OPENAI_API_KEY = process.env.FLEX_OPENAI_API_KEY || process.env.OPENAI_API
 export default defineNitroConfig({
   compatibilityDate: '2025-09-02',
   srcDir: '.',
-  plugins: ['./server/plugins/agents.ts', './server/plugins/capability-registration.ts'],
+  plugins: ['./server/plugins/capability-registration.ts'],
   imports: {
     dirs: ['server/middleware']
   },

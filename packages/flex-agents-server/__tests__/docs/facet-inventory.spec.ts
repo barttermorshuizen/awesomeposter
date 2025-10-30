@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { STRATEGY_CAPABILITY } from '../../src/agents/strategy-manager'
-import { CONTENT_CAPABILITY } from '../../src/agents/content-generator'
-import { QA_CAPABILITY } from '../../src/agents/quality-assurance'
+import { STRATEGIST_SOCIAL_POSTING_CAPABILITY } from '../../src/agents/marketing/strategist-social-posting'
+import { STRATEGIST_POSITIONING_CAPABILITY } from '../../src/agents/marketing/strategist-positioning'
+import { COPYWRITER_SOCIAL_DRAFTING_CAPABILITY } from '../../src/agents/marketing/copywriter-socialpost-drafting'
+import { COPYWRITER_MESSAGING_CAPABILITY } from '../../src/agents/marketing/copywriter-messaging'
+import { DESIGNER_VISUAL_DESIGN_CAPABILITY } from '../../src/agents/marketing/designer-visual-design'
+import { DIRECTOR_SOCIAL_REVIEW_CAPABILITY } from '../../src/agents/marketing/director-social-review'
+import { DIRECTOR_POSITIONING_REVIEW_CAPABILITY } from '../../src/agents/marketing/director-positioning-review'
 import { HUMAN_CLARIFY_CAPABILITY } from '../../src/agents/human-clarify-brief'
 import type { CapabilityContract } from '@awesomeposter/shared'
 
@@ -23,7 +27,16 @@ function getFacetList(contract?: CapabilityContract | null): string[] {
 }
 
 function loadCodeCoverage() {
-  const capabilities = [STRATEGY_CAPABILITY, CONTENT_CAPABILITY, QA_CAPABILITY, HUMAN_CLARIFY_CAPABILITY]
+  const capabilities = [
+    STRATEGIST_SOCIAL_POSTING_CAPABILITY,
+    STRATEGIST_POSITIONING_CAPABILITY,
+    COPYWRITER_SOCIAL_DRAFTING_CAPABILITY,
+    COPYWRITER_MESSAGING_CAPABILITY,
+    DESIGNER_VISUAL_DESIGN_CAPABILITY,
+    DIRECTOR_SOCIAL_REVIEW_CAPABILITY,
+    DIRECTOR_POSITIONING_REVIEW_CAPABILITY,
+    HUMAN_CLARIFY_CAPABILITY
+  ]
   return new Map<string, FacetCoverage>(
     capabilities.map((capability) => [
       capability.capabilityId,

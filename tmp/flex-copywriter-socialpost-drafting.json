@@ -1,0 +1,68 @@
+{
+  "objective": "Draft LinkedIn-ready social post copy variants for the AwesomePoster launch using the strategist brief.",
+  "inputs": {
+    "channel": "linkedin",
+    "toneOfVoice": "Confident and pragmatic",
+    "planKnobs": {
+      "formatType": "linkedin_post",
+      "variantCount": 2,
+      "structure": {
+        "lengthLevel": 0.6,
+        "scanDensity": 0.5
+      }
+    },
+    "audienceProfile": {
+      "persona": "Marketing operations director",
+      "industry": "B2B SaaS",
+      "companySize": "200-1000"
+    },
+    "creative_brief": {
+      "core_message": "AwesomePoster automates social campaign production so marketing teams ship faster without sacrificing quality.",
+      "supporting_points": [
+        "Auto generates copy, visuals, and approvals in one workspace.",
+        "Keeps brand voice consistent with reusable templates.",
+        "Provides audit trails for every edit."
+      ],
+      "tone": "Confident, operationally savvy, benefit-led",
+      "structure": "Hook with pain, highlight solution, close with CTA.",
+      "audience": "Marketing ops leads rolling out new automation.",
+      "call_to_action": "Book a workflow teardown to see the automation in action."
+    },
+    "handoff_summary": [
+      "Strategist positioned the launch around eliminating manual campaign assembly.",
+      "Reviewers approved leaning on measurable time savings and audit trails."
+    ],
+    "feedback": [
+      {
+        "author": "Director",
+        "facet": "post_copy",
+        "message": "Highlight the time saved in hours per launch and keep CTA action-oriented."
+      }
+    ]
+  },
+  "policies": {
+    "planner": {
+      "selection": {
+        "require": ["copywriter"]
+      },
+      "directives": {
+        "preferredCapabilities": ["copywriter.SocialpostDrafting"]
+      }
+    },
+    "runtime": []
+  },
+  "specialInstructions": [
+    "Focus on LinkedIn tone and ensure post copy includes a metrics-backed hook.",
+    "Return two distinct copy variants with clear line breaks for readability."
+  ],
+  "metadata": {
+    "runLabel": "copywriter-socialpost-smoketest"
+  },
+  "outputContract": {
+    "mode": "facets",
+    "facets": [
+      "post_copy",
+      "handoff_summary"
+    ]
+  }
+}

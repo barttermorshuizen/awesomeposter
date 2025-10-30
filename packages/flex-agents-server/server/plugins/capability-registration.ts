@@ -1,6 +1,6 @@
 import type { CapabilityRegistration } from '@awesomeposter/shared'
 import { getLogger } from '../../src/services/logger'
-import { getCapabilityRegistrationsForSelfRegister, isLegacyMode } from '../../src/agents/runtime-capabilities'
+import { getCapabilityRegistrationsForSelfRegister } from '../../src/agents/runtime-capabilities'
 
 export default defineNitroPlugin((nitro) => {
   const logger = getLogger()
@@ -23,7 +23,6 @@ export default defineNitroPlugin((nitro) => {
       ? Math.max(0, Number(process.env.FLEX_CAPABILITY_SELF_REGISTER_INITIAL_DELAY_MS))
       : 1500
 
-  const useLegacyCatalog = isLegacyMode()
   const capabilities: CapabilityRegistration[] = getCapabilityRegistrationsForSelfRegister()
 
   const registerCapability = async (payload: CapabilityRegistration, startingAttempt = 1): Promise<boolean> => {

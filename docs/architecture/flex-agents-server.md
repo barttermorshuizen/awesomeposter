@@ -2073,9 +2073,13 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 | Capability ID | Display Name | Responsibilities | Input Facets | Output Facets | Source |
 | --- | --- | --- | --- | --- | --- |
-| `StrategyManagerAgent.briefing` | Strategy Manager | Plans rationale, writer brief, and knob configuration with asset analysis support. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `assetBundle` | `writerBrief`, `planKnobs`, `strategicRationale` | `packages/flex-agents-server/src/agents/strategy-manager.ts`, `packages/flex-agents-server/src/tools/strategy.ts` |
-| `ContentGeneratorAgent.linkedinVariants` | Copywriter – LinkedIn Variants | Generates 1–5 LinkedIn-ready variants with platform optimisations. | `writerBrief`, `planKnobs`, `toneOfVoice`, `audienceProfile` | `copyVariants` | `packages/flex-agents-server/src/agents/content-generator.ts`, `packages/flex-agents-server/src/services/flex-execution-engine.ts` |
-| `QualityAssuranceAgent.contentReview` | Quality Assurance | Scores drafts for readability, clarity, objective fit, and policy risk; normalises recommendations. | `copyVariants`, `writerBrief`, `qaRubric` | `qaFindings`, `recommendationSet` | `packages/flex-agents-server/src/agents/quality-assurance.ts`, `packages/flex-agents-server/src/tools/qa.ts` |
+| `strategist.SocialPosting` | Strategist – Social Posting | Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs. | `post_context`, `feedback` | `creative_brief`, `strategic_rationale`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts` |
+| `strategist.Positioning` | Strategist – Positioning | Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation. | `positioning_context`, `feedback` | `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-positioning.ts` |
+| `copywriter.SocialpostDrafting` | Copywriter – Social Drafting | Generates or revises campaign copy using strategist output and reviewer feedback. | `creative_brief`, `handoff_summary`, `feedback` | `post_copy`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-socialpost-drafting.ts` |
+| `copywriter.Messaging` | Copywriter – Messaging Stack | Converts positioning recommendations into a structured messaging hierarchy. | `positioning_context`, `positioning_recommendation`, `feedback` | `messaging_stack`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-messaging.ts` |
+| `designer.VisualDesign` | Designer – Visual Design | Creates or sources campaign visuals aligned with strategist guidance and reviewer feedback. | `creative_brief`, `handoff_summary`, `feedback` | `post_visual`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/designer-visual-design.ts` |
+| `director.SocialPostingReview` | Director – Social Review | Reviews campaign deliverables, approves final social posts, or records structured feedback. | `post_context`, `strategic_rationale`, `post_copy`, `post_visual` | `post`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-social-review.ts` |
+| `director.PositioningReview` | Director – Positioning Review | Approves positioning recommendations and messaging stacks or records actionable feedback. | `positioning_context`, `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `messaging_stack` | `positioning`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-positioning-review.ts` |
 | `HumanAgent.clarifyBrief` | Human Operator – Brief Clarification | Resolves planner clarification requests with structured human responses; declines or missed SLAs fail the run. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `writerBrief`, `clarificationRequest` | `clarificationResponse` | `packages/flex-agents-server/src/agents/human-clarify-brief.ts` |
 
 > Capability metadata, facet coverage, costs, and heartbeat settings are the source of truth—update the tables above and the corresponding agent module together during future agent work. Add new facets to the catalog before referencing them in capabilities.
@@ -2089,9 +2093,6 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 ### Supporting Utilities
 
-- Strategy analysis tools (`packages/flex-agents-server/src/tools/strategy.ts`) expose `strategy_analyze_assets` and `strategy_plan_knobs` for achievable-format detection and knob planning.
-- Content helpers (`packages/flex-agents-server/src/tools/content.ts`) handle format rendering and platform optimisation.
-- QA tooling (`packages/flex-agents-server/src/tools/qa.ts`) provides rubric scoring and recommendation normalisation.
 - HITL adapters (`packages/flex-agents-server/src/tools/hitl.ts`) bridge agent escalations into the shared HITL service.
 
 ### Developer Sandbox

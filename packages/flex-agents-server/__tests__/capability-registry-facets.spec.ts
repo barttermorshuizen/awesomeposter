@@ -2,9 +2,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { CapabilityRegistration } from '@awesomeposter/shared'
 
-import { STRATEGY_CAPABILITY } from '../src/agents/strategy-manager'
-import { CONTENT_CAPABILITY } from '../src/agents/content-generator'
-import { QA_CAPABILITY } from '../src/agents/quality-assurance'
+import { STRATEGIST_SOCIAL_POSTING_CAPABILITY } from '../src/agents/marketing/strategist-social-posting'
+import { COPYWRITER_SOCIAL_DRAFTING_CAPABILITY } from '../src/agents/marketing/copywriter-socialpost-drafting'
+import { DIRECTOR_POSITIONING_REVIEW_CAPABILITY } from '../src/agents/marketing/director-positioning-review'
 import {
   HUMAN_ASSIGNMENT_TIMEOUT_SECONDS,
   HUMAN_CLARIFY_CAPABILITY
@@ -83,19 +83,30 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
   })
 
   it('compiles facet-backed contracts for registered capabilities', async () => {
-    await service.register(STRATEGY_CAPABILITY)
-    await service.register(CONTENT_CAPABILITY)
-    await service.register(QA_CAPABILITY)
+    await service.register(STRATEGIST_SOCIAL_POSTING_CAPABILITY)
+    await service.register(COPYWRITER_SOCIAL_DRAFTING_CAPABILITY)
+    await service.register(DIRECTOR_POSITIONING_REVIEW_CAPABILITY)
     await service.register(HUMAN_CLARIFY_CAPABILITY)
 
-    const strategy = await service.getCapabilityById(STRATEGY_CAPABILITY.capabilityId)
-    expect(strategy?.inputContract?.mode).toBe('json_schema')
-    expect(strategy?.inputFacets).toEqual(expect.arrayContaining(['objectiveBrief', 'audienceProfile', 'toneOfVoice', 'assetBundle']))
-    expect(strategy?.outputFacets).toEqual(expect.arrayContaining(['writerBrief', 'planKnobs', 'strategicRationale']))
+    const strategist = await service.getCapabilityById(STRATEGIST_SOCIAL_POSTING_CAPABILITY.capabilityId)
+    expect(strategist?.inputContract?.mode).toBe('json_schema')
+    expect(strategist?.inputFacets).toEqual(expect.arrayContaining(['post_context', 'feedback']))
+    expect(strategist?.outputFacets).toEqual(expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary']))
 
-    const persisted = repo.getRow(CONTENT_CAPABILITY.capabilityId)
-    expect(persisted?.inputFacets).toEqual(['writerBrief', 'planKnobs', 'toneOfVoice', 'audienceProfile'])
-    expect(persisted?.outputFacets).toEqual(['copyVariants'])
+    const copywriterRow = repo.getRow(COPYWRITER_SOCIAL_DRAFTING_CAPABILITY.capabilityId)
+    expect(copywriterRow?.inputFacets).toEqual(['creative_brief', 'handoff_summary', 'feedback'])
+    expect(copywriterRow?.outputFacets).toEqual(['post_copy', 'handoff_summary'])
+
+    const directorRow = repo.getRow(DIRECTOR_POSITIONING_REVIEW_CAPABILITY.capabilityId)
+    expect(directorRow?.agentType).toBe('human')
+    expect(directorRow?.inputFacets).toEqual([
+      'positioning_context',
+      'value_canvas',
+      'positioning_opportunities',
+      'positioning_recommendation',
+      'messaging_stack'
+    ])
+    expect(directorRow?.outputFacets).toEqual(['positioning', 'feedback'])
 
     const humanRow = repo.getRow(HUMAN_CLARIFY_CAPABILITY.capabilityId)
     expect(humanRow?.agentType).toBe('human')
@@ -125,8 +136,8 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
 
   it('rejects registrations that reference unknown facets', async () => {
     const payload: CapabilityRegistration = {
-      ...STRATEGY_CAPABILITY,
-      capabilityId: 'StrategyManagerAgent.invalidFacets',
+      ...STRATEGIST_SOCIAL_POSTING_CAPABILITY,
+      capabilityId: 'Strategist.invalidFacets',
       inputContract: {
         mode: 'facets',
         facets: ['objectiveBrief', 'notRealFacet']
@@ -138,8 +149,8 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
 
   it('rejects facets with incompatible directionality', async () => {
     const payload: CapabilityRegistration = {
-      ...CONTENT_CAPABILITY,
-      capabilityId: 'ContentGeneratorAgent.invalidDirection',
+      ...COPYWRITER_SOCIAL_DRAFTING_CAPABILITY,
+      capabilityId: 'Copywriter.invalidDirection',
       inputContract: {
         mode: 'facets',
         facets: ['qaFindings']
@@ -151,10 +162,10 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
 
   it('rejects registrations that omit output contracts', async () => {
     const payload: CapabilityRegistration = {
-      ...STRATEGY_CAPABILITY,
-      capabilityId: 'StrategyManagerAgent.missingOutput'
+      ...STRATEGIST_SOCIAL_POSTING_CAPABILITY,
+      capabilityId: 'Strategist.missingOutput'
     }
-    // Simulate a legacy caller failing to provide output contracts
+    // Simulate a caller failing to provide output contracts
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (payload as any).outputContract
 
