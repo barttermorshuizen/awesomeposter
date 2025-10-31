@@ -4,6 +4,7 @@ import type { TaskEnvelope, CapabilityRecord, FacetDefinition, TaskPolicies } fr
 import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
+import { getTelemetryService } from './telemetry-service'
 import { PlannerDraftNode, PlannerDraftSchema, type PlannerDraft } from '../planner/planner-types'
 
 export type PlannerGraphNodeSummary = {
@@ -40,6 +41,9 @@ export type PlannerContextHints = {
 }
 
 const MAX_FACET_VALUE_LENGTH = 800
+const MAX_FACET_ROWS = 40
+const MAX_CAPABILITY_ROWS = 40
+const MAX_GRAPH_FACET_ENTRIES = 12
 
 function serializeFacetValue(value: unknown, maxLength = MAX_FACET_VALUE_LENGTH): string {
   try {
@@ -70,6 +74,400 @@ export type PlannerServiceInput = {
   }
 }
 
+type PlannerPromptMessage = { role: 'system' | 'user'; content: string }
+
+type PlannerUserPromptResult = {
+  message: PlannerPromptMessage
+  facetRowCount: number
+  capabilityRowCount: number
+  facetTable: string
+  capabilityTable: string
+}
+
+type PlannerTelemetry = ReturnType<typeof getTelemetryService>
+
+const INTERNAL_CHECKLIST_LINES = [
+  '1. Are all required output facets from the output contract covered?',
+  '2. Are all input facets of each node available from the envelope or previous outputs?',
+  '3. Are all capability IDs valid from the registry?',
+  '4. Did you avoid invented facets, stages, or helper nodes?',
+  '5. Does each node include a rationale?'
+]
+
+export function buildPlannerSystemPrompt(params: { facetTable: string; capabilityTable: string }): PlannerPromptMessage {
+  const { facetTable, capabilityTable } = params
+  const content = [
+    'SYSTEM:',
+    '',
+    'You are the **Flex PlannerService**.  ',
+    'Your job is to produce a **valid JSON plan** that exactly matches the following Zod schema.  ',
+    'Do not include markdown, explanations, or comments—only the JSON object.',
+    '',
+    '---',
+    '',
+    '### SCHEMA DEFINITION',
+    '',
+    'PlannerDraft = {',
+    '  nodes: Array<{',
+    '    stage?: string',
+    '    capabilityId?: string',
+    '    derived?: boolean',
+    '    kind?: "structuring" | "execution" | "transformation" | "validation"',
+    '    inputFacets?: string[] | string | Record<string, unknown>',
+    '    outputFacets?: string[] | string | Record<string, unknown>',
+    '    rationale?: string | string[]',
+    '    instructions?: string | string[]',
+    '  }>',
+    '  metadata?: { provider?: string; model?: string }',
+    '}',
+    '',
+    '---',
+    '',
+    '### CONTEXT',
+    '',
+    'You receive:',
+    '1. **Task Envelope:** `[TASK_ENVELOPE]`  ',
+    '   - Contains the user’s objective, inputs, policies, special instructions, and output contract.',
+    '2. **Facet Catalog Summary:** semantic reference for all known facets.  ',
+    '3. **Capability Registry Table:** listing of all available capabilities and their facet coverage.',
+    '',
+    'Your goal:  ',
+    'Create a **minimal PlanGraph** that uses the fewest capabilities necessary to produce all required **output facets** from the envelope, chaining input → output facet flows correctly.',
+    '',
+    '---',
+    '',
+    '### FACET CATALOG SUMMARY',
+    '',
+    facetTable,
+    '',
+    '---',
+    '',
+    '### CAPABILITY REGISTRY SUMMARY',
+    '',
+    capabilityTable,
+    '',
+    '---',
+    '',
+    '### PLANNER RULES',
+    '',
+    '1. **Facet coverage:**  ',
+    '   - Every required output facet in the caller’s output contract must be produced by at least one node.  ',
+    '   - Every node’s input facets must be either provided by the envelope or produced by an earlier node.  ',
+    '',
+    '2. **Capability selection:**  ',
+    '   - Use only `capabilityId` values listed in the capability table.  ',
+    '   - If no capability can satisfy the needed facets, return a diagnostic JSON object explaining the missing facet(s); do not invent placeholder capabilities.  ',
+    '',
+    '3. **Facet naming:**  ',
+    '   - Use facet names *exactly* as listed in the facet catalog.  ',
+    '   - Never invent new facet keys or rename existing ones.  ',
+    '',
+'4. **Kinds:**  ',
+'   - Use `structuring` for strategy or brief creation,  ',
+'     `execution` for content or design generation,  ',
+'     `validation` for QA or review  ',
+    '',
+'5. **Rationale & instructions:**  ',
+   '   - Each node should include a short `"rationale"` explaining *why* it was selected, referencing the facets it consumes and produces.  ',
+   '   - Optionally include `"instructions"` (1–2 short imperative sentences) describing how the node should act.  ',
+    '',
+'6. **Output requirements:**  ',
+   '    - Emit only one top-level JSON object compliant with the schema above.  ',
+   '    - No markdown, no explanations, no extra keys.',
+    '',
+    '---',
+    '',
+    '### INTERNAL CHECKLIST (for the model)',
+    '',
+    'Before producing the JSON:',
+    ...INTERNAL_CHECKLIST_LINES.map((line) => `${line}  `),
+    '',
+    '---',
+    '',
+    '### EXAMPLE REASONING (inline for guidance, not output)',
+    '',
+    '> Example:  ',
+    '> If the objective is to “draft social post copy for LinkedIn” and the envelope already includes a strategist brief (`creative_brief`), then the node `copywriter.SocialpostDrafting` can directly generate `post_copy` from `creative_brief`, `handoff_summary`, and `feedback`.  ',
+    '> No strategist or normalization node is needed.',
+    '',
+    '---',
+    '',
+    '### OUTPUT INSTRUCTIONS',
+    '',
+    'After reasoning internally, output only the final JSON object for `PlannerDraft`.  ',
+    'Do not include any explanations, commentary, or reasoning text—only valid JSON.'
+  ].join('\n')
+
+  return {
+    role: 'system' as const,
+    content
+  }
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n|\r/g, ' ').trim()
+}
+
+function formatMarkdownTable(headers: string[], rows: string[][]): string {
+  const headerRow = `| ${headers.join(' | ')} |`
+  const separator = `| ${headers.map(() => '---').join(' | ')} |`
+  const dataRows = rows.map((row) => `| ${row.join(' | ')} |`)
+  return [headerRow, separator, ...dataRows].join('\n')
+}
+
+function stringifyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function indentBlock(value: string, indent = 2): string {
+  const indentation = ' '.repeat(indent)
+  return value
+    .split('\n')
+    .map((line) => `${indentation}${line}`)
+    .join('\n')
+}
+
+function resolveRelevantPromptContext(
+  input: PlannerServiceInput,
+  capabilities: CapabilityRecord[],
+  facets: FacetDefinition[]
+): { facets: Set<string>; capabilities: CapabilityRecord[] } {
+  const knownFacets = new Set(facets.map((definition) => definition.name))
+  const selectedFacets = new Set<string>()
+
+  const addFacet = (name: string | null | undefined) => {
+    if (name && knownFacets.has(name)) {
+      selectedFacets.add(name)
+    }
+  }
+
+  const envelope = input.envelope
+  if (envelope.outputContract.mode === 'facets') {
+    for (const facet of envelope.outputContract.facets ?? []) {
+      addFacet(facet)
+    }
+  }
+
+  if (envelope.inputs && typeof envelope.inputs === 'object') {
+    Object.keys(envelope.inputs).forEach(addFacet)
+  }
+
+  if (input.graphContext) {
+    input.graphContext.completedNodes.forEach((node) => node.outputFacets.forEach(addFacet))
+    input.graphContext.facetValues.forEach((entry) => addFacet(entry.facet))
+  }
+
+  const capabilityFacets = (capability: CapabilityRecord): string[] => {
+    const facetsInCap = [
+      ...(capability.inputFacets ?? []),
+      ...(capability.outputFacets ?? [])
+    ]
+    return facetsInCap.filter((facet) => knownFacets.has(facet))
+  }
+
+  const relevantCapabilities: CapabilityRecord[] = []
+  if (selectedFacets.size > 0) {
+    const seen = new Set<string>()
+    let changed = false
+    do {
+      changed = false
+      for (const capability of capabilities) {
+        if (seen.has(capability.capabilityId)) continue
+        const facetsForCapability = capabilityFacets(capability)
+        if (!facetsForCapability.length) continue
+        if (facetsForCapability.some((facet) => selectedFacets.has(facet))) {
+          seen.add(capability.capabilityId)
+          relevantCapabilities.push(capability)
+          facetsForCapability.forEach(addFacet)
+          changed = true
+        }
+      }
+    } while (changed)
+  }
+
+  if (relevantCapabilities.length === 0) {
+    const fallback = capabilities.slice(0, MAX_CAPABILITY_ROWS)
+    fallback.forEach((capability) => capabilityFacets(capability).forEach(addFacet))
+    return { facets: selectedFacets.size > 0 ? selectedFacets : new Set(selectedFacets), capabilities: fallback }
+  }
+
+  return { facets: selectedFacets, capabilities: relevantCapabilities }
+}
+
+function inferCapabilityKind(capability: CapabilityRecord): 'structuring' | 'execution' | 'validation' | 'transformation' {
+  const metadata = (capability.metadata ?? {}) as Record<string, unknown>
+  const explicitKind = typeof metadata?.plannerKind === 'string' ? metadata.plannerKind : null
+  if (
+    explicitKind === 'structuring' ||
+    explicitKind === 'execution' ||
+    explicitKind === 'validation' ||
+    explicitKind === 'transformation'
+  ) {
+    return explicitKind
+  }
+
+  const id = capability.capabilityId.toLowerCase()
+  const display = capability.displayName.toLowerCase()
+  const summary = capability.summary.toLowerCase()
+
+  if (id.includes('strategy') || id.includes('planner') || display.includes('strateg') || summary.includes('brief')) {
+    return 'structuring'
+  }
+  if (id.includes('review') || id.includes('qa') || summary.includes('review') || display.includes('review')) {
+    return 'validation'
+  }
+  if (id.includes('transform') || summary.includes('transform') || summary.includes('normalize')) {
+    return 'transformation'
+  }
+  return 'execution'
+}
+
+export function buildPlannerUserPrompt(params: {
+  input: PlannerServiceInput
+  capabilities: CapabilityRecord[]
+  facets: FacetDefinition[]
+}): PlannerUserPromptResult {
+  const { input, capabilities, facets } = params
+  const context = input.context
+  const planningHints = [
+    context.channel ? `Primary channel: ${context.channel}` : null,
+    context.platform ? `Platform: ${context.platform}` : null,
+    context.formats.length ? `Formats: ${context.formats.join(', ')}` : null,
+    context.languages.length ? `Languages: ${context.languages.join(', ')}` : null,
+    context.audiences.length ? `Audiences: ${context.audiences.join(', ')}` : null,
+    context.tags.length ? `Tags: ${context.tags.join(', ')}` : null,
+    `Variant count: ${context.variantCount}`
+  ].filter((line): line is string => Boolean(line))
+
+  if (Object.keys(context.plannerDirectives).length) {
+    planningHints.push(`Planner directives: ${stringifyJson(context.plannerDirectives)}`)
+  }
+
+  const { facets: relevantFacetNames, capabilities: relevantCapabilities } = resolveRelevantPromptContext(
+    input,
+    capabilities,
+    facets
+  )
+
+  const orderedFacetDefinitions = facets.filter((definition) => relevantFacetNames.has(definition.name))
+  const facetRowsTotal = orderedFacetDefinitions.length
+  const facetDefinitionsToUse =
+    orderedFacetDefinitions.length > 0 ? orderedFacetDefinitions.slice(0, MAX_FACET_ROWS) : facets.slice(0, MAX_FACET_ROWS)
+
+  const facetRows = facetDefinitionsToUse.map((definition) => {
+    const direction = definition.metadata?.direction ?? 'unknown'
+    return [
+      escapeTableCell(definition.name),
+      escapeTableCell(String(direction)),
+      escapeTableCell(definition.description ?? definition.semantics?.summary ?? '')
+    ]
+  })
+
+  const facetTable = formatMarkdownTable(['Facet', 'Direction', 'Description'], facetRows)
+
+  const capabilityRowsTotal = relevantCapabilities.length || capabilities.length
+  const capabilityDefinitionsToUse = (relevantCapabilities.length ? relevantCapabilities : capabilities).slice(
+    0,
+    MAX_CAPABILITY_ROWS
+  )
+
+  const capabilityRows = capabilityDefinitionsToUse.map((capability) => {
+    const inputFacets = capability.inputFacets?.length ? capability.inputFacets.join(', ') : '—'
+    const outputFacets = capability.outputFacets?.length ? capability.outputFacets.join(', ') : '—'
+    return [
+      escapeTableCell(capability.capabilityId),
+      escapeTableCell(capability.displayName),
+      escapeTableCell(inferCapabilityKind(capability)),
+      escapeTableCell(inputFacets),
+      escapeTableCell(outputFacets),
+      escapeTableCell(capability.summary)
+    ]
+  })
+
+  const capabilityTable = formatMarkdownTable(
+    ['Capability ID', 'Display Name', 'Kind', 'Input Facets', 'Output Facets', 'Summary'],
+    capabilityRows
+  )
+
+  const envelopeSections: string[] = [`Objective: ${context.objective}`]
+
+  if (planningHints.length) {
+    envelopeSections.push('Planning hints:\n' + planningHints.map((line) => `- ${line}`).join('\n'))
+  }
+
+  envelopeSections.push('Policies:\n' + indentBlock(stringifyJson(input.policies)))
+
+  if (input.policyMetadata?.legacyNotes?.length) {
+    envelopeSections.push(`Legacy policy notes: ${input.policyMetadata.legacyNotes.join('; ')}`)
+  }
+  if (input.policyMetadata?.legacyFields?.length) {
+    envelopeSections.push(`Legacy policy fields: ${input.policyMetadata.legacyFields.join(', ')}`)
+  }
+
+  if (input.envelope.inputs) {
+    envelopeSections.push('Inputs:\n' + indentBlock(stringifyJson(input.envelope.inputs)))
+  }
+
+  if (context.specialInstructions.length || input.envelope.specialInstructions?.length) {
+    const instructions = context.specialInstructions.length ? context.specialInstructions : input.envelope.specialInstructions ?? []
+    envelopeSections.push('Special instructions:\n' + instructions.map((line) => `- ${line}`).join('\n'))
+  }
+
+  envelopeSections.push('Output contract:\n' + indentBlock(stringifyJson(input.envelope.outputContract)))
+
+  const sections: string[] = []
+  sections.push('### TASK ENVELOPE', envelopeSections.join('\n\n'))
+
+  const graphSections: string[] = []
+  if (input.graphContext?.completedNodes.length) {
+    const nodeLines = input.graphContext.completedNodes.map((node) => {
+      const capability = node.capabilityId ?? 'virtual'
+      const facetsList = node.outputFacets.length ? node.outputFacets.join(', ') : 'none'
+      return `- ${node.label} (${node.nodeId}) → capability=${capability} | output facets=${facetsList}`
+    })
+    graphSections.push('Completed nodes already executed:\n' + nodeLines.join('\n'))
+  }
+
+  if (input.graphContext?.facetValues.length) {
+    const recentValues = input.graphContext.facetValues.slice(-MAX_GRAPH_FACET_ENTRIES)
+    const facetValueLines = recentValues.map((entry) => {
+      const serialized = serializeFacetValue(entry.value)
+      const capability = entry.sourceCapabilityId ?? 'virtual'
+      return `- ${entry.facet} (from ${entry.sourceLabel} / ${entry.sourceNodeId} :: capability=${capability}):\n${indentBlock(serialized)}`
+    })
+    graphSections.push(
+      `Facet values from completed nodes (values truncated to ${MAX_FACET_VALUE_LENGTH} characters when needed):\n${facetValueLines.join(
+        '\n'
+      )}`
+    )
+  }
+
+  if (graphSections.length) {
+    sections.push('### CURRENT GRAPH CONTEXT', graphSections.join('\n\n'))
+  }
+
+  sections.push('### INTERNAL CHECKLIST REMINDER', INTERNAL_CHECKLIST_LINES.join('\n'))
+  sections.push(
+    '### OUTPUT FORMAT',
+    'Return only the final JSON object for `PlannerDraft`. No commentary, markdown, or extra keys.'
+  )
+
+  return {
+    message: {
+      role: 'user' as const,
+      content: sections.join('\n\n')
+    },
+    facetRowCount: facetRows.length,
+    capabilityRowCount: capabilityRows.length,
+    facetTable,
+    capabilityTable
+  }
+}
+
 export interface PlannerServiceInterface {
   proposePlan(input: PlannerServiceInput): Promise<PlannerDraft>
 }
@@ -79,10 +477,11 @@ export class PlannerService implements PlannerServiceInterface {
   private readonly capabilityRegistry: FlexCapabilityRegistryService
   private readonly timeoutMs: number
   private readonly model: string
+  private readonly telemetry: PlannerTelemetry
 
   constructor(
     capabilityRegistry: FlexCapabilityRegistryService = getFlexCapabilityRegistryService(),
-    options?: { timeoutMs?: number; client?: OpenAI; model?: string }
+    options?: { timeoutMs?: number; client?: OpenAI; model?: string; telemetry?: PlannerTelemetry }
   ) {
     this.capabilityRegistry = capabilityRegistry
     this.client =
@@ -98,6 +497,7 @@ export class PlannerService implements PlannerServiceInterface {
       process.env.OPENAI_DEFAULT_MODEL ??
       process.env.OPENAI_MODEL ??
       'gpt-4o-mini'
+    this.telemetry = options?.telemetry ?? getTelemetryService()
   }
 
   async proposePlan(input: PlannerServiceInput): Promise<PlannerDraft> {
@@ -105,8 +505,24 @@ export class PlannerService implements PlannerServiceInterface {
     const facetDefinitions = catalog.list()
     const capabilitySnapshot =
       input.capabilities.length > 0 ? input.capabilities : (await this.capabilityRegistry.getSnapshot()).active
-    const systemMessage = this.composeSystemPrompt()
-    const userMessage = this.composeUserPrompt(input, capabilitySnapshot, facetDefinitions)
+    const userPrompt = buildPlannerUserPrompt({
+      input,
+      capabilities: capabilitySnapshot,
+      facets: facetDefinitions
+    })
+    const systemMessage = buildPlannerSystemPrompt({
+      facetTable: userPrompt.facetTable,
+      capabilityTable: userPrompt.capabilityTable
+    })
+    const userMessage = userPrompt.message
+
+    this.telemetry.recordPlannerPromptSize({
+      systemCharacters: systemMessage.content.length,
+      userCharacters: userMessage.content.length,
+      facetRows: userPrompt.facetRowCount,
+      capabilityRows: userPrompt.capabilityRowCount
+    })
+
     const llmPromise = this.invokeResponsesApi([systemMessage, userMessage], PlannerDraftSchema)
 
     try {
@@ -124,215 +540,11 @@ export class PlannerService implements PlannerServiceInterface {
     } catch (error) {
       llmPromise.catch(() => undefined)
       try {
-        getLogger().warn('flex_planner_llm_fallback', {
+        getLogger().warn('flex_planner_failure', {
           reason: error instanceof Error ? error.message : String(error)
         })
       } catch {}
-      return this.buildFallbackDraft(input)
-    }
-  }
-
-  private composeSystemPrompt() {
-    return {
-      role: 'system' as const,
-      content: [
-        'You are the Flex PlannerService. Produce a valid JSON plan exactly matching the following Zod schema:',
-        '--- SCHEMA START ---',
-        'PlannerDraft = {',
-        '  nodes: Array<{',
-        '    stage?: string',
-        '    capabilityId?: string',
-        '    derived?: boolean',
-        '    kind?: "structuring" | "execution" | "transformation" | "validation" | "fallback"',
-        '    inputFacets?: string[] | string | Record<string, unknown>',
-        '    outputFacets?: string[] | string | Record<string, unknown>',
-        '    rationale?: string | string[]',
-        '    instructions?: string | string[]',
-        '  }>',
-        '  metadata?: { provider?: string; model?: string }',
-        '}',
-        '--- SCHEMA END ---',
-        'The user provides:',
-        '- A task objective',
-        '- Inputs',
-        '- Policies',
-        '- Special instructions',
-        '- An output contract',
-        'You also have access to:',
-        '- A list of available capabilities, each with input/output facets (JSON fragments) and descriptions',
-        '- A facet catalog describing the valid facet types, a description of the facet and the direction',
-        'Your job is to:',
-        '- Analyze the objective, inputs, and output expectations',
-        '- Select the **minimal set of capabilities** needed to produce the required output facets',
-        '- Route facets correctly between nodes, respecting capability I/O contracts',
-        '',
-        'Planner rules:',
-        '1. Every non-virtual node MUST set `capabilityId` to exactly one of the provided capability IDs.',
-        '2. Before selecting a capability, ensure every required input facet or schema field is available from the envelope or a prior node; if not, add the upstream node that produces it.',
-        '3. Never invent new capability IDs or placeholder names; reuse the registry values verbatim.',
-        '4. Use only facet names that appear in the capability definitions or facet catalog. Do not invent new facet keys.',
-        '5. Honor the input contract schema (including required properties and enums). Rely on the orchestrator for baked-in facet normalization (objective mappings, tone enums, clarification shapes) instead of adding structuring helper nodes.',
-        '6. Do NOT output controller helper nodes such as "normalize_input_facets" or "shape_clarification_request"; the orchestrator performs these transformations automatically.',
-        '7. When the selected capability is human-operated (`capabilityId` starting with "HumanAgent."), avoid inserting automated strategy or content planning nodes just to populate context facets like `writerBrief`, `planKnobs`, or `strategicRationale`. Rely on provided inputs or return diagnostics if critical data is unavailable.',
-        '8. If no suitable capability exists, return diagnostics describing the gap rather than creating anonymous stages.',
-        '9. Do NOT add standalone "normalization" or other controller-managed nodes unless the special instructions explicitly demand it—the orchestrator already handles schema shaping.',
-        'Reason from capability definitions. Include only the capabilities needed to achieve the objective given the available inputs and required outputs.',
-        '- When required facets are missing and no fallback is possible, return JSON that captures the failure instead of inventing data.',
-        'CRITICALLY:',
-        '- Do not fabricate content. If a facet is required but not supported by inputs, leave it empty or minimal.',
-        '- Do not invent personas, tone guidance, structural elements, or business details.',
-        '- Do not add nodes or capabilities unless their use is clearly justified by the objective and facet flow.',
-        'Your output must be:',
-        '- JSON only (no markdown or comments)',
-        '- Strictly compliant with the facet catalog and capability definitions',
-        '- Fully grounded in user input.'
-      ].join('\n')
-    }
-  }
-
-  private composeUserPrompt(
-    input: PlannerServiceInput,
-    capabilities: CapabilityRecord[],
-    facets: FacetDefinition[]
-  ) {
-    const context = input.context
-    const planningHints = [
-      context.channel ? `Primary channel: ${context.channel}` : null,
-      context.platform ? `Platform: ${context.platform}` : null,
-      context.formats.length ? `Format expectations: ${context.formats.join(', ')}` : null,
-      context.languages.length ? `Languages: ${context.languages.join(', ')}` : null,
-      context.audiences.length ? `Audience descriptors: ${context.audiences.join(', ')}` : null,
-      context.tags.length ? `Tags: ${context.tags.join(', ')}` : null,
-      `Variant count: ${context.variantCount}`
-    ].filter((line): line is string => Boolean(line))
-
-    if (Object.keys(context.plannerDirectives).length) {
-      planningHints.push(`Planner directives: ${JSON.stringify(context.plannerDirectives, null, 2)}`)
-    }
-
-    const planningHintsBlock =
-      planningHints.length ?
-        ['Planning hints:', ...planningHints.map((line) => `  - ${line}`)].join('\n')
-        : null
-
-    const envelopeLines = [
-      `Objective: ${context.objective}`,
-      planningHintsBlock,
-      `Policies: ${JSON.stringify(input.policies, null, 2)}`,
-      input.policyMetadata?.legacyNotes?.length ? `Policy Notes: ${input.policyMetadata.legacyNotes.join('; ')}` : null,
-      input.policyMetadata?.legacyFields?.length
-        ? `Legacy Policy Fields: ${input.policyMetadata.legacyFields.join(', ')}`
-        : null,
-      `Inputs Summary: ${JSON.stringify(input.envelope.inputs ?? {}, null, 2)}`,
-      input.envelope.specialInstructions && input.envelope.specialInstructions.length
-        ? `Special Instructions: ${JSON.stringify(input.envelope.specialInstructions, null, 2)}`
-        : null,
-      `Output Contract: ${JSON.stringify(input.envelope.outputContract, null, 2)}`
-    ]
-      .filter((line): line is string => Boolean(line))
-
-    const capabilityLines = capabilities.map((capability) => {
-      const inputFacets = (capability.inputFacets ?? []).join(', ') || 'none'
-      const outputFacets = (capability.outputFacets ?? []).join(', ') || 'none'
-
-      const inputContractLines: string[] = []
-      if (capability.inputContract) {
-        if (capability.inputContract.mode === 'facets') {
-          inputContractLines.push(`  Input contract: facets -> ${(capability.inputContract.facets ?? []).join(', ') || 'none'}`)
-        } else if ('schema' in capability.inputContract && capability.inputContract.schema) {
-          const schema = JSON.stringify(capability.inputContract.schema, null, 2)
-          inputContractLines.push('  Input contract schema:')
-          inputContractLines.push(schema
-            .split('\n')
-            .map((line) => `    ${line}`)
-            .join('\n'))
-        }
-      }
-
-      const outputContractLines: string[] = []
-      if (capability.outputContract) {
-        if (capability.outputContract.mode === 'facets') {
-          outputContractLines.push(`  Output contract: facets -> ${(capability.outputContract.facets ?? []).join(', ') || 'none'}`)
-        } else if ('schema' in capability.outputContract && capability.outputContract.schema) {
-          const schema = JSON.stringify(capability.outputContract.schema, null, 2)
-          outputContractLines.push('  Output contract schema:')
-          outputContractLines.push(schema
-            .split('\n')
-            .map((line) => `    ${line}`)
-            .join('\n'))
-        }
-      }
-
-      return [
-        `- Capability ID: ${capability.capabilityId}`,
-        `  Display: ${capability.displayName}`,
-        `  Summary: ${capability.summary}`,
-        `  Input facets: ${inputFacets}`,
-        `  Output facets: ${outputFacets}`,
-        ...inputContractLines,
-        ...outputContractLines
-      ].join('\n')
-    })
-
-    const facetLines = facets.map((facet) => {
-      const direction = facet.metadata?.direction ?? 'unknown'
-      return `- ${facet.name} (${direction}) :: ${facet.description}`
-    })
-
-    const graphSections: string[] = []
-    if (input.graphContext) {
-      if (input.graphContext.completedNodes.length) {
-        const nodeLines = input.graphContext.completedNodes.map((node) => {
-          const capability = node.capabilityId ?? 'virtual'
-          const facetList = node.outputFacets.length ? node.outputFacets.join(', ') : 'none'
-          return `- ${node.label} (${node.nodeId}) :: capability=${capability} | output facets=${facetList}`
-        })
-        graphSections.push(['Completed nodes already executed:', ...nodeLines].join('\n'))
-      }
-      if (input.graphContext.facetValues.length) {
-        const maxEntries = 12
-        const recentValues = input.graphContext.facetValues.slice(-maxEntries)
-        const facetValueLines = recentValues.map((entry) => {
-          const serialized = serializeFacetValue(entry.value)
-          const indented = serialized
-            .split('\n')
-            .map((line) => `    ${line}`)
-            .join('\n')
-          const capability = entry.sourceCapabilityId ?? 'virtual'
-          return `- ${entry.facet} (from ${entry.sourceLabel} / ${entry.sourceNodeId} :: capability=${capability}):\n${indented}`
-        })
-        graphSections.push(
-          [
-            'Facet values from completed nodes (values truncated to 800 characters when needed):',
-            ...facetValueLines
-          ].join('\n')
-        )
-      }
-    }
-
-    const sections: string[] = [
-      'Create a planner draft for the Flex orchestrator.',
-      envelopeLines.join('\n'),
-      'Select `capabilityId` values from the following registered capabilities (copy IDs exactly as shown):',
-      capabilityLines.join('\n\n'),
-      'Facet catalog summary:',
-      facetLines.slice(0, 25).join('\n')
-    ]
-
-    if (graphSections.length) {
-      sections.push('Current graph context from completed nodes:')
-      sections.push(...graphSections)
-    }
-
-    sections.push(
-      'Return JSON with nodes including stage, capabilityId, derived flag, inputFacets, outputFacets, and rationale. Do not create capabilities that are not listed.',
-      'When referring to variants, use the existing facet `copyVariants` (or other cataloged facets) instead of inventing new names.',
-      'Skip controller-managed normalization nodes unless the special instructions in this request explicitly require one.'
-    )
-
-    return {
-      role: 'user' as const,
-      content: sections.join('\n\n')
+      throw error
     }
   }
 
@@ -380,32 +592,4 @@ export class PlannerService implements PlannerServiceInterface {
     return parsed.data
   }
 
-  private buildFallbackDraft(input: PlannerServiceInput): PlannerDraft {
-    const generationCapability = input.capabilities.find(
-      (capability) => capability.capabilityId === 'ContentGeneratorAgent.linkedinVariants'
-    )
-    const normalizedFormats = input.context.formats.map(normalizeHint)
-    const capabilityFormats = generationCapability?.inputTraits?.formats ?? []
-    const capabilityMatchesFormat =
-      normalizedFormats.length && capabilityFormats.length
-        ? capabilityFormats.map(normalizeHint).some((format) => normalizedFormats.includes(format))
-        : false
-
-    const baseNodes: PlannerDraftNode[] = [
-      { stage: 'strategy', kind: 'structuring', capabilityId: 'StrategyManagerAgent.briefing', derived: true },
-      {
-        stage: 'generation',
-        kind: 'execution',
-        capabilityId: 'ContentGeneratorAgent.linkedinVariants',
-        derived: !capabilityMatchesFormat
-      },
-      { stage: 'qa', kind: 'validation', capabilityId: 'QualityAssuranceAgent.contentReview', derived: true }
-    ]
-    return {
-      nodes: baseNodes,
-      metadata: {
-        provider: 'deterministic-fallback'
-      }
-    }
-  }
 }

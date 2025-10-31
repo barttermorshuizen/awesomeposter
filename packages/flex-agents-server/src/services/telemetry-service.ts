@@ -162,6 +162,33 @@ class TelemetryService {
     } catch {}
   }
 
+  recordPlannerPromptSize(context: {
+    systemCharacters: number
+    userCharacters: number
+    facetRows: number
+    capabilityRows: number
+  }) {
+    const totalCharacters = context.systemCharacters + context.userCharacters
+    const labels: MetricLabels = {
+      facetRows: context.facetRows,
+      capabilityRows: context.capabilityRows
+    }
+
+    this.recordHistogram('flex.planner.prompt.total_chars', totalCharacters, labels)
+    this.recordHistogram('flex.planner.prompt.system_chars', context.systemCharacters, labels)
+    this.recordHistogram('flex.planner.prompt.user_chars', context.userCharacters, labels)
+
+    try {
+      getLogger().info('flex_planner_prompt_metrics', {
+        totalCharacters,
+        systemCharacters: context.systemCharacters,
+        userCharacters: context.userCharacters,
+        facetRows: context.facetRows,
+        capabilityRows: context.capabilityRows
+      })
+    } catch {}
+  }
+
   getMetricsSnapshot(): TelemetryMetricsSnapshot {
     const counters: Record<string, number> = {}
     for (const [key, value] of this.counters.entries()) {
