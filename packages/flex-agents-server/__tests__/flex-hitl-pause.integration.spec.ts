@@ -107,11 +107,13 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
             instructions: [],
             inputs: {
               post_context: {
-                campaign: 'Launch',
-                type: 'launch',
-                summary: 'Introduce the new product.',
-                audience: { persona: 'Marketing lead' },
-                channels: ['linkedin']
+                type: 'new_case',
+                data: {
+                  content_description: 'Spotlight the DeltaCo rollout and link to the full story.',
+                  case_url: 'https://awesomeposter.ai/cases/deltaco',
+                  customer_name: 'DeltaCo',
+                  assets: ['https://cdn.awesomeposter.ai/cases/deltaco-hero.png']
+                }
               },
               feedback: []
             },
@@ -162,14 +164,13 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
       objective: 'Smoke test HITL pause',
       inputs: {
         post_context: {
-          campaign: 'Launch',
-          type: 'launch',
-          summary: 'Introduce the new product.',
-          audience: {
-            persona: 'Marketing lead',
-            industry: 'SaaS'
-          },
-          channels: ['linkedin']
+          type: 'new_case',
+          data: {
+            content_description: 'Spotlight the DeltaCo rollout and link to the full story.',
+            case_url: 'https://awesomeposter.ai/cases/deltaco',
+            customer_name: 'DeltaCo',
+            assets: ['https://cdn.awesomeposter.ai/cases/deltaco-hero.png']
+          }
         },
         feedback: []
       },

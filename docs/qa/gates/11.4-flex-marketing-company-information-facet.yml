@@ -1,0 +1,48 @@
+schema: 1
+story: '11.4'
+story_title: 'Company Information Facet Integration'
+gate: CONCERNS
+status_reason: 'Facet metadata sets direction to input instead of bidirectional, diverging from the architecture reference and breaking contract compatibility guarantees.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-10-31T06:28:16Z'
+
+top_issues:
+  - severity: high
+    summary: '`company_information` facet metadata direction is `input`, but architecture reference mandates `bidirectional`, so downstream output-side validation will fail.'
+    evidence:
+      - packages/shared/src/flex/facets/catalog.ts:731
+      - docs/architecture/flex-agents-server/512-reference-facet-catalog.md:379
+    suggested_owner: dev
+waiver:
+  active: false
+quality_score: 55
+expires: '2025-11-14T06:28:22Z'
+
+evidence:
+  tests_reviewed: 0
+  risks_identified: 1
+  trace:
+    ac_covered: [2, 3, 4]
+    ac_gaps: [1]
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No security-sensitive surfaces touched.'
+  performance:
+    status: PASS
+    notes: 'Facet catalog metadata change only; no runtime hot paths modified.'
+  reliability:
+    status: FAIL
+    notes: 'Direction mismatch will cause contract compilers and registry validation to reject bidirectional usage expected by architecture.'
+  maintainability:
+    status: CONCERNS
+    notes: 'Catalog and architecture documentation diverge, increasing drift risk.'
+
+recommendations:
+  immediate:
+    - action: 'Update `company_information` facet metadata to use `direction: "bidirectional"` and add coverage asserting direction parity with architecture reference.'
+      refs:
+        - packages/shared/src/flex/facets/catalog.ts:731
+        - packages/shared/__tests__/flex/facet-contract-compiler.spec.ts
+  future: []

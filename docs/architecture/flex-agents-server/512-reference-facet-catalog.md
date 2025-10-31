@@ -31,7 +31,7 @@ Type-specific context for a social post (currently supports new\_case and new\_e
           "description": "Free-text narrative describing the core message."
         },
         "assets": {
-          "type": "array",
+alig          "type": "array",
           "description": "R2 asset URLs (images, PDFs, etc.).",
           "items": { "type": "string", "format": "uri" }
         },
@@ -287,6 +287,92 @@ A running textual log of decisions, notes, or key observations that each agent a
 * Used for handover context, reasoning visibility, and audit trails.
 
 * Human and AI agents can both write to it.
+
+**metadata**
+* version: 1.0.0 
+* direction: input
+* requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
+
+
+## Facet company_information
+
+**name**: company_information
+
+**title**: Company Information
+
+**description**
+
+Canonical profile of a company, capturing core identity details, audience guidance, and brand assets that downstream agents reference for consistent positioning and execution.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["name", "brand_assets"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Official company name."
+    },
+    "website": {
+      "type": "string",
+      "format": "uri",
+      "description": "Primary website URL."
+    },
+    "industry": {
+      "type": "string",
+      "description": "Industry or sector the company operates in."
+    },
+    "tone_of_voice": {
+      "type": "string",
+      "description": "Preferred tone or voice guidelines."
+    },
+    "special_instructions": {
+      "type": "string",
+      "description": "Additional guidance or caveats for representing the company."
+    },
+    "audience_segments": {
+      "type": "string",
+      "description": "Target audience segments or personas."
+    },
+    "preferred_channels": {
+      "type": "string",
+      "description": "Preferred distribution or communication channels."
+    },
+    "brand_assets": {
+      "type": "array",
+      "description": "Canonical brand asset URLs (logos, templates, etc.).",
+      "items": { "type": "string", "format": "uri" }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "name": "Acme Analytics",
+      "website": "https://acmeanalytics.io",
+      "industry": "Industrial IoT",
+      "tone_of_voice": "Authoritative but friendly",
+      "special_instructions": "Always include certified partner badge.",
+      "audience_segments": "Operations leaders in mid-market manufacturing",
+      "preferred_channels": "LinkedIn, industry newsletters",
+      "brand_assets": [
+        "https://assets.acmeanalytics.io/logos/wordmark.svg",
+        "https://assets.acmeanalytics.io/templates/presentation-template.pdf"
+      ]
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Provides brand guardrails and references required by strategist, copywriter, designer, and reviewer agents.
+
+* Ensures tone, audience, and asset usage remain consistent across content variants.
+
+* brand_assets values are resolvable URIs; downstream systems handle retrieval and caching.
 
 **metadata**
 * version: 1.0.0 

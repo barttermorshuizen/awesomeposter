@@ -14,10 +14,10 @@
 
 ## Marketing Catalog Rollout & Rollback
 
-- The curated marketing capability library lives in `packages/shared/src/flex/marketing-catalog.ts`. It exposes the marketing-aligned entries (`strategist.SocialPosting`, `strategist.Positioning`, `copywriter.SocialpostDrafting`, `copywriter.Messaging`, `designer.VisualDesign`, `director.SocialPostingReview`, `director.PositioningReview`) and the sandbox metadata route now responds with this set by default.
-- Facets tagged with `["marketing-agency", "sandbox"]` are served through the same route by filtering the shared `FacetCatalog`. UI surfaces only render those tagged facets, keeping the legacy definitions available for regression fixtures.
+- The curated marketing capability library lives in `packages/shared/src/flex/marketing-catalog.ts`. It exposes the marketing-aligned entries (`strategist.SocialPosting`, `strategist.Positioning`, `copywriter.SocialpostDrafting`, `copywriter.Messaging`, `designer.VisualDesign`, `director.SocialPostingReview`, `director.PositioningReview`) and the sandbox metadata route now responds with this set by default. All of these capabilities now declare the shared `company_information` facet as part of their `inputContract` to enforce consistent brand guardrails.
+- Facets tagged with `["marketing-agency", "sandbox"]` – including `company_information` – are served through the same route by filtering the shared `FacetCatalog`. UI surfaces only render those tagged facets, keeping the legacy definitions available for regression fixtures while automatically advertising the new facet to downstream consumers.
 - Deployment checklist:
-  1. Run `npm run test:unit -- packages/flex-agents-server/__tests__/flex-sandbox-metadata.spec.ts` to verify the metadata response.
+  1. Run `npm run test:unit -- packages/flex-agents-server/__tests__/flex-sandbox-metadata.spec.ts` to verify the metadata response (the payload should now list the `company_information` facet alongside the curated marketing set).
   2. Spot-check the flex sandbox UI to confirm capability cards reflect the marketing taxonomy and that templates still load.
 - Rollback plan:
   - Revert the marketing catalog deployment (reinstate the legacy capability modules and registry wiring) if regression fixtures must become the active catalog again—there is no runtime flag for toggling between catalogs.

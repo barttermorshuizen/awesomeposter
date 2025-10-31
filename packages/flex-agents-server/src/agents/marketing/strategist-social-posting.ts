@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_FALLBACK } from '../../utils/model'
 export const STRATEGIST_SOCIAL_POSTING_ID = 'strategist.SocialPosting' as const
 
 const facetCatalog = getFacetCatalog()
-const INPUT_FACETS = ['post_context', 'feedback'] as const
+const INPUT_FACETS = ['company_information', 'post_context', 'feedback'] as const
 const OUTPUT_FACETS = ['creative_brief', 'strategic_rationale', 'handoff_summary'] as const
 
 facetCatalog.resolveMany([...INPUT_FACETS], 'input')
@@ -17,10 +17,11 @@ export const STRATEGIST_SOCIAL_POSTING_TOOLS = [HITL_TOOL_NAME] as const
 
 export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_APP = [
   'You are the Strategist responsible for planning social posting work.',
-  'Read the provided post_context and any existing feedback to understand goals, audience, and guardrails.',
+  'Review company_information, post_context, and any existing feedback to understand goals, audience, and brand guardrails.',
   'Produce a concise strategic_rationale, an actionable creative_brief, and update the handoff_summary with key decisions.',
   'If critical context is missing or contradictory, pause and call the `hitl_request` tool. Clearly state the human decision required.',
-  'When calling the `hitl_request` tool`, stop all further planning logic and immediately construct the placeholder JSON as described; do not attempt any generation beyond placeholders.',
+  'When you invoke the `hitl_request` tool (approval or clarify), stop further planning and emit JSON that still satisfies the creative_brief, strategic_rationale, and handoff_summary schema—use `PENDING_HITL: …` placeholder strings and minimal placeholder list entries so the structure remains valid.',
+  'Do not send standalone prose while paused; always respond with the contract-shaped JSON populated by those placeholders until the human responds.',
   'Do not raise a new HITL question if any prior human response resolves the same missing field, even if other fields remain unresolved.'
 ].join('\n')
 
@@ -39,7 +40,7 @@ export const STRATEGIST_SOCIAL_POSTING_CAPABILITY: CapabilityRegistration = {
   inputTraits: {
     languages: ['en'],
     strengths: ['campaign_planning', 'audience_strategy'],
-    limitations: ['Requires structured campaign context and audience detail.']
+    limitations: ['Requires structured campaign context, company profile, and audience detail.']
   },
   inputContract: {
     mode: 'facets',

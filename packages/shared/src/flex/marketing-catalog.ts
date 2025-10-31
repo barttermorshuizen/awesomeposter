@@ -31,7 +31,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       inputContract: {
         mode: 'facets',
-        facets: ['post_context', 'feedback']
+        facets: ['company_information', 'post_context', 'feedback']
       },
       outputContract: {
         mode: 'facets',
@@ -59,7 +59,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['post_context', 'feedback'],
+      inputFacets: ['company_information', 'post_context', 'feedback'],
       outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary']
     },
     prompt: {
@@ -85,7 +85,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       inputContract: {
         mode: 'facets',
-        facets: ['positioning_context', 'feedback']
+        facets: ['company_information', 'positioning_context', 'feedback']
       },
       outputContract: {
         mode: 'facets',
@@ -113,7 +113,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['positioning_context', 'feedback'],
+      inputFacets: ['company_information', 'positioning_context', 'feedback'],
       outputFacets: ['value_canvas', 'positioning_opportunities', 'positioning_recommendation', 'handoff_summary']
     },
     prompt: {
@@ -140,7 +140,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       inputContract: {
         mode: 'facets',
-        facets: ['creative_brief', 'handoff_summary', 'feedback']
+        facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback']
       },
       outputContract: {
         mode: 'facets',
@@ -168,7 +168,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['creative_brief', 'handoff_summary', 'feedback'],
+      inputFacets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
       outputFacets: ['post_copy', 'handoff_summary']
     },
     prompt: {
@@ -193,7 +193,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       inputContract: {
         mode: 'facets',
-        facets: ['positioning_context', 'positioning_recommendation', 'feedback']
+        facets: ['company_information', 'positioning_context', 'positioning_recommendation', 'feedback']
       },
       outputContract: {
         mode: 'facets',
@@ -221,7 +221,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['positioning_context', 'positioning_recommendation', 'feedback'],
+      inputFacets: ['company_information', 'positioning_context', 'positioning_recommendation', 'feedback'],
       outputFacets: ['messaging_stack', 'handoff_summary']
     },
     prompt: {
@@ -242,7 +242,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputTraits: undefined,
       inputContract: {
         mode: 'facets',
-        facets: ['creative_brief', 'handoff_summary', 'feedback']
+        facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback']
       },
       outputContract: {
         mode: 'facets',
@@ -272,7 +272,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['creative_brief', 'handoff_summary', 'feedback'],
+      inputFacets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
       outputFacets: ['post_visual', 'handoff_summary']
     }
   },
@@ -286,7 +286,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputTraits: undefined,
       inputContract: {
         mode: 'facets',
-        facets: ['post_context', 'strategic_rationale', 'post_copy', 'post_visual']
+        facets: ['company_information', 'post_context', 'strategic_rationale', 'post_copy', 'post_visual']
       },
       outputContract: {
         mode: 'facets',
@@ -316,7 +316,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['post_context', 'strategic_rationale', 'post_copy', 'post_visual'],
+      inputFacets: ['company_information', 'post_context', 'strategic_rationale', 'post_copy', 'post_visual'],
       outputFacets: ['post', 'feedback']
     }
   },
@@ -331,6 +331,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputContract: {
         mode: 'facets',
         facets: [
+          'company_information',
           'positioning_context',
           'value_canvas',
           'positioning_opportunities',
@@ -367,6 +368,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
       inputFacets: [
+        'company_information',
         'positioning_context',
         'value_canvas',
         'positioning_opportunities',

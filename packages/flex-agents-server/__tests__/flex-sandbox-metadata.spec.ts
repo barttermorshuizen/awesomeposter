@@ -87,6 +87,7 @@ describe('GET /api/v1/flex/sandbox/metadata', () => {
 
       expect(res.body).toMatchObject({
         facets: expect.arrayContaining([
+          expect.objectContaining({ name: 'company_information' }),
           expect.objectContaining({ name: 'post_context' }),
           expect.objectContaining({ name: 'creative_brief' }),
           expect.objectContaining({ name: 'post_copy' })

@@ -4,6 +4,7 @@ export const DIRECTOR_POSITIONING_REVIEW_ID = 'director.PositioningReview' as co
 
 const catalog = getFacetCatalog()
 const INPUT_FACETS = [
+  'company_information',
   'positioning_context',
   'value_canvas',
   'positioning_opportunities',
@@ -35,7 +36,7 @@ export const DIRECTOR_POSITIONING_REVIEW_CAPABILITY: CapabilityRegistration = {
   },
   instructionTemplates: {
     app: [
-      'Review the positioning recommendation, opportunity analysis, and messaging stack.',
+      'Review company_information, the positioning recommendation, opportunity analysis, and messaging stack.',
       'Approve when the positioning summary is ready for publication, or add targeted feedback entries describing required adjustments.',
       'If approval is blocked, clearly state the reason in the feedback facet.'
     ].join('\n'),

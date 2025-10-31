@@ -607,53 +607,137 @@ const marketingFacetDefinitions: FacetDefinition[] = [
     name: 'post_context',
     title: 'Post Context',
     description:
-      'Structured brief of the campaign objective, audience, channels, and supporting assets used to plan social posts.',
+      'Type-specific context for announcing new customer cases or welcoming new employees, plus shared narrative assets used to plan social posts.',
     schema: {
       type: 'object',
+      required: ['type', 'data'],
       properties: {
-        campaign: { type: 'string', minLength: 1 },
         type: {
           type: 'string',
-          description: 'Canonical post scenario.',
-          enum: ['launch', 'announcement', 'event', 'case_study', 'hiring', 'thought_leadership']
+          description: 'Post variant.',
+          enum: ['new_case', 'new_employee']
         },
-        summary: { type: 'string', minLength: 1 },
-        audience: {
+        data: {
           type: 'object',
+          description: 'Contextual fields for the selected post type.',
           properties: {
-            persona: { type: 'string' },
-            industry: { type: 'string' },
-            regions: { type: 'array', items: { type: 'string' } }
-          },
-          additionalProperties: true
-        },
-        channels: { type: 'array', items: { type: 'string' } },
-        assets: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              label: { type: 'string', minLength: 1 },
-              uri: { type: 'string', minLength: 1 },
-              type: { type: 'string' }
+            content_description: {
+              type: 'string',
+              description: 'Free-text narrative describing the core message.'
             },
-            required: ['label', 'uri'],
-            additionalProperties: true
-          }
-        },
-        dueDate: { type: 'string', format: 'date-time' },
-        notes: { type: 'string' }
+            assets: {
+              type: 'array',
+              description: 'R2 asset URLs (images, PDFs, etc.).',
+              items: { type: 'string', format: 'uri' }
+            },
+            case_url: {
+              type: 'string',
+              description: 'URL of the published customer case. (for type==new_case)'
+            },
+            customer_name: {
+              type: 'string',
+              description: 'Customer/company name. (for type==new_case)'
+            },
+            employee_name: {
+              type: 'string',
+              description: 'Full name of the new employee. (for type==new_employee)'
+            },
+            role: {
+              type: 'string',
+              description: 'Job title or position. (for type==new_employee)'
+            },
+            start_date: {
+              type: 'string',
+              format: 'date',
+              description: 'Employee start date (optional). (for type==new_employee)'
+            }
+          },
+          additionalProperties: false
+        }
       },
-      required: ['type', 'summary'],
-      additionalProperties: true
+      additionalProperties: false
     },
     semantics: {
-      summary: 'Supplies campaign inputs that every downstream capability references.',
+      summary: 'Supplies hiring or customer-case context that every downstream capability references.',
       instruction:
-        'Read the campaign type, summary, and audience fields to ground strategy decisions. Use attached assets for factual grounding.'
+        'Branch on `type` to load the correct context. Use `data.content_description` and the type-specific fields (`employee_name`, `case_url`, etc.) to ground strategy and execution. Treat `assets` as canonical references.'
     },
     metadata: {
-      version: 'v1',
+      version: '1.0.0',
+      direction: 'input',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: true
+    }
+  },
+  {
+    name: 'company_information',
+    title: 'Company Information',
+    description:
+      'Canonical profile of a company, capturing core identity details, audience guidance, and brand assets that downstream agents reference for consistent positioning and execution.',
+    schema: {
+      type: 'object',
+      required: ['name', 'brand_assets'],
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Official company name.'
+        },
+        website: {
+          type: 'string',
+          format: 'uri',
+          description: 'Primary website URL.'
+        },
+        industry: {
+          type: 'string',
+          description: 'Industry or sector the company operates in.'
+        },
+        tone_of_voice: {
+          type: 'string',
+          description: 'Preferred tone or voice guidelines.'
+        },
+        special_instructions: {
+          type: 'string',
+          description: 'Additional guidance or caveats for representing the company.'
+        },
+        audience_segments: {
+          type: 'string',
+          description: 'Target audience segments or personas.'
+        },
+        preferred_channels: {
+          type: 'string',
+          description: 'Preferred distribution or communication channels.'
+        },
+        brand_assets: {
+          type: 'array',
+          description: 'Canonical brand asset URLs (logos, templates, etc.).',
+          items: { type: 'string', format: 'uri' }
+        }
+      },
+      additionalProperties: false,
+      examples: [
+        {
+          name: 'Acme Analytics',
+          website: 'https://acmeanalytics.io',
+          industry: 'Industrial IoT',
+          tone_of_voice: 'Authoritative but friendly',
+          special_instructions: 'Always include certified partner badge.',
+          audience_segments: 'Operations leaders in mid-market manufacturing',
+          preferred_channels: 'LinkedIn, industry newsletters',
+          brand_assets: [
+            'https://assets.acmeanalytics.io/logos/wordmark.svg',
+            'https://assets.acmeanalytics.io/templates/presentation-template.pdf'
+          ]
+        }
+      ]
+    },
+    semantics: {
+      summary:
+        'Provides brand guardrails and references required by strategist, copywriter, designer, and reviewer agents.',
+      instruction:
+        'Review company profile, tone guidance, and brand asset URLs in `company_information` before planning or producing deliverables so messaging and visuals stay on brief.'
+    },
+    metadata: {
+      version: '1.0.0',
       direction: 'input',
       tags: ['marketing-agency', 'sandbox'],
       requiredByDefault: true
@@ -706,18 +790,34 @@ const marketingFacetDefinitions: FacetDefinition[] = [
         tone: { type: 'string' },
         structure: { type: 'string' },
         audience: { type: 'string' },
-        call_to_action: { type: 'string' },
         visual_guidelines: {
           type: 'object',
           properties: {
-            format: { type: 'string', enum: ['square', 'portrait', 'landscape', 'story'] },
-            image_count: { type: 'integer', minimum: 1 },
-            notes: { type: 'string' }
+            layout_type: {
+              type: 'string',
+              enum: ['single_image', 'carousel', 'video', 'animation', 'none'],
+              description: 'Recommended layout or post type.'
+            },
+            format: {
+              type: 'string',
+              enum: ['square', 'portrait', 'landscape', 'story'],
+              description: 'Preferred aspect ratio or format.'
+            },
+            image_count: {
+              type: 'integer',
+              minimum: 1,
+              description: 'Suggested number of images or frames for carousels.'
+            },
+            design_notes: {
+              type: 'string',
+              description: "Free-text notes for the designer (e.g., 'feature customer logo prominently')."
+            }
           },
-          additionalProperties: true
+          additionalProperties: false,
+          description: 'High-level guidance for the visual execution of the post.'
         }
       },
-      required: ['core_message', 'tone', 'audience'],
+      required: ['core_message', 'structure', 'tone', 'audience'],
       additionalProperties: false
     },
     semantics: {
@@ -726,7 +826,7 @@ const marketingFacetDefinitions: FacetDefinition[] = [
         'Produce or update the brief so writers and designers can execute without ambiguity. Capture structure, tone, and must-have talking points.'
     },
     metadata: {
-      version: 'v1',
+      version: '1.0.0',
       direction: 'bidirectional',
       tags: ['marketing-agency', 'sandbox'],
       requiredByDefault: true

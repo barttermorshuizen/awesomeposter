@@ -34,7 +34,7 @@ class StubPlannerService implements PlannerServiceInterface {
         stage: 'strategy',
         capabilityId: node.capabilityId,
         kind: node.kind ?? 'structuring',
-        inputFacets: ['post_context', 'feedback'],
+        inputFacets: ['company_information', 'post_context', 'feedback'],
         outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary'],
         rationale: ['stub']
       })),
@@ -50,17 +50,25 @@ describe('Marketing capabilities smoke test', () => {
     const planner = new FlexPlanner({ capabilityRegistry: registry, plannerService: stubPlanner })
 
     const envelope: TaskEnvelope = {
-      objective: 'Plan LinkedIn launch content',
+      objective: 'Plan LinkedIn welcome content for new QA leader',
       inputs: {
+        company_information: {
+          name: 'Acme Analytics',
+          website: 'https://acmeanalytics.io',
+          industry: 'Industrial IoT',
+          tone_of_voice: 'Authoritative but friendly',
+          preferred_channels: 'LinkedIn, industry newsletters',
+          brand_assets: ['https://assets.acmeanalytics.io/logos/wordmark.svg']
+        },
         post_context: {
-          campaign: 'Launch Campaign',
-          type: 'launch',
-          summary: 'Announce the new product launch to enterprise buyers with strong CTA.',
-          audience: {
-            persona: 'Enterprise buyer',
-            industry: 'SaaS'
-          },
-          channels: ['linkedin']
+          type: 'new_employee',
+          data: {
+            content_description: 'Introduce Quinn Rivers as QA leader and emphasize quality leadership.',
+            employee_name: 'Quinn Rivers',
+            role: 'QA Leader',
+            start_date: '2025-11-01',
+            assets: ['https://assets.acmeanalytics.io/team/quinn-rivers.jpg']
+          }
         },
         feedback: []
       },
@@ -75,7 +83,9 @@ describe('Marketing capabilities smoke test', () => {
     expect(plan.nodes).toHaveLength(1)
     const node = plan.nodes[0]
     expect(node.capabilityId).toBe('strategist.SocialPosting')
-    expect(node.facets.input).toEqual(expect.arrayContaining(['post_context', 'feedback']))
+    expect(node.facets.input).toEqual(
+      expect.arrayContaining(['company_information', 'post_context', 'feedback'])
+    )
     expect(node.facets.output).toEqual(
       expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary'])
     )

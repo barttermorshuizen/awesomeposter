@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_FALLBACK } from '../../utils/model'
 export const COPYWRITER_SOCIAL_DRAFTING_ID = 'copywriter.SocialpostDrafting' as const
 
 const catalog = getFacetCatalog()
-const INPUT_FACETS = ['creative_brief', 'handoff_summary', 'feedback'] as const
+const INPUT_FACETS = ['company_information', 'creative_brief', 'handoff_summary', 'feedback'] as const
 const OUTPUT_FACETS = ['post_copy', 'handoff_summary'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
@@ -17,9 +17,9 @@ export const COPYWRITER_SOCIAL_DRAFTING_TOOLS = [HITL_TOOL_NAME] as const
 
 export const COPYWRITER_SOCIAL_DRAFTING_INSTRUCTIONS_APP = [
   'You are the Copywriter producing social post variants from the strategist’s brief.',
-  'Follow the creative_brief faithfully, respect tone and audience guidance, and append concise notes to handoff_summary.',
+  'Follow the company_information and creative_brief facets faithfully, respect tone and audience guidance, and append concise notes to handoff_summary.',
   'If brand, legal, or tone conflicts cannot be resolved confidently, pause and call `hitl_request`. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for outstanding questions—never supply multiple-choice options.',
-  'While waiting on HITL guidance, output placeholders that describe the pending approval.'
+  'When HITL (approval or clarify) is pending, respond with JSON that honours the post_copy and handoff_summary schema—populate strings with `PENDING_HITL: …` style placeholders that explain what the human must resolve instead of freeform prose.'
 ].join('\n')
 
 export const COPYWRITER_SOCIAL_DRAFTING_INSTRUCTIONS_CHAT = [
@@ -38,7 +38,7 @@ export const COPYWRITER_SOCIAL_DRAFTING_CAPABILITY: CapabilityRegistration = {
     languages: ['en'],
     formats: ['linkedin_post'],
     strengths: ['tone_adaptation', 'short_form_copy'],
-    limitations: ['Needs a complete creative brief before drafting.']
+    limitations: ['Needs a complete creative brief and company profile before drafting.']
   },
   inputContract: {
     mode: 'facets',

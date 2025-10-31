@@ -114,17 +114,25 @@ class HitlServiceStub {
 describe('FlexRunCoordinator marketing integration (stubbed)', () => {
   it('streams marketing capability events and composes final facets', async () => {
     const envelope: TaskEnvelope = {
-      objective: 'Plan and approve a LinkedIn launch announcement.',
+      objective: 'Plan and approve a LinkedIn welcome post for our new QA lead.',
       inputs: {
+        company_information: {
+          name: 'AwesomePoster',
+          website: 'https://awesomeposter.ai',
+          industry: 'Marketing Software',
+          tone_of_voice: 'Confident and friendly',
+          preferred_channels: 'LinkedIn, email newsletters',
+          brand_assets: ['https://cdn.awesomeposter.ai/brand/logo.svg']
+        },
         post_context: {
-          campaign: 'Launch Campaign',
-          type: 'launch',
-          summary: 'Announce the AwesomePoster launch to enterprise buyers.',
-          audience: {
-            persona: 'Enterprise buyer',
-            industry: 'SaaS'
-          },
-          channels: ['linkedin']
+          type: 'new_employee',
+          data: {
+            content_description: 'Welcome Quinn as our new QA lead and highlight the impact on customer trust.',
+            employee_name: 'Quinn Rivers',
+            role: 'QA Lead',
+            start_date: '2025-11-01',
+            assets: ['https://cdn.awesomeposter.ai/team/quinn-rivers.png']
+          }
         },
         feedback: []
       },
@@ -168,16 +176,16 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             objective,
             instructions: [],
             contract: {
-              input: { mode: 'facets', facets: ['post_context', 'feedback'] },
+              input: { mode: 'facets', facets: ['company_information', 'post_context', 'feedback'] },
               output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
             }
           },
           contracts: {
-            input: { mode: 'facets', facets: ['post_context', 'feedback'] },
+            input: { mode: 'facets', facets: ['company_information', 'post_context', 'feedback'] },
             output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
           },
           facets: {
-            input: ['post_context', 'feedback'],
+            input: ['company_information', 'post_context', 'feedback'],
             output: ['creative_brief', 'strategic_rationale', 'handoff_summary']
           },
           provenance: { input: [], output: [] },
@@ -198,20 +206,23 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             objective,
             instructions: [],
             contract: {
-              input: { mode: 'facets', facets: ['creative_brief', 'handoff_summary', 'feedback'] },
+              input: { mode: 'facets', facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'] },
               output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
             }
           },
           contracts: {
-            input: { mode: 'facets', facets: ['creative_brief', 'handoff_summary', 'feedback'] },
+            input: {
+              mode: 'facets',
+              facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback']
+            },
             output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
           },
           facets: {
-            input: ['creative_brief', 'handoff_summary', 'feedback'],
+            input: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
             output: ['post_copy', 'handoff_summary']
           },
           provenance: { input: [], output: [] },
-          rationale: ['Draft launch-ready copy variants'],
+          rationale: ['Draft welcome-post copy variants'],
           metadata: { plannerStage: 'copywriting' }
         },
         {
@@ -228,16 +239,22 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             objective,
             instructions: [],
             contract: {
-              input: { mode: 'facets', facets: ['post_context', 'strategic_rationale', 'post_copy'] },
+              input: {
+                mode: 'facets',
+                facets: ['company_information', 'post_context', 'strategic_rationale', 'post_copy']
+              },
               output: { mode: 'facets', facets: ['post', 'feedback'] }
             }
           },
           contracts: {
-            input: { mode: 'facets', facets: ['post_context', 'strategic_rationale', 'post_copy'] },
+            input: {
+              mode: 'facets',
+              facets: ['company_information', 'post_context', 'strategic_rationale', 'post_copy']
+            },
             output: { mode: 'facets', facets: ['post', 'feedback'] }
           },
           facets: {
-            input: ['post_context', 'strategic_rationale', 'post_copy'],
+            input: ['company_information', 'post_context', 'strategic_rationale', 'post_copy'],
             output: ['post', 'feedback']
           },
           provenance: { input: [], output: [] },
@@ -267,21 +284,21 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
     const nodeOutputs: Record<string, Record<string, unknown>> = {
       'node-strategist': {
         creative_brief: {
-          core_message: 'Highlight automation ROI',
-          tone: 'Confident & Bold',
-          audience: 'Enterprise buyer'
+          core_message: 'Celebrate Quinn joining as QA lead and stress our commitment to quality.',
+          tone: 'Welcoming & Visionary',
+          audience: 'Operations leaders'
         },
-        strategic_rationale: 'Aligns messaging to ROI and launch urgency.',
+        strategic_rationale: 'Introduces Quinn to reinforce QA excellence and employer brand credibility.',
         handoff_summary: ['Strategy approved']
       },
       'node-copywriter': {
-        post_copy: ['Introducing AwesomePoster — automate your marketing ops.'],
+        post_copy: ['Say hello to Quinn Rivers, our new QA Lead keeping every release rock solid.'],
         handoff_summary: ['Copy ready for director review']
       },
       'node-director': {
         post: {
           platform: 'linkedin',
-          content: 'We just launched AwesomePoster — automate marketing ops and ship faster. Learn more: awesomeposter.ai'
+          content: 'Join us in welcoming Quinn Rivers, AwesomePoster’s new QA Lead ensuring flawless launches. Drop a welcome note!'
         },
         feedback: []
       }
@@ -305,10 +322,10 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
     expect(result.status).toBe('completed')
     expect(result.output).toMatchObject({
       creative_brief: expect.objectContaining({
-        core_message: 'Highlight automation ROI'
+        core_message: 'Celebrate Quinn joining as QA lead and stress our commitment to quality.'
       }),
-      strategic_rationale: expect.stringContaining('launch'),
-      post_copy: expect.arrayContaining([expect.stringContaining('AwesomePoster')]),
+      strategic_rationale: expect.stringContaining('Quinn'),
+      post_copy: expect.arrayContaining([expect.stringContaining('Quinn Rivers')]),
       post: expect.objectContaining({
         platform: 'linkedin'
       })

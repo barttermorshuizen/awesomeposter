@@ -3,7 +3,7 @@ import { getFacetCatalog, type CapabilityRegistration } from '@awesomeposter/sha
 export const DIRECTOR_SOCIAL_REVIEW_ID = 'director.SocialPostingReview' as const
 
 const catalog = getFacetCatalog()
-const INPUT_FACETS = ['post_context', 'strategic_rationale', 'post_copy', 'post_visual'] as const
+const INPUT_FACETS = ['company_information', 'post_context', 'strategic_rationale', 'post_copy', 'post_visual'] as const
 const OUTPUT_FACETS = ['post', 'feedback'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
@@ -29,7 +29,7 @@ export const DIRECTOR_SOCIAL_REVIEW_CAPABILITY: CapabilityRegistration = {
   },
   instructionTemplates: {
     app: [
-      'Review the assembled social post (copy + visuals) alongside the strategist rationale.',
+      'Review company_information, the assembled social post (copy + visuals), and the strategist rationale.',
       'Approve the deliverable when it meets objectives, or add facet-specific feedback entries when revisions are required.',
       'If approval cannot proceed, clearly document the rationale in the feedback facet.'
     ].join('\n'),
