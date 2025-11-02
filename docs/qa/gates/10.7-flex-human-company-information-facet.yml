@@ -1,0 +1,42 @@
+schema: 1
+story: '10.7'
+story_title: 'Flex Human Company Information Facet Display'
+gate: PASS
+status_reason: 'Dedicated input widget, registry wiring, tests, and docs align with ACs; no blockers found.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-02T18:50:40Z'
+
+top_issues: []
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2025-11-16T18:50:44Z'
+
+evidence:
+  tests_reviewed: 3
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Read-only facet render; no auth or data access changes.'
+  performance:
+    status: PASS
+    notes: 'Lightweight computed fields over existing data.'
+  reliability:
+    status: PASS
+    notes: 'Widget handles missing data and thumbnail errors gracefully.'
+  maintainability:
+    status: PASS
+    notes: 'Modular widget with targeted tests and documentation.'
+
+recommendations:
+  immediate: []
+  future:
+    - action: 'Expand visual regression coverage when broader facet UI snapshot suite is introduced.'
+      refs:
+        - 'src/components/flex-tasks/widgets/CompanyInformationWidget.vue'

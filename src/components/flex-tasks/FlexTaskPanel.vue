@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { getFacetCatalog, getMarketingCapabilitiesSnapshot, type FacetDefinition } from '@awesomeposter/shared'
 import type { Component } from 'vue'
 import { useFlexTasksStore, type FlexTaskRecord } from '@/stores/flexTasks'
-import { getFacetWidgetComponent } from './widgets/registry'
+import { getInputFacetWidgetComponent, getOutputFacetWidgetComponent } from './widgets/registry'
 import DefaultFacetWidget from './widgets/DefaultFacetWidget.vue'
 
 const flexTasksStore = useFlexTasksStore()
@@ -117,6 +117,9 @@ type InputFacetBinding = {
   definition: FacetDefinition
   pointer: string
   value: unknown
+  component: Component | null
+  schema: Record<string, unknown>
+  context: Record<string, unknown> | null
 }
 
 function decodePointer(pointer: string): string[] {
@@ -217,7 +220,7 @@ const outputFacetBindings = computed<FacetBinding[]>(() => {
       const definition = facetCatalog.tryGet(name)
       if (!definition) return null
       const metadata = isRecord(task.metadata) ? task.metadata : null
-      const component = getFacetWidgetComponent(name)
+      const component = getOutputFacetWidgetComponent(name)
       return {
         name,
         definition,
@@ -269,21 +272,39 @@ const inputFacetBindings = computed<InputFacetBinding[]>(() => {
   if (!task) return []
   const names = task.facets?.input ?? []
   const root = getInputFacetRoot(task)
+  const metadata = isRecord(task.metadata) ? task.metadata : null
   return names
     .map((name) => {
       const definition = facetCatalog.tryGet(name)
       if (!definition) return null
       const pointer = pointerForFacet(task, name, 'input')
-      const value = root ? getValueAtPointer(root, pointer) : undefined
+      const rawValue = root ? getValueAtPointer(root, pointer) : undefined
+      const value = flexTasksStore.normalizeInputFacetValue(name, rawValue)
+      const component = getInputFacetWidgetComponent(name)
+      const schema =
+        definition.schema && typeof definition.schema === 'object'
+          ? (definition.schema as Record<string, unknown>)
+          : {}
       return {
         name,
         definition,
         pointer,
-        value
+        value,
+        component,
+        schema,
+        context: metadata
       }
     })
     .filter((entry): entry is InputFacetBinding => Boolean(entry))
 })
+
+const customInputFacetBindings = computed(() =>
+  inputFacetBindings.value.filter((binding) => Boolean(binding.component))
+)
+
+const fallbackInputFacetBindings = computed(() =>
+  inputFacetBindings.value.filter((binding) => !binding.component)
+)
 
 const submissionDisabled = computed(() => {
   const task = activeTask.value
@@ -696,14 +717,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
             <div v-if="inputFacetBindings.length" class="input-facets">
               <h4 class="section-title">Input Facets</h4>
+              <div
+                v-if="customInputFacetBindings.length"
+                class="custom-input-widgets"
+              >
+                <component
+                  v-for="binding in customInputFacetBindings"
+                  :key="binding.pointer"
+                  :is="binding.component"
+                  :definition="binding.definition"
+                  :schema="binding.schema"
+                  :model-value="binding.value"
+                  :readonly="true"
+                  :task-context="binding.context"
+                  data-test="input-facet-widget"
+                />
+              </div>
               <v-expansion-panels
+                v-if="fallbackInputFacetBindings.length"
                 v-model="inputFacetPanels"
                 multiple
                 density="compact"
                 class="facet-panels"
               >
                 <v-expansion-panel
-                  v-for="(binding, index) in inputFacetBindings"
+                  v-for="(binding, index) in fallbackInputFacetBindings"
                   :key="binding.pointer"
                   :value="index"
                   data-test="input-facet-panel"
@@ -934,6 +972,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.custom-input-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
 }
 
 .custom-widgets {

@@ -74,6 +74,22 @@ export interface PostVisualAssetRecord {
   mimeType?: string | null
 }
 
+export interface CompanyInformationAssetRecord {
+  uri: string
+  label: string
+}
+
+export interface CompanyInformationFacetRecord {
+  name: string | null
+  website: string | null
+  industry: string | null
+  toneOfVoice: string | null
+  specialInstructions: string | null
+  audienceSegments: string | null
+  preferredChannels: string | null
+  brandAssets: CompanyInformationAssetRecord[]
+}
+
 type HydrateOptions = {
   assignedTo?: string
   syncLegacyHitl?: boolean
@@ -114,6 +130,96 @@ function toStringArrayOrNull(value: unknown): string[] | null {
     .filter((entry): entry is string => Boolean(entry))
   return items.length ? items : null
 }
+
+const EMPTY_COMPANY_INFORMATION_FACET: CompanyInformationFacetRecord = {
+  name: null,
+  website: null,
+  industry: null,
+  toneOfVoice: null,
+  specialInstructions: null,
+  audienceSegments: null,
+  preferredChannels: null,
+  brandAssets: []
+}
+
+function deriveAssetLabelFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const segments = parsed.pathname.split('/').filter(Boolean)
+    if (segments.length) return segments[segments.length - 1] ?? url
+  } catch {
+    // ignore parse errors
+  }
+  const trimmed = url.split(/[?#]/)[0] ?? url
+  const parts = trimmed.split('/').filter(Boolean)
+  return parts.length ? parts[parts.length - 1] ?? url : trimmed || url
+}
+
+function normalizeCompanyInformationFacet(value: unknown): CompanyInformationFacetRecord {
+  if (!isRecord(value)) {
+    return {
+      ...EMPTY_COMPANY_INFORMATION_FACET,
+      brandAssets: []
+    }
+  }
+
+  const normalized: CompanyInformationFacetRecord = {
+    name: toStringOrNull(value.name) ?? toStringOrNull(value.companyName) ?? null,
+    website: toStringOrNull(value.website) ?? toStringOrNull(value.url) ?? null,
+    industry: toStringOrNull(value.industry) ?? null,
+    toneOfVoice: toStringOrNull(value.tone_of_voice) ?? toStringOrNull(value.toneOfVoice) ?? null,
+    specialInstructions:
+      toStringOrNull(value.special_instructions) ?? toStringOrNull(value.specialInstructions) ?? null,
+    audienceSegments:
+      toStringOrNull(value.audience_segments) ?? toStringOrNull(value.audienceSegments) ?? null,
+    preferredChannels:
+      toStringOrNull(value.preferred_channels) ?? toStringOrNull(value.preferredChannels) ?? null,
+    brandAssets: []
+  }
+
+  const rawAssets = Array.isArray(value.brand_assets)
+    ? value.brand_assets
+    : Array.isArray(value.brandAssets)
+      ? value.brandAssets
+      : []
+
+  const assets: CompanyInformationAssetRecord[] = []
+  for (const entry of rawAssets) {
+    if (typeof entry === 'string') {
+      const uri = toStringOrNull(entry)
+      if (!uri) continue
+      assets.push({
+        uri,
+        label: deriveAssetLabelFromUrl(uri)
+      })
+      continue
+    }
+    if (isRecord(entry)) {
+      const uri =
+        toStringOrNull(entry.url) ??
+        toStringOrNull(entry.uri) ??
+        toStringOrNull(entry.href) ??
+        null
+      if (!uri) continue
+      const label =
+        toStringOrNull(entry.label) ??
+        toStringOrNull(entry.name) ??
+        toStringOrNull(entry.title) ??
+        deriveAssetLabelFromUrl(uri)
+      assets.push({
+        uri,
+        label
+      })
+    }
+  }
+
+  normalized.brandAssets = assets
+  return normalized
+}
+
+const INPUT_FACET_SANITIZERS = new Map<string, (value: unknown) => unknown>([
+  ['company_information', normalizeCompanyInformationFacet]
+])
 
 function sanitizeStatus(value: unknown): FlexAssignmentStatus {
   if (value === 'pending' || value === 'in_progress' || value === 'completed' || value === 'cancelled') {
@@ -903,6 +1009,14 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
     error.value = null
   }
 
+  function normalizeInputFacetValue(facetName: string, value: unknown): unknown {
+    const sanitizer = INPUT_FACET_SANITIZERS.get(facetName)
+    if (!sanitizer) {
+      return value
+    }
+    return sanitizer(value)
+  }
+
   return {
     tasks,
     pendingTasks,
@@ -923,6 +1037,7 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
     listFlexAssets,
     updatePostVisualAssetOrdering,
     deletePostVisualAsset,
-    clearAll
+    clearAll,
+    normalizeInputFacetValue
   }
 })

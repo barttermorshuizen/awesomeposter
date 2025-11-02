@@ -2189,6 +2189,7 @@ interface ClarificationEntry {
 ### 15.4 Facet-Driven Task Surfaces
 - Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
 - A facet widget registry (for example `ToneOfVoiceWidget`, `ObjectiveBriefWidget`, `CopyVariantsWidget`) maps facet names to reusable UI components that assemble into the task surface.
+- Registry keys follow the `<facet>.<direction>` namespace (for example `post_visual.output`, `company_information.input`) so input and output facets can ship dedicated widgets without collisions.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
@@ -2200,6 +2201,7 @@ interface ClarificationEntry {
 | `objectiveBrief` | Structured brief editor | Strategist |
 | `copyVariants` | Variant card editor | Writer |
 | `qaFindings` | Score table/checklist | QA |
+| `company_information.input` | Company Information widget (name, tone, assets) | Marketing operators |
 
 ### 15.5 Notification and Assignment Model
 - `node_start` events for human-executed nodes include capability metadata (`capabilityId`, `kind`, `inputFacets`, `outputFacets`, `rationale`) plus optional `dueAt` hints so downstream tooling can route work using information already present in the plan graph.
