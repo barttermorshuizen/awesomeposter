@@ -7,6 +7,15 @@ type ExtractedPlan = {
   nodes: FlexSandboxPlanNode[]
 }
 
+const ALLOWED_NODE_STATUSES = new Set<FlexSandboxPlanNode['status']>([
+  'pending',
+  'running',
+  'completed',
+  'awaiting_hitl',
+  'awaiting_human',
+  'error'
+])
+
 function normalizePlanRecord(payload: unknown): Record<string, unknown> | null {
   if (!payload || typeof payload !== 'object') return null
   const payloadRecord = payload as Record<string, unknown>
@@ -27,14 +36,23 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
   if (!planRecord) return null
 
   const nodesRaw = Array.isArray(planRecord.nodes) ? (planRecord.nodes as unknown[]) : []
+  const versionRaw = (planRecord as Record<string, unknown>).version
+  if (typeof versionRaw !== 'number' || Number.isNaN(versionRaw)) {
+    throw new Error('Planner plan payload is missing a numeric version.')
+  }
+
   const nodes: FlexSandboxPlanNode[] = nodesRaw
     .filter((node): node is Record<string, unknown> => !!node && typeof node === 'object')
     .map((node) => {
       const statusRaw = (node as Record<string, unknown>).status
-      const status: FlexSandboxPlanNode['status'] =
-        statusRaw === 'running' || statusRaw === 'completed' || statusRaw === 'error' || statusRaw === 'awaiting_hitl'
-          ? statusRaw
-          : 'pending'
+      const status =
+        typeof statusRaw === 'string' && ALLOWED_NODE_STATUSES.has(statusRaw as FlexSandboxPlanNode['status'])
+          ? (statusRaw as FlexSandboxPlanNode['status'])
+          : null
+      if (!status) {
+        const nodeId = typeof (node as Record<string, unknown>).id === 'string' ? (node as Record<string, unknown>).id : '<unknown>'
+        throw new Error(`Planner plan payload is missing a valid status for node "${nodeId}".`)
+      }
       const derived = (node as Record<string, unknown>).derivedCapability
       const metadataValue = (node as Record<string, unknown>).metadata
       return {
@@ -81,7 +99,7 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
 
   return {
     runId: typeof planRecord.runId === 'string' ? planRecord.runId : null,
-    version: typeof planRecord.version === 'number' ? planRecord.version : undefined,
+    version: versionRaw,
     metadata:
       planRecord.metadata && typeof planRecord.metadata === 'object'
         ? (planRecord.metadata as Record<string, unknown>)

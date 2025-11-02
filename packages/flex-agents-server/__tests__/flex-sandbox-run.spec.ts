@@ -2,7 +2,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { FlexEvent, TaskEnvelope } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
-import type { FlexPlan } from '../src/services/flex-planner'
+import type { FlexPlan, FlexPlanNode } from '../src/services/flex-planner'
+import type { FlexPlanNodeSnapshot } from '../src/services/orchestrator-persistence'
+import { PolicyNormalizer } from '../src/services/policy-normalizer'
 
 class StubPersistence {
   async createOrUpdateRun() {}
@@ -72,6 +74,7 @@ describe('FlexRunCoordinator sandbox emission', () => {
       nodes: [
         {
           id: 'node-1',
+          status: 'pending',
           kind: 'execution',
           capabilityId: 'writer.v1',
           capabilityLabel: 'Writer',
@@ -94,6 +97,7 @@ describe('FlexRunCoordinator sandbox emission', () => {
         },
         {
           id: 'node-2',
+          status: 'pending',
           kind: 'validation',
           capabilityId: 'qa.v1',
           capabilityLabel: 'QA Agent',
@@ -170,5 +174,110 @@ describe('FlexRunCoordinator sandbox emission', () => {
         })
       ]
     })
+  })
+
+  it('preserves snapshot ordering when rehydrating a plan', () => {
+    const coordinator = new FlexRunCoordinator(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      new PolicyNormalizer(),
+      new Map()
+    )
+    const envelope: TaskEnvelope = {
+      objective: 'Rehydrate',
+      outputContract: { mode: 'json_schema', schema: { type: 'object' } }
+    } as TaskEnvelope
+    const existingNodes: FlexPlanNodeSnapshot[] = [
+      {
+        nodeId: 'copywriter_SocialpostDrafting_2',
+        capabilityId: 'copywriter.SocialpostDrafting',
+        label: 'Copywriter',
+        status: 'running',
+        context: null,
+        output: null,
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: null,
+        rationale: null,
+        executor: null
+      },
+      {
+        nodeId: 'strategist_SocialPosting_1',
+        capabilityId: 'strategist.SocialPosting',
+        label: 'Strategist',
+        status: 'completed',
+        context: null,
+        output: null,
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: null,
+        rationale: null,
+        executor: null
+      },
+      {
+        nodeId: 'designer_VisualDesign_3',
+        capabilityId: 'designer.VisualDesign',
+        label: 'Designer',
+        status: 'pending',
+        context: null,
+        output: null,
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: null,
+        rationale: null,
+        executor: null
+      }
+    ]
+
+    const plan = (coordinator as any).rehydratePlan(
+      {
+        run: {
+          runId: 'flex_resume_order',
+          envelope,
+          status: 'awaiting_hitl',
+          schemaHash: null,
+          metadata: null,
+          result: null,
+          planVersion: 3
+        },
+        nodes: existingNodes
+      },
+      envelope,
+      {
+        runId: 'flex_resume_order',
+        planVersion: 3,
+        snapshot: {
+          nodes: [
+            { nodeId: 'strategist_SocialPosting_1', status: 'completed', metadata: { plannerStage: 'structuring' } },
+            { nodeId: 'copywriter_SocialpostDrafting_2', status: 'running', metadata: { plannerStage: 'execution' } },
+            { nodeId: 'designer_VisualDesign_3', status: 'pending', metadata: { plannerStage: 'transformation' } }
+          ],
+          edges: [
+            { from: 'strategist_SocialPosting_1', to: 'copywriter_SocialpostDrafting_2', reason: 'sequence' },
+            { from: 'copywriter_SocialpostDrafting_2', to: 'designer_VisualDesign_3', reason: 'sequence' }
+          ],
+          metadata: {}
+        },
+        facets: null,
+        schemaHash: null,
+        pendingNodeIds: ['copywriter_SocialpostDrafting_2', 'designer_VisualDesign_3'],
+        createdAt: null,
+        updatedAt: null
+      }
+    )
+
+    expect(plan.nodes.map((node: FlexPlanNode) => node.id)).toEqual([
+      'strategist_SocialPosting_1',
+      'copywriter_SocialpostDrafting_2',
+      'designer_VisualDesign_3'
+    ])
   })
 })

@@ -139,6 +139,7 @@ const runError = ref<string | null>(null)
 const correlationId = ref<string | undefined>()
 const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
+const planStreamError = ref<string | null>(null)
 const notifications = useNotificationsStore()
 const envelopeBuilder = useFlexEnvelopeBuilderStore()
 const flexTasksStore = useFlexTasksStore()
@@ -711,15 +712,30 @@ function resetRunState() {
   correlationId.value = undefined
   runId.value = undefined
   plan.value = null
+  planStreamError.value = null
   hitlStore.resetAll()
 }
 
 function updatePlanFromGenerated(payload: unknown, timestamp: string) {
-  const record = extractPlanPayload(payload)
+  let record: ReturnType<typeof extractPlanPayload> | null = null
+  try {
+    record = extractPlanPayload(payload)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Planner plan payload is invalid.'
+    const userMessage = `${detail} Retry the resume request or rerun the planner.`
+    if (planStreamError.value !== userMessage) {
+      planStreamError.value = userMessage
+      notifications.notifyError(userMessage)
+    }
+    return
+  }
   if (!record) return
+  if (planStreamError.value) {
+    planStreamError.value = null
+  }
   const previousHistory = plan.value?.history ?? []
   const newEntry: FlexSandboxPlanHistoryEntry = {
-    version: record.version ?? plan.value?.version ?? 1,
+    version: record.version ?? 1,
     timestamp,
     trigger: 'initial'
   }
@@ -746,8 +762,22 @@ function updatePlanFromUpdate(payload: unknown, timestamp: string) {
   }
   const triggerInfo =
     payload && typeof payload === 'object' ? (payload as Record<string, unknown>).trigger : undefined
-  const record = extractPlanPayload(payload)
+  let record: ReturnType<typeof extractPlanPayload> | null = null
+  try {
+    record = extractPlanPayload(payload)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Planner plan payload is invalid.'
+    const userMessage = `${detail} Retry the resume request or rerun the planner.`
+    if (planStreamError.value !== userMessage) {
+      planStreamError.value = userMessage
+      notifications.notifyError(userMessage)
+    }
+    return
+  }
   if (!record) return
+  if (planStreamError.value) {
+    planStreamError.value = null
+  }
   const nodeMap = new Map(record.nodes.map((node) => [node.id, node]))
   const mergedNodes: FlexSandboxPlanNode[] = current.nodes.map((node) => {
     const incoming = nodeMap.get(node.id)
@@ -1683,6 +1713,16 @@ watch(
               </v-expansion-panel>
             </v-expansion-panels>
           </v-card>
+          <v-alert
+            v-if="planStreamError"
+            type="error"
+            variant="tonal"
+            border="start"
+            class="mb-4"
+          >
+            <div class="font-weight-medium">Plan Snapshot Rejected</div>
+            <div>{{ planStreamError }}</div>
+          </v-alert>
           <FlexSandboxPlanInspector
             :plan="plan"
             :capability-catalog="capabilityRecords"

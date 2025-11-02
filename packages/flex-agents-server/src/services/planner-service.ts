@@ -5,13 +5,32 @@ import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
 import { getTelemetryService } from './telemetry-service'
-import { PlannerDraftNode, PlannerDraftSchema, type PlannerDraft } from '../planner/planner-types'
+import {
+  PlannerDraftNode,
+  PlannerDraftSchema,
+  type PlannerDraft,
+  type PlannerDraftNodeStatus
+} from '../planner/planner-types'
 
 export type PlannerGraphNodeSummary = {
   nodeId: string
   capabilityId: string | null
   label: string
   outputFacets: string[]
+}
+
+export type PlannerGraphNodeState = {
+  nodeId: string
+  status: PlannerDraftNodeStatus
+  capabilityId: string | null
+  label: string
+  kind?: string | null
+}
+
+export type PlannerGraphPlanSnapshot = {
+  version: number
+  nodes: PlannerGraphNodeState[]
+  pendingNodeIds?: string[]
 }
 
 export type PlannerGraphFacetValue = {
@@ -52,6 +71,7 @@ export type PlannerGraphContext = {
   completedNodes: PlannerGraphNodeSummary[]
   facetValues: PlannerGraphFacetValue[]
   runContext?: PlannerGraphRunContext
+  planSnapshot?: PlannerGraphPlanSnapshot
 }
 
 export type PlannerContextHints = {
@@ -118,7 +138,8 @@ const INTERNAL_CHECKLIST_LINES = [
   '2. Are all input facets of each node available from the envelope or previous outputs?',
   '3. Are all capability IDs valid from the registry?',
   '4. Did you avoid invented facets, stages, or helper nodes?',
-  '5. Does each node include a rationale?'
+  '5. Does each node include a rationale?',
+  '6. Did you preserve node statuses (completed vs pending) and keep every status valid?'
 ]
 
 export function buildPlannerSystemPrompt(params: { facetTable: string; capabilityTable: string }): PlannerPromptMessage {
@@ -136,6 +157,7 @@ export function buildPlannerSystemPrompt(params: { facetTable: string; capabilit
     '',
     'PlannerDraft = {',
     '  nodes: Array<{',
+    '    status: "pending" | "running" | "completed" | "awaiting_hitl" | "awaiting_human" | "error"',
     '    stage: string',
     '    label?: string',
     '    capabilityId?: string',
@@ -203,9 +225,14 @@ export function buildPlannerSystemPrompt(params: { facetTable: string; capabilit
     '   - Each node should include a short `"rationale"` explaining *why* it was selected, referencing the facets it consumes and produces.  ',
     '   - Optionally include `"instructions"` (1–2 short imperative sentences) describing how the node should act.  ',
     '',
-    '7. **Output requirements:**  ',
-    '    - Emit only one top-level JSON object compliant with the schema above.  ',
-    '    - No markdown, no explanations, no extra keys.',
+    '7. **Node status semantics:**  ',
+    '   - Every node must include a `status` field using the allowed values.  ',
+    '   - Preserve any nodes marked `completed` exactly when resuming a plan (no changes to their wiring or rationale).  ',
+    '   - Never downgrade a node’s status or remove completed work that already exists.  ',
+    '',
+    '8. **Output requirements:**  ',
+    '   - Emit only one top-level JSON object compliant with the schema above.  ',
+    '   - No markdown, no explanations, no extra keys.',
     '',
     '---',
     '',
@@ -550,16 +577,65 @@ export function buildPlannerUserPrompt(params: {
     sections.push('### CURRENT GRAPH CONTEXT', graphSections.join('\n\n'))
   }
 
-  sections.push(
-    '### PLANNING INSTRUCTIONS',
-    [
-      '1. Treat the RUN CONTEXT as the current state—avoid replanning completed work unless policies demand revisions.',
-      '2. Identify which required facets from the output contract are still missing from the run context.',
-      '3. Select the minimal set of capabilities needed to cover the missing facets and order them to satisfy their input dependencies.',
-      '4. Respect planner directives, special instructions, and capability constraints when sequencing nodes.',
-      '5. Include validations or revisions only when they are required to fulfil unmet facets or policy requirements.'
-    ].join('\n')
+  const planSnapshot = input.graphContext?.planSnapshot
+  if (planSnapshot?.nodes.length) {
+    const summarizedNodes = planSnapshot.nodes.map((node, index) => ({
+      position: index + 1,
+      nodeId: node.nodeId,
+      label: node.label,
+      capabilityId: node.capabilityId,
+      status: node.status,
+      kind: node.kind ?? null
+    }))
+    const snapshotPayload = {
+      version: planSnapshot.version,
+      nodes: summarizedNodes,
+      ...(planSnapshot.pendingNodeIds && planSnapshot.pendingNodeIds.length
+        ? { pendingNodeIds: planSnapshot.pendingNodeIds }
+        : {})
+    }
+    const snapshotJson = JSON.stringify(snapshotPayload, null, 2)
+    sections.push(
+      '### EXISTING PLAN SNAPSHOT',
+      [
+        'A validated plan already exists for this run. Preserve completed nodes exactly as provided, including their capability assignments and sequencing.',
+        '```json',
+        snapshotJson,
+        '```'
+      ].join('\n')
+    )
+  }
+
+  const planningInstructionLines: string[] = []
+  const addInstruction = (line: string) => {
+    planningInstructionLines.push(`${planningInstructionLines.length + 1}. ${line}`)
+  }
+
+  addInstruction(
+    'Treat the RUN CONTEXT as the current state—avoid replanning completed work unless policies demand revisions.'
   )
+  addInstruction(
+    'Identify which required facets from the output contract are still missing from the run context.'
+  )
+  addInstruction(
+    'Select the minimal set of capabilities needed to cover the missing facets and order them to satisfy their input dependencies.'
+  )
+  addInstruction(
+    'Respect planner directives, special instructions, and capability constraints when sequencing nodes.'
+  )
+  addInstruction(
+    'Include validations or revisions only when they are required to fulfil unmet facets or policy requirements.'
+  )
+  if (planSnapshot?.nodes.length) {
+    addInstruction('Lock nodes with status `completed` exactly as provided and do not alter their attributes.')
+    addInstruction(
+      'Only modify or append nodes whose status is `pending`, `running`, `awaiting_hitl`, or `awaiting_human`, keeping their identifiers stable.'
+    )
+    addInstruction(
+      `Produce a new plan version greater than ${planSnapshot.version} whenever you adjust pending nodes; never downgrade the plan version.`
+    )
+  }
+  sections.push('### PLANNING INSTRUCTIONS', planningInstructionLines.join('\n'))
 
   sections.push('### INTERNAL CHECKLIST REMINDER', INTERNAL_CHECKLIST_LINES.join('\n'))
   sections.push(

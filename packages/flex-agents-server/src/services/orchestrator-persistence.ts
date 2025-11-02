@@ -14,7 +14,8 @@ import type {
   FlexPlanNodeProvenance,
   FlexPlan,
   FlexPlanEdge,
-  FlexPlanExecutor
+  FlexPlanExecutor,
+  FlexPlanNodeStatus
 } from './flex-planner'
 import type { PendingPolicyActionState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 
@@ -433,8 +434,6 @@ export type FlexRunStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-export type FlexPlanNodeStatus = 'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl' | 'awaiting_human'
-
 export type FlexPlanNodeSnapshot = {
   nodeId: string
   capabilityId?: string | null

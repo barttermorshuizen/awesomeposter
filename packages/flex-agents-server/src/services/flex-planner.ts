@@ -36,6 +36,14 @@ export type FlexPlanNodeKind =
   | 'validation'
   | 'fallback'
 
+export type FlexPlanNodeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'awaiting_hitl'
+  | 'awaiting_human'
+  | 'error'
+
 export type FlexPlanEdge = {
   from: string
   to: string
@@ -69,6 +77,7 @@ export type FlexPlanExecutor = {
 
 export type FlexPlanNode = {
   id: string
+  status: FlexPlanNodeStatus
   kind: FlexPlanNodeKind
   capabilityId: string | null
   capabilityLabel: string
@@ -157,6 +166,20 @@ function coerceNodeKind(kind?: string | null): FlexPlanNodeKind {
   }
 }
 
+function normalizeDraftStatus(status: PlannerDraftNode['status']): FlexPlanNodeStatus {
+  switch (status) {
+    case 'running':
+    case 'completed':
+    case 'awaiting_hitl':
+    case 'awaiting_human':
+    case 'error':
+    case 'pending':
+      return status
+    default:
+      return 'pending'
+  }
+}
+
 function extractFacetUnion(capability: CapabilityRecord, direction: 'input' | 'output'): string[] {
   const explicit = direction === 'input' ? capability.inputFacets ?? [] : capability.outputFacets ?? []
   if (explicit.length) return unique(explicit)
@@ -208,9 +231,9 @@ export class FlexPlanner {
   private summarizeGraphState(state?: PlannerGraphState): PlannerGraphContext | undefined {
     if (!state) return undefined
     const { plan } = state
-    const completedSet = new Set(state.completedNodeIds)
-    if (!plan.nodes.length || !completedSet.size) return undefined
+    if (!plan.nodes.length) return undefined
 
+    const completedSet = new Set(state.completedNodeIds)
     const completedNodes: PlannerGraphContext['completedNodes'] = []
     const facetValues: PlannerGraphContext['facetValues'] = []
     let runContext: PlannerGraphContext['runContext']
@@ -231,11 +254,7 @@ export class FlexPlanner {
     ): RunContextSnapshot | undefined => {
       if (!facets) return undefined
       const candidate = facets as RunContextSnapshot
-      if (
-        candidate &&
-        typeof candidate === 'object' &&
-        'hitlClarifications' in candidate
-      ) {
+      if (candidate && typeof candidate === 'object' && 'hitlClarifications' in candidate) {
         return {
           facets: candidate.facets ?? {},
           hitlClarifications: Array.isArray(candidate.hitlClarifications)
@@ -322,12 +341,37 @@ export class FlexPlanner {
       }
     }
 
-    if (!completedNodes.length && !facetValues.length) return undefined
+    const planSnapshot: PlannerGraphContext['planSnapshot'] = {
+      version: plan.version,
+      nodes: plan.nodes.map((node) => {
+        const status = node.status ?? (completedSet.has(node.id) ? 'completed' : 'pending')
+        return {
+          nodeId: node.id,
+          status,
+          capabilityId: node.capabilityId ?? null,
+          label: node.label,
+          kind: node.kind
+        }
+      }),
+      pendingNodeIds: plan.nodes
+        .filter((node) => (node.status ?? (completedSet.has(node.id) ? 'completed' : 'pending')) !== 'completed')
+        .map((node) => node.id)
+    }
+
+    if (
+      !completedNodes.length &&
+      !facetValues.length &&
+      !runContext &&
+      !(planSnapshot.nodes && planSnapshot.nodes.length)
+    ) {
+      return undefined
+    }
 
     return {
       completedNodes,
       facetValues,
-      ...(runContext ? { runContext } : {})
+      ...(runContext ? { runContext } : {}),
+      planSnapshot
     }
   }
 
@@ -425,6 +469,7 @@ export class FlexPlanner {
           (capability ? this.isDerivedCapability(capability, plannerContextInternal, compatibilityScore) : false)
       )
       const nodeLabel = draftNode.label ?? capability?.displayName ?? 'Planner node'
+      const status = normalizeDraftStatus(draftNode.status)
 
       const executor = this.buildExecutor(capability)
 
@@ -463,6 +508,7 @@ export class FlexPlanner {
 
       const node: FlexPlanNode = {
         id: nodeId,
+        status,
         kind,
         capabilityId: capability?.capabilityId ?? null,
         capabilityLabel: safeCapabilityLabel(capability, draftNode.label),
@@ -493,7 +539,7 @@ export class FlexPlanner {
     const edges = this.buildEdges(nodes)
     const derivedNodes = nodes.filter((node) => node.derivedCapability)
 
-    const planVersion = this.computePlanVersion(nodes)
+    const planVersion = this.computePlanVersion()
 
     return {
       runId,
@@ -851,6 +897,7 @@ export class FlexPlanner {
 
     const node: FlexPlanNode = {
       id: transformationId,
+      status: 'pending',
       kind: 'transformation',
       capabilityId: null,
       capabilityLabel: 'Contract Normalizer',
@@ -960,11 +1007,8 @@ export class FlexPlanner {
     return edges
   }
 
-  private computePlanVersion(nodes: FlexPlanNode[]): number {
-    const branchWeight = nodes.filter((node) => node.kind === 'branch').length
-    const derivedWeight = nodes.filter((node) => node.derivedCapability).length
-    const transformationWeight = nodes.some((node) => node.kind === 'transformation') ? 1 : 0
-    return 1 + branchWeight + derivedWeight + transformationWeight
+  private computePlanVersion(): number {
+    return 1
   }
 
   private computeCapabilityCompatibility(capability: CapabilityRecord, context: PlannerContextInternal): number {

@@ -124,6 +124,8 @@ describe('planner prompt builders', () => {
     expect(content).toContain('### PLANNER RULES')
     expect(content).toContain('### INTERNAL CHECKLIST (for the model)')
     expect(content).toContain('### OUTPUT INSTRUCTIONS')
+    expect(content).toContain('status: "pending" | "running" | "completed" | "awaiting_hitl" | "awaiting_human" | "error"')
+    expect(content).toContain('Node status semantics')
     expect(content).toMatch(/PlannerDraft = {/)
     expect(content).not.toContain('fallback"')
     expect(content).not.toContain('[FACET_NAME]')
@@ -174,7 +176,27 @@ describe('planner prompt builders', () => {
           sourceLabel: 'Strategist Briefing',
           value: { summary: 'Key points' }
         }
-      ]
+      ],
+      planSnapshot: {
+        version: 4,
+        nodes: [
+          {
+            nodeId: 'strategist_1',
+            status: 'completed',
+            capabilityId: 'strategist.SocialPosting',
+            label: 'Strategist Briefing',
+            kind: 'structuring'
+          },
+          {
+            nodeId: 'copywriter_1',
+            status: 'pending',
+            capabilityId: 'copywriter.SocialpostDrafting',
+            label: 'Copywriter',
+            kind: 'execution'
+          }
+        ],
+        pendingNodeIds: ['copywriter_1']
+      }
     }
 
     const input: PlannerServiceInput = {
@@ -198,6 +220,10 @@ describe('planner prompt builders', () => {
   expect(result.capabilityTable).toContain('| Capability ID | Display Name | Kind | Input Facets | Output Facets | Summary |')
   expect(content).not.toContain('### FACET CATALOG SUMMARY')
   expect(content).not.toContain('| Facet | Direction | Description |')
+  expect(content).toContain('### EXISTING PLAN SNAPSHOT')
+  expect(content).toContain('"status": "completed"')
+  expect(content).toContain('Lock nodes with status `completed` exactly as provided')
+  expect(content).toContain('greater than 4')
   expect(content).toContain('post_copy')
   expect(content).not.toContain('irrelevant_facet')
   expect(content).not.toContain('### CAPABILITY REGISTRY SUMMARY')
@@ -218,6 +244,7 @@ describe('planner prompt builders', () => {
             {
               stage: 'draft',
               capabilityId: 'copywriter.SocialpostDrafting',
+              status: 'pending',
               kind: 'execution',
               inputFacets: ['creative_brief'],
               outputFacets: ['post_copy']

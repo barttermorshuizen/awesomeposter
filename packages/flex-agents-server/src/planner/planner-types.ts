@@ -4,6 +4,15 @@ const StringOrArraySchema = z
   .union([z.array(z.string().min(1)), z.string().min(1)])
   .transform((value) => (Array.isArray(value) ? value : [value]))
 
+const PlannerDraftNodeStatusSchema = z.enum([
+  'pending',
+  'running',
+  'completed',
+  'awaiting_hitl',
+  'awaiting_human',
+  'error'
+])
+
 const FacetListSchema = z
   .union([
     z.array(z.string().min(1)),
@@ -21,6 +30,7 @@ export const PlannerDraftNodeSchema = z.object({
   stage: z.string().min(1),
   capabilityId: z.string().min(1).optional(),
   derived: z.boolean().optional(),
+  status: PlannerDraftNodeStatusSchema,
   kind: z
     .enum(['structuring', 'execution', 'transformation', 'validation', 'fallback'])
     .optional(),
@@ -42,6 +52,7 @@ export const PlannerDraftSchema = z.object({
 
 export type PlannerDraftNode = z.infer<typeof PlannerDraftNodeSchema>
 export type PlannerDraftMetadata = z.infer<typeof PlannerDraftMetadataSchema>
+export type PlannerDraftNodeStatus = z.infer<typeof PlannerDraftNodeStatusSchema>
 
 export type PlannerDraft = {
   nodes: PlannerDraftNode[]

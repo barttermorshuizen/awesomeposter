@@ -52,6 +52,28 @@ describe('flexSandboxPlan utils', () => {
     expect(editor).toMatchObject({ label: 'Editor', status: 'pending' })
   })
 
+  it('throws when plan nodes omit status', () => {
+    const payload = {
+      plan: {
+        runId: 'run-3',
+        version: 3,
+        nodes: [{ id: 'node-1', capabilityId: 'writer.v1', label: 'Writer' }]
+      }
+    }
+
+    expect(() => extractPlanPayload(payload)).toThrow(/status/i)
+  })
+
+  it('throws when plan version is missing', () => {
+    const payload = {
+      plan: {
+        nodes: [{ id: 'node-1', capabilityId: 'writer.v1', label: 'Writer', status: 'pending' }]
+      }
+    }
+
+    expect(() => extractPlanPayload(payload)).toThrow(/version/i)
+  })
+
   it('appends plan history entries while keeping most recent', () => {
     const initial = appendHistoryEntry([], { version: 1, timestamp: '2024-01-01T00:00:00.000Z', trigger: 'initial' })
     const second = appendHistoryEntry(initial, {

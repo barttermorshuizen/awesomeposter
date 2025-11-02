@@ -1,4 +1,10 @@
-export type FlexSandboxPlanNodeStatus = 'pending' | 'running' | 'completed' | 'error' | 'awaiting_hitl'
+export type FlexSandboxPlanNodeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'awaiting_hitl'
+  | 'awaiting_human'
 
 export type FlexSandboxPlanNode = {
   id: string

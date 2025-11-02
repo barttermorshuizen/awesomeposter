@@ -873,7 +873,7 @@ export class FlexRunCoordinator {
                 capabilityId: node.capabilityId,
                 label: node.label,
                 kind: node.kind,
-                status: 'pending',
+                status: node.status ?? 'pending',
                 ...(contracts ? { contracts } : {}),
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
@@ -1317,29 +1317,39 @@ export class FlexRunCoordinator {
                 facets: state.facets
               }
               const { plan: updatedPlan } = await requestPlan('replan', { graphState })
+              updatedPlan.nodes = updatedPlan.nodes.map((node) => ({
+                ...node,
+                status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending'
+              }))
               if (updatedPlan.version <= previousVersion) {
                 updatedPlan.version = previousVersion + 1
                 updatedPlan.metadata = {
                   ...updatedPlan.metadata,
-                  versionAdjusted: true
+                  versionAdjusted: true,
+                  planVersionTag: `v${updatedPlan.version}.0`
                 }
               }
               activePlan = updatedPlan
               activePlanVersion = updatedPlan.version
 
-              const snapshotNodes: FlexPlanNodeSnapshot[] = updatedPlan.nodes.map((node) => ({
-                nodeId: node.id,
-                capabilityId: node.capabilityId,
-                label: node.label,
-                status: (state.completedNodeIds.includes(node.id) ? 'completed' : 'pending') as FlexPlanNodeStatus,
-                context: node.bundle,
-                output: state.nodeOutputs[node.id] ?? null,
-                facets: node.facets,
-                contracts: node.contracts,
-                provenance: node.provenance,
-                metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
-                rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
-              }))
+              const snapshotNodes: FlexPlanNodeSnapshot[] = updatedPlan.nodes.map((node) => {
+                const persistedStatus: FlexPlanNodeStatus = state.completedNodeIds.includes(node.id)
+                  ? 'completed'
+                  : (node.status ?? 'pending')
+                return {
+                  nodeId: node.id,
+                  capabilityId: node.capabilityId,
+                  label: node.label,
+                  status: persistedStatus,
+                  context: node.bundle,
+                  output: state.nodeOutputs[node.id] ?? null,
+                  facets: node.facets,
+                  contracts: node.contracts,
+                  provenance: node.provenance,
+                  metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
+                  rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+                }
+              })
               state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
                 updatedPlan.nodes.some((node) => node.id === nodeId)
               )
@@ -1491,7 +1501,7 @@ export class FlexRunCoordinator {
         nodeId: node.id,
         capabilityId: node.capabilityId,
         label: node.label,
-        status: 'pending' as FlexPlanNodeStatus,
+        status: (node.status ?? 'pending') as FlexPlanNodeStatus,
         context: node.bundle,
         facets: node.facets,
         contracts: node.contracts,
@@ -1623,29 +1633,39 @@ export class FlexRunCoordinator {
               facets: state.facets
             }
             const { plan: updatedPlan } = await requestPlan('replan', { graphState })
+            updatedPlan.nodes = updatedPlan.nodes.map((node) => ({
+              ...node,
+              status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending'
+            }))
             if (updatedPlan.version <= previousVersion) {
               updatedPlan.version = previousVersion + 1
               updatedPlan.metadata = {
                 ...updatedPlan.metadata,
-                versionAdjusted: true
+                versionAdjusted: true,
+                planVersionTag: `v${updatedPlan.version}.0`
               }
             }
             activePlan = updatedPlan
             activePlanVersion = updatedPlan.version
 
-            planSnapshot = updatedPlan.nodes.map((node) => ({
-              nodeId: node.id,
-              capabilityId: node.capabilityId,
-              label: node.label,
-              status: (state.completedNodeIds.includes(node.id) ? 'completed' : 'pending') as FlexPlanNodeStatus,
-              context: node.bundle,
-              output: state.nodeOutputs[node.id] ?? null,
-              facets: node.facets,
-              contracts: node.contracts,
-              provenance: node.provenance,
-              metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
-              rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
-            }))
+            planSnapshot = updatedPlan.nodes.map((node) => {
+              const persistedStatus: FlexPlanNodeStatus = state.completedNodeIds.includes(node.id)
+                ? 'completed'
+                : (node.status ?? 'pending')
+              return {
+                nodeId: node.id,
+                capabilityId: node.capabilityId,
+                label: node.label,
+                status: persistedStatus,
+                context: node.bundle,
+                output: state.nodeOutputs[node.id] ?? null,
+                facets: node.facets,
+                contracts: node.contracts,
+                provenance: node.provenance,
+                metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
+                rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+              }
+            })
             state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
               updatedPlan.nodes.some((node) => node.id === nodeId)
             )
@@ -1703,7 +1723,7 @@ export class FlexRunCoordinator {
                     capabilityId: node.capabilityId,
                     label: node.label,
                     kind: node.kind,
-                    status: state.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                    status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending',
                     ...(contracts ? { contracts } : {}),
                     ...(facets ? { facets } : {}),
                     ...(derived ? { derivedCapability: derived } : {}),
@@ -1828,9 +1848,11 @@ export class FlexRunCoordinator {
       }
     >()
 
+    const snapshotOrder = new Map<string, number>()
     if (Array.isArray(snapshotPayload?.nodes)) {
-      for (const raw of snapshotPayload!.nodes!) {
+      snapshotPayload!.nodes!.forEach((raw, index) => {
         if (raw && typeof raw === 'object' && typeof raw.nodeId === 'string') {
+          snapshotOrder.set(raw.nodeId, index)
           snapshotNodeMap.set(raw.nodeId, {
             capabilityId: typeof raw.capabilityId === 'string' ? raw.capabilityId : null,
             label: typeof raw.label === 'string' ? raw.label : null,
@@ -1844,7 +1866,7 @@ export class FlexRunCoordinator {
             rationale: Array.isArray(raw.rationale) ? (raw.rationale as string[]) : null
           })
         }
-      }
+      })
     }
 
     const edges: FlexPlanEdge[] = Array.isArray(snapshotPayload?.edges)
@@ -1865,7 +1887,14 @@ export class FlexRunCoordinator {
         ? clone(snapshotPayload.metadata)
         : {}
 
-    const nodes = existing.nodes.map((node) => {
+    const orderedExistingNodes = [...existing.nodes].sort((a, b) => {
+      const aOrder = snapshotOrder.has(a.nodeId) ? snapshotOrder.get(a.nodeId)! : Number.POSITIVE_INFINITY
+      const bOrder = snapshotOrder.has(b.nodeId) ? snapshotOrder.get(b.nodeId)! : Number.POSITIVE_INFINITY
+      if (aOrder === bOrder) return 0
+      return aOrder - bOrder
+    })
+
+    const nodes = orderedExistingNodes.map((node) => {
       const snapshotNode = snapshotNodeMap.get(node.nodeId)
       const snapshotContracts = snapshotNode?.contracts
       const nodeContracts: FlexPlanNodeContracts =
@@ -1928,9 +1957,11 @@ export class FlexRunCoordinator {
       const nodeForBundle: FlexPlanNodeSnapshot =
         snapshotNode?.context && !node.context ? { ...node, context: snapshotNode.context } : node
       const bundle = this.normalizeContextBundle(existing.run.runId, nodeForBundle, envelope)
+      const status = (snapshotNode?.status ?? node.status ?? 'pending') as FlexPlanNodeStatus
 
       return {
         id: node.nodeId,
+        status,
         kind,
         capabilityId,
         capabilityLabel,
