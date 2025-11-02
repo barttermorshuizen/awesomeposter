@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach } from 'vitest'
-import type { TaskEnvelope, FlexPlan, CapabilityRecord } from '@awesomeposter/shared'
+import type { TaskEnvelope, CapabilityRecord } from '@awesomeposter/shared'
 import { getMarketingCapabilitiesSnapshot } from '@awesomeposter/shared'
 import { getHitlContext } from '../src/services/hitl-context'
 import { resetHitlService } from '../src/services/hitl-service'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { FlexExecutionEngine } from '../src/services/flex-execution-engine'
+import type { FlexPlan } from '../src/services/flex-planner'
 
 class StubPersistence {
   async createOrUpdateRun() {}
@@ -52,7 +53,7 @@ class CapabilityRegistryStub {
 }
 
 class HitlRuntimeStub {
-  async runStructured() {
+  async runStructured<T>() {
     const ctx = getHitlContext()
     if (!ctx) throw new Error('HITL context unavailable')
     const result = await ctx.hitlService.raiseRequest({
@@ -60,7 +61,7 @@ class HitlRuntimeStub {
       kind: 'approval'
     })
     expect(result.status).toBe('pending')
-    return {}
+    return {} as T
   }
 }
 
@@ -79,6 +80,10 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
       ) ?? (() => {
         throw new Error('strategist.SocialPosting capability not available')
       })()
+    if (!capability.inputContract || !capability.outputContract) {
+      throw new Error('strategist.SocialPosting capability missing contracts')
+    }
+    const outputContract = capability.outputContract
 
     const registry = new CapabilityRegistryStub(capability)
     const engine = new FlexExecutionEngine(persistence as any, {
@@ -117,15 +122,10 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
               },
               feedback: []
             },
-            policies: {},
-            contract: {
-              input: capability.inputContract,
-              output: capability.outputContract
-            }
+            policies: {}
           },
           contracts: {
-            input: capability.inputContract,
-            output: capability.outputContract
+            output: outputContract
           },
           facets: {
             input: capability.inputFacets ?? [],
@@ -160,12 +160,12 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
       engine
     )
 
-    const envelope: TaskEnvelope = {
-      objective: 'Smoke test HITL pause',
-      inputs: {
-        post_context: {
-          type: 'new_case',
-          data: {
+  const envelope: TaskEnvelope = {
+    objective: 'Smoke test HITL pause',
+    inputs: {
+      post_context: {
+        type: 'new_case',
+        data: {
             content_description: 'Spotlight the DeltaCo rollout and link to the full story.',
             case_url: 'https://awesomeposter.ai/cases/deltaco',
             customer_name: 'DeltaCo',
@@ -173,12 +173,13 @@ describe('FlexRunCoordinator hitl pause behaviour', () => {
           }
         },
         feedback: []
-      },
-      policies: {
-        runtime: []
-      },
-      outputContract: capability.outputContract
-    }
+    },
+    policies: {
+      planner: undefined,
+      runtime: []
+    },
+    outputContract
+  }
 
     const events: Array<{ type: string }> = []
     const result = await coordinator.run(envelope, {

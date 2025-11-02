@@ -58,7 +58,7 @@ function buildResumeEnvelope(record: TaskEnvelope, runId: string, threadId: stri
   }
   envelope.constraints = constraints
 
-  const metadata = {
+  const metadata: Record<string, unknown> = {
     ...(envelope.metadata ?? {}),
     runId,
     resume: true,
@@ -67,7 +67,7 @@ function buildResumeEnvelope(record: TaskEnvelope, runId: string, threadId: stri
   if (threadId) {
     metadata.threadId = metadata.threadId ?? threadId
   }
-  envelope.metadata = metadata
+  envelope.metadata = metadata as TaskEnvelope['metadata']
   return envelope
 }
 

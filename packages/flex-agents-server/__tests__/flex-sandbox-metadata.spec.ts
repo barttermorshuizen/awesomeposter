@@ -16,7 +16,7 @@ const ROUTE_PATH = '../routes/api/v1/flex/sandbox/metadata.get'
 function makeRequest(handler: any) {
   const app = createApp()
   app.use('/api/v1/flex/sandbox/metadata', handler)
-  const listener = toNodeListener(app)
+  const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
   return async () => {
     const res = await fetchNodeRequestHandler(listener, 'http://test.local/api/v1/flex/sandbox/metadata', {
       method: 'GET',

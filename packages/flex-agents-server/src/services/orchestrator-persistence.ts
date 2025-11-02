@@ -1,8 +1,12 @@
 import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, flexPlanSnapshots, flexRunOutputs, eq, and, isNotNull } from '@awesomeposter/db'
 import { sql, notInArray, desc, asc } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
-import type { TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
-import { setOrchestratorPersistence as setLegacyOrchestratorPersistence } from '../../../agents-server/src/services/orchestrator-persistence.js'
+import type { TaskEnvelope, ContextBundle, FlexFacetProvenanceMap } from '@awesomeposter/shared'
+import {
+  ensureFacetPlaceholders,
+  mergeFacetValuesIntoStructure,
+  stripPlannerFields
+} from './run-context-utils'
 import type { RunContextSnapshot } from './run-context'
 import type {
   FlexPlanNodeContracts,
@@ -43,20 +47,33 @@ export type OrchestratorSnapshot = {
 const DEFAULT_PLAN: Plan = { version: 0, steps: [] }
 const DEFAULT_HITL_STATE: HitlRunState = { requests: [], responses: [], pendingRequestId: null, deniedCount: 0 }
 
+type LegacyOrchestratorBridge = typeof globalThis & {
+  __awesomeposter_setOrchestratorPersistence?: (instance: unknown) => void
+}
+
+const legacyBridge = globalThis as LegacyOrchestratorBridge
+
 function clone<T>(value: T): T {
   if (value == null) return value
   return JSON.parse(JSON.stringify(value))
 }
 
-function extractFacetValues(snapshot: RunContextSnapshot | null | undefined, facets: string[] | undefined): Record<string, unknown> {
-  if (!snapshot || !snapshot.facets || !Array.isArray(facets) || facets.length === 0) {
+function extractFacetValues(
+  snapshot: RunContextSnapshot | null | undefined,
+  facets: string[] | undefined
+): Record<string, unknown> {
+  if (!snapshot || !snapshot.facets || typeof snapshot.facets !== 'object') {
     return {}
   }
 
+  const entries = snapshot.facets
+  const selectedFacets =
+    Array.isArray(facets) && facets.length > 0 ? facets : Object.keys(entries)
+
   const values: Record<string, unknown> = {}
-  for (const facet of facets) {
+  for (const facet of selectedFacets) {
     if (typeof facet !== 'string') continue
-    const entry = snapshot.facets[facet]
+    const entry = entries[facet]
     if (entry && typeof entry === 'object' && entry !== null && Object.prototype.hasOwnProperty.call(entry, 'value')) {
       values[facet] = clone((entry as { value: unknown }).value)
     }
@@ -67,15 +84,6 @@ function extractFacetValues(snapshot: RunContextSnapshot | null | undefined, fac
 function hasObjectKeys(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   return Object.keys(value as Record<string, unknown>).length > 0
-}
-
-function stripPlannerFields(payload: Record<string, unknown>): Record<string, unknown> {
-  const clonePayload = clone(payload)
-  const ignoredKeys = ['plannerKind', 'plannerVariantCount', 'derivedCapability']
-  for (const key of ignoredKeys) {
-    delete (clonePayload as Record<string, unknown>)[key]
-  }
-  return clonePayload
 }
 
 function resolveEnvelopeInputFacets(envelope: TaskEnvelope | null | undefined): string[] {
@@ -413,7 +421,7 @@ export function getOrchestratorPersistence() {
 export function setOrchestratorPersistence(instance: PersistenceImpl) {
   singleton = instance
   try {
-    setLegacyOrchestratorPersistence(instance as any)
+    legacyBridge.__awesomeposter_setOrchestratorPersistence?.(instance)
   } catch {}
 }
 
@@ -989,7 +997,7 @@ export class FlexRunPersistence {
           ? (assignment.status as string)
           : 'awaiting_submission'
       const facets = (context as any)?.facets
-      const facetProvenance = (context as any)?.facetProvenance
+      const facetProvenance = (context as any)?.facetProvenance as FlexFacetProvenanceMap | undefined
       const contracts = (context as any)?.contracts
       const storedRunContext: RunContextSnapshot | null =
         ((context as any)?.runContextSnapshot as RunContextSnapshot | null | undefined) ?? null
@@ -1000,13 +1008,22 @@ export class FlexRunPersistence {
         (context as any)?.currentInputs ?? (context as any)?.inputs ?? null
       const outputsCandidateRaw =
         (context as any)?.currentOutput ?? (context as any)?.priorOutputs ?? null
+      const assignmentMetadata =
+        assignment?.metadata && typeof assignment.metadata === 'object'
+          ? clone(assignment.metadata as Record<string, unknown>)
+          : null
       const contextExtras: Record<string, unknown> = {}
-      if (hasObjectKeys(inputsCandidateRaw)) {
-        contextExtras.currentInputs = stripPlannerFields(inputsCandidateRaw as Record<string, unknown>)
-      } else if (resolvedRunContext && facets && Array.isArray(facets.input) && facets.input.length) {
-        const fallbackInputs = extractFacetValues(resolvedRunContext, facets.input)
-        if (Object.keys(fallbackInputs).length) {
-          contextExtras.currentInputs = stripPlannerFields(fallbackInputs)
+      const resolvedRunContextInputs = stripPlannerFields(
+        resolvedRunContext && facets && Array.isArray(facets.input)
+          ? extractFacetValues(resolvedRunContext, facets.input)
+          : {}
+      )
+      if (resolvedRunContextInputs && Object.keys(resolvedRunContextInputs).length) {
+        contextExtras.currentInputs = ensureFacetPlaceholders(resolvedRunContextInputs, facets?.input ?? [])
+      } else if (hasObjectKeys(inputsCandidateRaw)) {
+        const sanitizedInputs = stripPlannerFields(inputsCandidateRaw as Record<string, unknown>)
+        if (sanitizedInputs && Object.keys(sanitizedInputs).length) {
+          contextExtras.currentInputs = ensureFacetPlaceholders(sanitizedInputs, facets?.input ?? [])
         }
       } else if (envelope && envelope.inputs && typeof envelope.inputs === 'object' && facets && Array.isArray(facets.input)) {
         const fallbackInputs: Record<string, unknown> = {}
@@ -1018,27 +1035,67 @@ export class FlexRunPersistence {
           }
         }
         if (Object.keys(fallbackInputs).length) {
-          contextExtras.currentInputs = stripPlannerFields(fallbackInputs)
-        }
-      }
-      if (hasObjectKeys(outputsCandidateRaw)) {
-        contextExtras.currentOutput = stripPlannerFields(outputsCandidateRaw as Record<string, unknown>)
-      } else if (resolvedRunContext && facets && Array.isArray(facets.output) && facets.output.length) {
-        const fallbackOutputs = extractFacetValues(resolvedRunContext, facets.output)
-        if (Object.keys(fallbackOutputs).length) {
-          contextExtras.currentOutput = stripPlannerFields(fallbackOutputs)
-        }
-      } else if (envelope && envelope.inputs && typeof envelope.inputs === 'object' && facets && Array.isArray(facets.output)) {
-        const fallbackOutputs: Record<string, unknown> = {}
-        for (const facet of facets.output) {
-          if (typeof facet !== 'string') continue
-          const value = (envelope.inputs as Record<string, unknown>)[facet]
-          if (value !== undefined) {
-            fallbackOutputs[facet] = clone(value)
+          const sanitizedInputs = stripPlannerFields(fallbackInputs)
+          if (sanitizedInputs && Object.keys(sanitizedInputs).length) {
+            contextExtras.currentInputs = ensureFacetPlaceholders(sanitizedInputs, facets?.input ?? [])
           }
         }
-        if (Object.keys(fallbackOutputs).length) {
-          contextExtras.currentOutput = stripPlannerFields(fallbackOutputs)
+      }
+      const runContextOutputsSanitized = stripPlannerFields(
+        resolvedRunContext && facets && Array.isArray(facets.output)
+          ? extractFacetValues(resolvedRunContext, facets.output)
+          : {}
+      )
+      if (runContextOutputsSanitized && Object.keys(runContextOutputsSanitized).length) {
+        contextExtras.currentOutput = ensureFacetPlaceholders(runContextOutputsSanitized, facets?.output ?? [])
+      } else if (hasObjectKeys(outputsCandidateRaw)) {
+        const sanitized = stripPlannerFields(outputsCandidateRaw as Record<string, unknown>)
+        if (sanitized && Object.keys(sanitized).length) {
+          contextExtras.currentOutput = ensureFacetPlaceholders(sanitized, facets?.output ?? [])
+        }
+      } else {
+        const metadataOutputBase =
+          assignmentMetadata && typeof assignmentMetadata.currentOutput === 'object'
+            ? stripPlannerFields(assignmentMetadata.currentOutput as Record<string, unknown>) ?? {}
+            : {}
+
+        const existingContextOutput =
+          contextExtras.currentOutput && typeof contextExtras.currentOutput === 'object'
+            ? (contextExtras.currentOutput as Record<string, unknown>)
+            : {}
+
+        const runContextOutputs =
+          resolvedRunContext && facets && Array.isArray(facets.output)
+            ? extractFacetValues(resolvedRunContext, facets.output)
+            : {}
+
+        let mergedOutputs = mergeFacetValuesIntoStructure(existingContextOutput, {}, facetProvenance?.output)
+        if (Object.keys(metadataOutputBase).length) {
+          mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, metadataOutputBase, facetProvenance?.output)
+        }
+        if (Object.keys(runContextOutputs).length) {
+          mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, runContextOutputs, facetProvenance?.output)
+        }
+
+        if (!Object.keys(mergedOutputs).length && envelope && envelope.inputs && typeof envelope.inputs === 'object' && facets && Array.isArray(facets.output)) {
+          const fallbackOutputs: Record<string, unknown> = {}
+          for (const facet of facets.output) {
+            if (typeof facet !== 'string') continue
+            const value = (envelope.inputs as Record<string, unknown>)[facet]
+            if (value !== undefined) {
+              fallbackOutputs[facet] = clone(value)
+            }
+          }
+          if (Object.keys(fallbackOutputs).length) {
+            mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, fallbackOutputs, facetProvenance?.output)
+          }
+        }
+
+        const sanitizedOutputs = stripPlannerFields(mergedOutputs)
+        if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
+          contextExtras.currentOutput = ensureFacetPlaceholders(sanitizedOutputs, facets?.output ?? [])
+        } else if (Array.isArray(facets?.output) && facets.output.length) {
+          contextExtras.currentOutput = ensureFacetPlaceholders(null, facets.output)
         }
       }
       if (resolvedRunContext) {
@@ -1049,8 +1106,8 @@ export class FlexRunPersistence {
       const dueAt = assignment?.dueAt ?? null
       const priority = assignment?.priority ?? null
       const instructions = assignment?.instructions ?? null
-      const mergedMetadata = assignment?.metadata
-        ? { ...clone(assignment.metadata), ...contextExtras }
+      const mergedMetadata = assignmentMetadata
+        ? { ...assignmentMetadata, ...contextExtras }
         : Object.keys(contextExtras).length
         ? contextExtras
         : null
@@ -1066,6 +1123,13 @@ export class FlexRunPersistence {
       const updatedAt =
         assignment?.updatedAt ??
         (row.nodeUpdatedAt ? row.nodeUpdatedAt.toISOString() : null)
+
+      const expectedInputFacets = Array.isArray((assignmentMetadata as any)?.expectedInputFacets)
+        ? ((assignmentMetadata as any).expectedInputFacets as string[])
+        : []
+      const expectedOutputFacets = Array.isArray((assignmentMetadata as any)?.expectedOutputFacets)
+        ? ((assignmentMetadata as any).expectedOutputFacets as string[])
+        : []
 
       const normalizedFacets = (() => {
         const candidate: { input?: string[]; output?: string[] } =
@@ -1096,6 +1160,10 @@ export class FlexRunPersistence {
           }
         }
 
+        if (expectedInputFacets.length) {
+          inputFacets = Array.from(new Set([...(inputFacets ?? []), ...expectedInputFacets]))
+        }
+
         if ((!outputFacets || outputFacets.length === 0) && currentOutput) {
           outputFacets = Object.keys(currentOutput as Record<string, unknown>).filter(
             (key) => !ignoredKeys.has(key)
@@ -1107,6 +1175,10 @@ export class FlexRunPersistence {
           if (envelopeOutputs.length) {
             outputFacets = envelopeOutputs
           }
+        }
+
+        if (expectedOutputFacets.length) {
+          outputFacets = Array.from(new Set([...(outputFacets ?? []), ...expectedOutputFacets]))
         }
 
         if (!inputFacets?.length && !outputFacets?.length) {

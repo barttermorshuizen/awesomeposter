@@ -7,17 +7,20 @@ import { DEFAULT_MODEL_FALLBACK } from '../../utils/model'
 export const COPYWRITER_MESSAGING_ID = 'copywriter.Messaging' as const
 
 const catalog = getFacetCatalog()
-const INPUT_FACETS = ['company_information', 'positioning_context', 'positioning_recommendation', 'feedback'] as const
+const INPUT_FACETS = ['company_information', 'positioning_context', 'positioning_recommendation'] as const
 const OUTPUT_FACETS = ['messaging_stack', 'handoff_summary'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
 catalog.resolveMany([...OUTPUT_FACETS], 'output')
+
+const FEEDBACK_DIRECTIVE = `Address feedback in the run context with facet = ["${OUTPUT_FACETS.join('", "')}"] before finalising your update.`
 
 export const COPYWRITER_MESSAGING_TOOLS = [HITL_TOOL_NAME] as const
 
 export const COPYWRITER_MESSAGING_INSTRUCTIONS_APP = [
   'You are the Copywriter translating positioning into a messaging stack.',
   'Use company_information, positioning_recommendation, and positioning_context to craft clear message pillars with proof points, then update handoff_summary.',
+  FEEDBACK_DIRECTIVE,
   'Escalate with `hitl_request` whenever stakeholder approval or clarity is missing. Set `kind: "approval"` for yes/no decisions; otherwise use `kind: "clarify"` and capture the question without presenting multiple-choice options.',
   'If you trigger approval or clarify HITL, emit output as JSON that still matches the messaging_stack and handoff_summary schema—fill required fields with placeholder strings such as `PENDING_HITL: awaiting approval for mapped messaging pillars`, and include at least one pillar entry so the structure stays valid.',
   'Never reply with standalone prose; always return the contract-shaped JSON, even when you are paused for human input.'
@@ -25,6 +28,7 @@ export const COPYWRITER_MESSAGING_INSTRUCTIONS_APP = [
 
 export const COPYWRITER_MESSAGING_INSTRUCTIONS_CHAT = [
   'Outline the recommended messaging hierarchy in plain language.',
+  FEEDBACK_DIRECTIVE,
   'Highlight outstanding approvals and request human input only when necessary.'
 ].join('\n')
 

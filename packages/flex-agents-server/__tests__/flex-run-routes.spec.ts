@@ -1,14 +1,15 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
+const loadFlexRunMock = vi.fn()
+const loadPlanSnapshotMock = vi.fn()
+const recordResumeAuditMock = vi.fn()
+const loadFlexRunDebugMock = vi.fn()
+
 vi.mock('../src/services/orchestrator-persistence', () => {
-  const loadFlexRunMock = vi.fn()
-  const loadPlanSnapshotMock = vi.fn()
-  const recordResumeAuditMock = vi.fn()
-  const loadFlexRunDebugMock = vi.fn()
 
   class MockFlexRunPersistence {
-    /* eslint-disable class-methods-use-this */
+     
     constructor() {}
     async loadFlexRun(...args: any[]) {
       return loadFlexRunMock(...args)
@@ -36,32 +37,42 @@ vi.mock('../src/services/orchestrator-persistence', () => {
   }
 })
 
+const coordinatorRunMock = vi.fn()
+
 vi.mock('../src/services/flex-run-coordinator', () => {
-  const runMock = vi.fn()
   class MockFlexRunCoordinator {
     constructor() {}
     async run(...args: any[]) {
-      return runMock(...args)
+      return coordinatorRunMock(...args)
     }
   }
   return {
     FlexRunCoordinator: MockFlexRunCoordinator,
     __mocks: {
-      runMock
+      runMock: coordinatorRunMock
     }
   }
 })
 
+const persistenceMocks = {
+  loadFlexRunMock,
+  loadPlanSnapshotMock,
+  recordResumeAuditMock,
+  loadFlexRunDebugMock
+}
+
+const coordinatorMocks = {
+  runMock: coordinatorRunMock
+}
+
 import { createApp, eventHandler, readBody as h3ReadBody, toNodeListener } from 'h3'
 import { fetchNodeRequestHandler } from 'node-mock-http'
 import type { TaskEnvelope } from '@awesomeposter/shared'
-import { __mocks as persistenceMocks } from '../src/services/orchestrator-persistence'
-import { __mocks as coordinatorMocks } from '../src/services/flex-run-coordinator'
 
 function makeSseRequest(handler: any) {
   const app = createApp()
   app.use('/api/v1/flex/run.resume', handler)
-  const listener = toNodeListener(app)
+  const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
   return async (payload: Record<string, unknown>) => {
     const res = await fetchNodeRequestHandler(listener, 'http://test.local/api/v1/flex/run.resume', {
       method: 'POST',
@@ -87,7 +98,7 @@ function makeJsonRequest(handler: any) {
       return handler(event)
     })
   )
-  const listener = toNodeListener(app)
+  const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
   return async (id: string) => {
     const res = await fetchNodeRequestHandler(listener, `http://test.local/api/v1/flex/runs/${id}`, {
       method: 'GET',
@@ -123,11 +134,11 @@ describe('Flex run routes', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
-    persistenceMocks.loadFlexRunMock.mockReset()
-    persistenceMocks.loadPlanSnapshotMock.mockReset()
-    persistenceMocks.recordResumeAuditMock.mockReset()
-    persistenceMocks.loadFlexRunDebugMock.mockReset()
-    coordinatorMocks.runMock.mockReset()
+    loadFlexRunMock.mockReset()
+    loadPlanSnapshotMock.mockReset()
+    recordResumeAuditMock.mockReset()
+    loadFlexRunDebugMock.mockReset()
+    coordinatorRunMock.mockReset()
   })
 
   it('streams resume events when run resumes successfully', async () => {

@@ -6,6 +6,7 @@ import vuetify from '@/plugins/vuetify'
 import FlexTaskPanel from '@/components/flex-tasks/FlexTaskPanel.vue'
 import ToneOfVoiceWidget from '@/components/flex-tasks/widgets/ToneOfVoiceWidget.vue'
 import ClarificationResponseWidget from '@/components/flex-tasks/widgets/ClarificationResponseWidget.vue'
+import DefaultFacetWidget from '@/components/flex-tasks/widgets/DefaultFacetWidget.vue'
 import { useFlexTasksStore } from '@/stores/flexTasks'
 import type { FlexEventWithId } from '@/lib/flex-sse'
 
@@ -304,5 +305,288 @@ describe('FlexTaskPanel', () => {
         output: expect.objectContaining({ strategicRationale: 'Strategic response for operators' })
       })
     )
+  })
+
+  it('displays contract-defined output facets when facet list omits entries', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_visual',
+      nodeId: 'node_visual',
+      facetProvenance: {
+        output: [
+          { facet: 'handoff_summary', pointer: '/artifacts/handoff_summary' },
+          { facet: 'post_visual', pointer: '/artifacts/post_visual' }
+        ]
+      },
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_visual',
+          runId: 'run_visual',
+          nodeId: 'node_visual',
+          label: 'Design social visual',
+          status: 'awaiting_submission',
+          capabilityId: 'designer.VisualDesign'
+        },
+        facets: { output: ['handoff_summary'] },
+        contracts: { output: { mode: 'facets', facets: ['handoff_summary', 'post_visual'] } }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const titles = wrapper.findAll('.v-expansion-panel-title')
+    const titlesText = titles.map((title) => title.text())
+    expect(titlesText).toContain('Post Visual')
+    expect(titlesText).toContain('Handoff Summary')
+  })
+
+  it('falls back to capability catalog facets when contracts are absent', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_visual_capability',
+      nodeId: 'node_visual_capability',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_visual_capability',
+          runId: 'run_visual_capability',
+          nodeId: 'node_visual_capability',
+          label: 'Design social visual',
+          status: 'awaiting_submission',
+          capabilityId: 'designer.VisualDesign'
+        },
+        facets: { output: ['handoff_summary'] }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const titles = wrapper.findAll('.v-expansion-panel-title')
+    const titlesText = titles.map((title) => title.text())
+    expect(titlesText).toContain('Post Visual')
+    expect(titlesText).toContain('Handoff Summary')
+  })
+
+  it('filters out facets not declared by contracts or capability', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_director',
+      nodeId: 'node_director',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_director',
+          runId: 'run_director',
+          nodeId: 'node_director',
+          capabilityId: 'director.SocialPostingReview',
+          label: 'Review social post',
+          status: 'awaiting_submission'
+        },
+        facets: { output: ['feedback', 'strategic_rationale'] }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const titles = wrapper.findAll('.v-expansion-panel-title')
+    const titlesText = titles.map((title) => title.text())
+    expect(titlesText).toContain('Feedback')
+    expect(titlesText).toContain('Social Post')
+    expect(titlesText).not.toContain('Strategic Rationale')
+  })
+
+  it('wraps feedback JSON objects into arrays for convenience', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_director_feedback',
+      nodeId: 'node_director_feedback',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_director_feedback',
+          runId: 'run_director_feedback',
+          nodeId: 'node_director_feedback',
+          capabilityId: 'director.SocialPostingReview',
+          label: 'Review social post',
+          status: 'awaiting_submission'
+        },
+        facets: { output: ['feedback'] }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue(
+      JSON.stringify(
+        { facet: 'post', message: 'Looks good', author: 'Director' },
+        null,
+        2
+      )
+    )
+    await textarea.trigger('blur')
+    await nextTick()
+
+    expect(textarea.element.value).toContain('[')
+    expect(textarea.element.value).toContain('"Looks good"')
+  })
+
+  it('prefills handoff summary from metadata currentOutput', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_handoff_metadata',
+      nodeId: 'node_handoff_metadata',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_handoff_metadata',
+          runId: 'run_handoff_metadata',
+          nodeId: 'node_handoff_metadata',
+          label: 'Design social visual',
+          status: 'awaiting_submission',
+          capabilityId: 'designer.VisualDesign',
+          metadata: {
+            currentInputs: {
+              creative_brief: { objective: 'Test objective' }
+            },
+            currentOutput: {
+              handoff_summary: ['Existing entry A', 'Existing entry B', 'Existing entry C']
+            }
+          }
+        },
+        facets: { output: ['handoff_summary'] }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const panel = wrapper.get('[data-test="fallback-output-panel"]')
+    await panel.find('.v-expansion-panel-title').trigger('click')
+    await nextTick()
+
+    const widget = panel.findComponent(DefaultFacetWidget)
+    expect(widget.props('modelValue')).toEqual([
+      'Existing entry A',
+      'Existing entry B',
+      'Existing entry C'
+    ])
+  })
+
+  it('prefills handoff summary from input when output payload is missing', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_handoff_input',
+      nodeId: 'node_handoff_input',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_handoff_input',
+          runId: 'run_handoff_input',
+          nodeId: 'node_handoff_input',
+          label: 'Design social visual',
+          status: 'awaiting_submission',
+          capabilityId: 'designer.VisualDesign',
+          metadata: {
+            currentInputs: {
+              handoff_summary: ['Carry-over entry 1', 'Carry-over entry 2']
+            }
+          }
+        },
+        facets: { input: ['handoff_summary'], output: ['handoff_summary'] }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const panel = wrapper.get('[data-test="fallback-output-panel"]')
+    await panel.find('.v-expansion-panel-title').trigger('click')
+    await nextTick()
+
+    const widget = panel.findComponent(DefaultFacetWidget)
+    expect(widget.props('modelValue')).toEqual(['Carry-over entry 1', 'Carry-over entry 2'])
+  })
+
+  it('prefills existing arrays when provenance points to nested paths', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_handoff_pointer',
+      nodeId: 'node_handoff_pointer',
+      facetProvenance: {
+        output: [{ facet: 'handoff_summary', pointer: '/artifacts/handoff_summary' }]
+      },
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_handoff_pointer',
+          runId: 'run_handoff_pointer',
+          nodeId: 'node_handoff_pointer',
+          capabilityId: 'copywriter.SocialpostDrafting',
+          label: 'Update handoff summary',
+          status: 'awaiting_submission',
+          metadata: {
+            currentOutput: {
+              handoff_summary: ['Existing summary entry']
+            }
+          }
+        },
+        facets: { output: ['handoff_summary'] }
+      }
+    } as FlexEventWithId)
+
+    const activeTask = store.activeTask
+    expect(((activeTask?.metadata as Record<string, unknown> | undefined)?.currentOutput as Record<string, unknown> | undefined)?.handoff_summary).toEqual([
+      'Existing summary entry'
+    ])
+    expect(activeTask?.facetProvenance?.output?.[0]?.pointer).toBe('/artifacts/handoff_summary')
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const fallbackPanel = wrapper.get('[data-test="fallback-output-panel"]')
+    await fallbackPanel.find('.v-expansion-panel-title').trigger('click')
+    await nextTick()
+
+    const vm = wrapper.vm as unknown as { facetValue?: (pointer: string) => unknown }
+    if (vm.facetValue) {
+      expect(vm.facetValue('/artifacts/handoff_summary')).toEqual(['Existing summary entry'])
+    }
+
+    const widget = fallbackPanel.findComponent(DefaultFacetWidget)
+    expect(widget.props('modelValue')).toEqual(['Existing summary entry'])
   })
 })

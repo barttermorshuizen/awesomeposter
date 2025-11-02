@@ -7,15 +7,16 @@ import type {
   OutputContract,
   ContextBundle,
   NodeContract,
-  FlexFacetProvenanceMap,
-  HitlContractSummary
+  HitlContractSummary,
+  TaskMetadata
 } from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
 import {
   FlexRunPersistence,
   type FlexPlanNodeSnapshot,
   type FlexPlanSnapshotRow,
-  type FlexRunRecord
+  type FlexRunRecord,
+  type FlexPlanNodeStatus
 } from './orchestrator-persistence'
 import {
   FlexPlanner,
@@ -35,7 +36,8 @@ import {
   ReplanRequestedError,
   RunPausedError,
   RuntimePolicyFailureError,
-  FlexValidationError
+  FlexValidationError,
+  type FlexExecutionOptions
 } from './flex-execution-engine'
 import { getHitlService, parseHitlDecisionAction, resolveHitlDecision, type HitlService } from './hitl-service'
 import { PolicyNormalizer, type NormalizedPolicies } from './policy-normalizer'
@@ -73,7 +75,8 @@ function schemaHash(contract: TaskEnvelope['outputContract']): string | null {
 }
 
 function resolveThreadId(envelope: TaskEnvelope): string | null {
-  const metadata = envelope.metadata ?? {}
+  type MetadataWithThreadId = TaskMetadata & { threadId?: string | null }
+  const metadata = (envelope.metadata ?? undefined) as MetadataWithThreadId | undefined
   const constraints = (envelope.constraints ?? {}) as Record<string, unknown>
   if (typeof metadata?.threadId === 'string') return metadata.threadId
   if (typeof constraints?.threadId === 'string') return constraints.threadId
@@ -128,6 +131,11 @@ type FacetProvenanceEntry = {
   pointer: string
 }
 
+type FacetProvenanceMap = {
+  input?: FacetProvenanceEntry[]
+  output?: FacetProvenanceEntry[]
+}
+
 const normalizeFacetPointer = (pointer: string, facet: string): string => {
   if (!pointer) {
     return `#/${facet}`
@@ -140,6 +148,78 @@ const normalizeFacetPointer = (pointer: string, facet: string): string => {
     return `#/${facet}`
   }
   return `#/${trimmed}`
+}
+
+const normalizeFacetEntriesFromSource = (
+  source: unknown,
+  fallbackDirection: 'input' | 'output'
+): FacetProvenanceEntry[] => {
+  if (!Array.isArray(source)) return []
+  const entries: FacetProvenanceEntry[] = []
+  for (const raw of source) {
+    if (!raw || typeof raw !== 'object') continue
+    const candidate = raw as {
+      facet?: unknown
+      title?: unknown
+      direction?: unknown
+      pointer?: unknown
+    }
+    const facet = typeof candidate.facet === 'string' && candidate.facet.trim().length ? candidate.facet : null
+    if (!facet) continue
+    const direction: 'input' | 'output' =
+      candidate.direction === 'input' || candidate.direction === 'output'
+        ? candidate.direction
+        : fallbackDirection
+    const pointer = normalizeFacetPointer(typeof candidate.pointer === 'string' ? candidate.pointer : '', facet)
+    const title =
+      typeof candidate.title === 'string' && candidate.title.trim().length
+        ? candidate.title
+        : formatFacetTitle(facet, direction === 'input' ? 'Input Facet' : 'Output Facet')
+    entries.push({
+      facet,
+      title,
+      direction,
+      pointer
+    })
+  }
+  return entries
+}
+
+const normalizeFacetMap = (value: unknown): FacetProvenanceMap | undefined => {
+  if (!value || typeof value !== 'object') return undefined
+  const container = value as { input?: unknown; output?: unknown }
+  const input = normalizeFacetEntriesFromSource(container.input, 'input')
+  const output = normalizeFacetEntriesFromSource(container.output, 'output')
+  if (!input.length && !output.length) {
+    return undefined
+  }
+  return {
+    ...(input.length ? { input } : {}),
+    ...(output.length ? { output } : {})
+  }
+}
+
+const clonePlanNodeContext = (
+  node: FlexPlan['nodes'][number],
+  runId: string
+): (ContextBundle & Record<string, unknown>) => {
+  const rawContext = (node as { context?: unknown }).context
+  const source =
+    rawContext && typeof rawContext === 'object'
+      ? rawContext
+      : node.bundle && typeof node.bundle === 'object'
+      ? node.bundle
+      : null
+  const cloned =
+    source && typeof source === 'object'
+      ? JSON.parse(JSON.stringify(source))
+      : { runId, nodeId: node.id }
+  const bundle = cloned as ContextBundle & Record<string, unknown>
+  if (!bundle.runId) {
+    bundle.runId = runId
+  }
+  bundle.nodeId = node.id
+  return bundle
 }
 
 export class FlexRunCoordinator {
@@ -371,7 +451,7 @@ export class FlexRunCoordinator {
       const facetProvenance = computeFacetProvenance(record, planNode)
       const contractSummary = buildContractSummary(record, planNode, facetProvenance ?? undefined)
       if (process.env.DEBUG_FLEX_HITL === '1') {
-        // eslint-disable-next-line no-console
+         
         console.log('debug:flex.hitl_resolved.facets', {
           facets: facetProvenance,
           stepId: record.stepId,
@@ -482,20 +562,14 @@ export class FlexRunCoordinator {
       const merged: FacetProvenanceEntry[] = []
       for (const source of sources) {
         for (const entry of source ?? []) {
-          if (!entry || typeof entry !== 'object') continue
-          const facet = typeof entry.facet === 'string' && entry.facet.length ? entry.facet : null
-          if (!facet) continue
-          const pointer = normalizeFacetPointer(typeof entry.pointer === 'string' ? entry.pointer : '', facet)
-          const title =
-            typeof entry.title === 'string' && entry.title.trim().length
-              ? entry.title
-              : formatFacetTitle(facet, direction === 'input' ? 'Input Facet' : 'Output Facet')
-          const key = `${direction}:${facet}:${pointer}`
+          if (!entry) continue
+          const pointer = normalizeFacetPointer(entry.pointer, entry.facet)
+          const key = `${direction}:${entry.facet}:${pointer}`
           if (seen.has(key)) continue
           seen.add(key)
           merged.push({
-            facet,
-            title,
+            facet: entry.facet,
+            title: entry.title,
             direction,
             pointer
           })
@@ -507,27 +581,27 @@ export class FlexRunCoordinator {
     const computeFacetProvenance = (
       record: HitlRequestRecord,
       planNode: FlexPlan['nodes'][number] | undefined
-    ): FlexFacetProvenanceMap | undefined => {
-      const contractFacets = (record.contractSummary?.facets as FlexFacetProvenanceMap | undefined) ?? undefined
-      const planProvenance = planNode?.provenance as FlexFacetProvenanceMap | undefined
+    ): FacetProvenanceMap | undefined => {
+      const contractFacets = normalizeFacetMap(record.contractSummary?.facets ?? null)
+      const planProvenance = normalizeFacetMap(planNode?.provenance ?? null)
       const planFacets = planNode?.facets
       const input = mergeFacetEntries('input', [
-        contractFacets?.input as FacetProvenanceEntry[] | undefined,
-        planProvenance?.input as FacetProvenanceEntry[] | undefined,
+        contractFacets?.input,
+        planProvenance?.input,
         buildFacetEntries(planFacets?.input, 'input')
       ])
       const output = mergeFacetEntries('output', [
-        contractFacets?.output as FacetProvenanceEntry[] | undefined,
-        planProvenance?.output as FacetProvenanceEntry[] | undefined,
+        contractFacets?.output,
+        planProvenance?.output,
         buildFacetEntries(planFacets?.output, 'output')
       ])
       if (!input.length && !output.length) {
         return undefined
       }
-      const combined: FlexFacetProvenanceMap = {}
-      if (input.length) combined.input = input
-      if (output.length) combined.output = output
-      return combined
+      return {
+        ...(input.length ? { input } : {}),
+        ...(output.length ? { output } : {})
+      }
     }
 
     const cloneValue = <T>(value: T): T => {
@@ -542,7 +616,7 @@ export class FlexRunCoordinator {
     const buildContractSummary = (
       record: HitlRequestRecord,
       planNode: FlexPlan['nodes'][number] | undefined,
-      facets: FlexFacetProvenanceMap | undefined
+      facets: FacetProvenanceMap | undefined
     ): HitlContractSummary | null => {
       if (record.contractSummary) return record.contractSummary
       if (!planNode) return null
@@ -576,7 +650,7 @@ export class FlexRunCoordinator {
         record.contractSummary = contractSummary
       }
       if (process.env.DEBUG_FLEX_HITL === '1') {
-        // eslint-disable-next-line no-console
+         
         console.log('debug:flex.hitl_request.facets', {
           facets: facetProvenance,
           stepId: record.stepId,
@@ -876,7 +950,7 @@ export class FlexRunCoordinator {
         }
       }
 
-      let finalOutputSeed =
+      let finalOutputSeed: Record<string, unknown> | null =
         Object.keys(contextProjection).length ? contextProjection : persistedOutput
       let executionMode: 'resume' | 'execute' = 'resume'
       if (!finalOutputSeed || Object.keys(finalOutputSeed).length === 0) {
@@ -890,6 +964,10 @@ export class FlexRunCoordinator {
         const submission = opts.resumeSubmission
         if (!submission) {
           throw new Error('flex_resume_missing_submission_payload')
+        }
+
+        if (!activePlan) {
+          throw new Error('flex_resume_missing_plan')
         }
 
         const humanNode = activePlan.nodes.find((node) => node.id === submission.nodeId)
@@ -921,9 +999,7 @@ export class FlexRunCoordinator {
             humanNode.executor?.assignment?.defaults?.onDecline ??
             'fail_run'
 
-          const contextBundle = (humanNode.context && typeof humanNode.context === 'object'
-            ? JSON.parse(JSON.stringify(humanNode.context))
-            : { runId, nodeId: humanNode.id }) as ContextBundle & Record<string, unknown>
+          const contextBundle = clonePlanNodeContext(humanNode, runId)
 
           if (!contextBundle.assignment || typeof contextBundle.assignment !== 'object') {
             contextBundle.assignment = {}
@@ -1034,34 +1110,30 @@ export class FlexRunCoordinator {
             completedNodeIds: [],
             nodeOutputs: {},
             facets: runContext.snapshot(),
-            mode: 'resume'
+            mode: resumeInitialState?.mode ?? 'hitl'
           }
         }
-
-        pendingState.nodeOutputs = {
-          ...pendingState.nodeOutputs,
+        const state = pendingState
+        state.nodeOutputs = {
+          ...state.nodeOutputs,
           [humanNode.id]: submissionOutput
         }
-        if (!pendingState.completedNodeIds.includes(humanNode.id)) {
-          pendingState.completedNodeIds = [...pendingState.completedNodeIds, humanNode.id]
+        if (!state.completedNodeIds.includes(humanNode.id)) {
+          state.completedNodeIds = [...state.completedNodeIds, humanNode.id]
         }
-        pendingState.facets = runContext.snapshot()
-        pendingState.mode = 'resume'
+        state.facets = runContext.snapshot()
+        state.mode = state.mode ?? 'hitl'
 
         resumeInitialState = {
-          completedNodeIds: [...pendingState.completedNodeIds],
-          nodeOutputs: { ...pendingState.nodeOutputs },
-          policyActions: pendingState.policyActions ? [...pendingState.policyActions] : [],
-          policyAttempts: pendingState.policyAttempts ? { ...pendingState.policyAttempts } : {},
-          mode: 'resume'
+          completedNodeIds: [...state.completedNodeIds],
+          nodeOutputs: { ...state.nodeOutputs },
+          policyActions: state.policyActions ? [...state.policyActions] : [],
+          policyAttempts: state.policyAttempts ? { ...state.policyAttempts } : {},
+          mode: state.mode
         }
 
         const completionInstant = new Date(submission.submittedAt ?? Date.now())
-        const contextBundle = (humanNode.context && typeof humanNode.context === 'object'
-          ? JSON.parse(JSON.stringify(humanNode.context))
-          : (humanNode.bundle && typeof humanNode.bundle === 'object'
-              ? JSON.parse(JSON.stringify(humanNode.bundle))
-              : { runId, nodeId: humanNode.id })) as ContextBundle & Record<string, unknown>
+        const contextBundle = clonePlanNodeContext(humanNode, runId)
 
         if (!contextBundle.runId) {
           contextBundle.runId = runId
@@ -1159,6 +1231,10 @@ export class FlexRunCoordinator {
 
       let finalOutput: Record<string, unknown> | null = null
 
+      if (!activePlan) {
+        throw new Error('flex_active_plan_unavailable')
+      }
+
       while (!finalOutput) {
           if (resolvedDecisionResult) {
             return resolvedDecisionResult
@@ -1220,6 +1296,7 @@ export class FlexRunCoordinator {
                 ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
                 ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
               }
+              const state = pendingState
               resumeInitialState = undefined
               await emitEvent({
                 type: 'policy_triggered',
@@ -1231,12 +1308,13 @@ export class FlexRunCoordinator {
                 }
               })
 
-              const previousVersion = activePlan.version
+              const currentPlan = activePlan
+              const previousVersion = currentPlan.version
               const graphState: PlannerGraphState = {
-                plan: activePlan,
-                completedNodeIds: pendingState!.completedNodeIds,
-                nodeOutputs: pendingState!.nodeOutputs,
-                facets: pendingState!.facets
+                plan: currentPlan,
+                completedNodeIds: state.completedNodeIds,
+                nodeOutputs: state.nodeOutputs,
+                facets: state.facets
               }
               const { plan: updatedPlan } = await requestPlan('replan', { graphState })
               if (updatedPlan.version <= previousVersion) {
@@ -1247,41 +1325,41 @@ export class FlexRunCoordinator {
                 }
               }
               activePlan = updatedPlan
-              activePlanVersion = activePlan.version
+              activePlanVersion = updatedPlan.version
 
-              const snapshotNodes = activePlan.nodes.map((node) => ({
+              const snapshotNodes: FlexPlanNodeSnapshot[] = updatedPlan.nodes.map((node) => ({
                 nodeId: node.id,
                 capabilityId: node.capabilityId,
                 label: node.label,
-                status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                status: (state.completedNodeIds.includes(node.id) ? 'completed' : 'pending') as FlexPlanNodeStatus,
                 context: node.bundle,
-                output: pendingState!.nodeOutputs[node.id] ?? null,
+                output: state.nodeOutputs[node.id] ?? null,
                 facets: node.facets,
                 contracts: node.contracts,
                 provenance: node.provenance,
                 metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
                 rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
               }))
-              pendingState!.completedNodeIds = pendingState!.completedNodeIds.filter((nodeId) =>
-                activePlan.nodes.some((node) => node.id === nodeId)
+              state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
+                updatedPlan.nodes.some((node) => node.id === nodeId)
               )
-              pendingState!.nodeOutputs = Object.fromEntries(
-                Object.entries(pendingState!.nodeOutputs).filter(([nodeId]) =>
-                  activePlan.nodes.some((node) => node.id === nodeId)
+              state.nodeOutputs = Object.fromEntries(
+                Object.entries(state.nodeOutputs).filter(([nodeId]) =>
+                  updatedPlan.nodes.some((node) => node.id === nodeId)
                 )
               ) as Record<string, Record<string, unknown>>
-              pendingState!.facets = runContext.snapshot()
-              await this.persistence.savePlanSnapshot(runId, activePlan.version, snapshotNodes, {
-                facets: pendingState!.facets,
+              state.facets = runContext.snapshot()
+              await this.persistence.savePlanSnapshot(runId, updatedPlan.version, snapshotNodes, {
+                facets: state.facets,
                 schemaHash: schemaHashValue,
-                edges: activePlan.edges,
-                planMetadata: activePlan.metadata,
+                edges: updatedPlan.edges,
+                planMetadata: updatedPlan.metadata,
                 pendingState: {
-                  completedNodeIds: pendingState!.completedNodeIds,
-                  nodeOutputs: pendingState!.nodeOutputs,
-                  policyActions: pendingState!.policyActions ?? [],
-                  policyAttempts: pendingState!.policyAttempts ?? {},
-                  mode: pendingState!.mode
+                  completedNodeIds: state.completedNodeIds,
+                  nodeOutputs: state.nodeOutputs,
+                  policyActions: state.policyActions ?? [],
+                  policyAttempts: state.policyAttempts ?? {},
+                  mode: state.mode
                 }
               })
               await emitEvent({
@@ -1291,9 +1369,9 @@ export class FlexRunCoordinator {
                 payload: {
                   runId,
                   previousVersion,
-                  version: activePlan.version,
+                  version: updatedPlan.version,
                   trigger,
-                  nodes: activePlan.nodes.map((node) => {
+                  nodes: updatedPlan.nodes.map((node) => {
                     const contractSource = node.contracts
                     const contracts =
                       contractSource && (contractSource.input || contractSource.output)
@@ -1323,10 +1401,10 @@ export class FlexRunCoordinator {
                       ...(contracts ? { contracts } : {}),
                       ...(facets ? { facets } : {}),
                       ...(derived ? { derivedCapability: derived } : {}),
-                      ...(metadata ? { metadata } : {})
-                    }
-                  }),
-                  metadata: activePlan.metadata
+                    ...(metadata ? { metadata } : {})
+                  }
+                }),
+                  metadata: updatedPlan.metadata
                 }
               })
               executionMode = 'execute'
@@ -1383,7 +1461,7 @@ export class FlexRunCoordinator {
             }
 
             if (process.env.DEBUG_FLEX_ERRORS === '1') {
-              // eslint-disable-next-line no-console
+               
               console.log('debug:flex.error_unhandled', {
                 name: (error as { name?: string }).name,
                 constructor: (error as { constructor?: { name?: string } }).constructor?.name,
@@ -1413,7 +1491,7 @@ export class FlexRunCoordinator {
         nodeId: node.id,
         capabilityId: node.capabilityId,
         label: node.label,
-        status: 'pending',
+        status: 'pending' as FlexPlanNodeStatus,
         context: node.bundle,
         facets: node.facets,
         contracts: node.contracts,
@@ -1525,6 +1603,7 @@ export class FlexRunCoordinator {
               ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
               ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
             }
+            const state = pendingState
             await emitEvent({
               type: 'policy_triggered',
               timestamp: new Date().toISOString(),
@@ -1535,12 +1614,13 @@ export class FlexRunCoordinator {
               }
             })
 
-            const previousVersion = activePlan.version
+            const currentPlan = activePlan
+            const previousVersion = currentPlan.version
             const graphState: PlannerGraphState = {
-              plan: activePlan,
-              completedNodeIds: pendingState!.completedNodeIds,
-              nodeOutputs: pendingState!.nodeOutputs,
-              facets: pendingState!.facets
+              plan: currentPlan,
+              completedNodeIds: state.completedNodeIds,
+              nodeOutputs: state.nodeOutputs,
+              facets: state.facets
             }
             const { plan: updatedPlan } = await requestPlan('replan', { graphState })
             if (updatedPlan.version <= previousVersion) {
@@ -1551,41 +1631,41 @@ export class FlexRunCoordinator {
               }
             }
             activePlan = updatedPlan
-            activePlanVersion = activePlan.version
+            activePlanVersion = updatedPlan.version
 
-            planSnapshot = activePlan.nodes.map((node) => ({
+            planSnapshot = updatedPlan.nodes.map((node) => ({
               nodeId: node.id,
               capabilityId: node.capabilityId,
               label: node.label,
-              status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+              status: (state.completedNodeIds.includes(node.id) ? 'completed' : 'pending') as FlexPlanNodeStatus,
               context: node.bundle,
-              output: pendingState!.nodeOutputs[node.id] ?? null,
+              output: state.nodeOutputs[node.id] ?? null,
               facets: node.facets,
               contracts: node.contracts,
               provenance: node.provenance,
               metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
               rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
             }))
-            pendingState!.completedNodeIds = pendingState!.completedNodeIds.filter((nodeId) =>
-              activePlan.nodes.some((node) => node.id === nodeId)
+            state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
+              updatedPlan.nodes.some((node) => node.id === nodeId)
             )
-            pendingState!.nodeOutputs = Object.fromEntries(
-              Object.entries(pendingState!.nodeOutputs).filter(([nodeId]) =>
-                activePlan.nodes.some((node) => node.id === nodeId)
+            state.nodeOutputs = Object.fromEntries(
+              Object.entries(state.nodeOutputs).filter(([nodeId]) =>
+                updatedPlan.nodes.some((node) => node.id === nodeId)
               )
             ) as Record<string, Record<string, unknown>>
-            pendingState!.facets = runContext.snapshot()
-            await this.persistence.savePlanSnapshot(runId, activePlan.version, planSnapshot, {
-              facets: pendingState!.facets,
+            state.facets = runContext.snapshot()
+            await this.persistence.savePlanSnapshot(runId, updatedPlan.version, planSnapshot, {
+              facets: state.facets,
               schemaHash: schemaHashValue,
-              edges: activePlan.edges,
-              planMetadata: activePlan.metadata,
+              edges: updatedPlan.edges,
+              planMetadata: updatedPlan.metadata,
               pendingState: {
-                completedNodeIds: pendingState!.completedNodeIds,
-                nodeOutputs: pendingState!.nodeOutputs,
-                policyActions: pendingState!.policyActions ?? [],
-                policyAttempts: pendingState!.policyAttempts ?? {},
-                mode: pendingState!.mode
+                completedNodeIds: state.completedNodeIds,
+                nodeOutputs: state.nodeOutputs,
+                policyActions: state.policyActions ?? [],
+                policyAttempts: state.policyAttempts ?? {},
+                mode: state.mode
               }
             })
             await emitEvent({
@@ -1595,9 +1675,9 @@ export class FlexRunCoordinator {
               payload: {
                 runId,
                 previousVersion,
-                version: activePlan.version,
+                version: updatedPlan.version,
                 trigger,
-                nodes: activePlan.nodes.map((node) => {
+                nodes: updatedPlan.nodes.map((node) => {
                   const contractSource = node.contracts
                   const contracts =
                     contractSource && (contractSource.input || contractSource.output)
@@ -1623,14 +1703,14 @@ export class FlexRunCoordinator {
                     capabilityId: node.capabilityId,
                     label: node.label,
                     kind: node.kind,
-                    status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                    status: state.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
                     ...(contracts ? { contracts } : {}),
                     ...(facets ? { facets } : {}),
                     ...(derived ? { derivedCapability: derived } : {}),
                     ...(metadata ? { metadata } : {})
                   }
                 }),
-                metadata: activePlan.metadata
+                metadata: updatedPlan.metadata
               }
             })
             continue
@@ -1671,7 +1751,7 @@ export class FlexRunCoordinator {
           }
 
           if (process.env.DEBUG_FLEX_ERRORS === '1') {
-            // eslint-disable-next-line no-console
+             
             console.log('debug:flex.error_unhandled', {
               name: (error as { name?: string }).name,
               constructor: (error as { constructor?: { name?: string } }).constructor?.name,

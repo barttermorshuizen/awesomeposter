@@ -22,9 +22,36 @@ export type PlannerGraphFacetValue = {
   value: unknown
 }
 
+export type PlannerGraphRunContextFacet = {
+  facet: string
+  value: unknown
+  updatedAt: string
+  provenance?: {
+    nodeId: string
+    capabilityId?: string | null
+    rationale?: string | string[]
+  }
+}
+
+export type PlannerGraphRunContextClarification = {
+  questionId: string
+  nodeId: string
+  capabilityId?: string | null
+  question: string
+  createdAt?: string
+  answer?: string | null
+  answeredAt?: string | null
+}
+
+export type PlannerGraphRunContext = {
+  facets: PlannerGraphRunContextFacet[]
+  clarifications: PlannerGraphRunContextClarification[]
+}
+
 export type PlannerGraphContext = {
   completedNodes: PlannerGraphNodeSummary[]
   facetValues: PlannerGraphFacetValue[]
+  runContext?: PlannerGraphRunContext
 }
 
 export type PlannerContextHints = {
@@ -192,7 +219,7 @@ export function buildPlannerSystemPrompt(params: { facetTable: string; capabilit
     '### EXAMPLE REASONING (inline for guidance, not output)',
     '',
     '> Example:  ',
-    '> If the objective is to “draft social post copy for LinkedIn” and the envelope already includes a strategist brief (`creative_brief`), then the node `copywriter.SocialpostDrafting` can directly generate `post_copy` from `creative_brief`, `handoff_summary`, and `feedback`.  ',
+    '> If the objective is to “draft social post copy for LinkedIn” and the envelope already includes a strategist brief (`creative_brief`), then the node `copywriter.SocialpostDrafting` can directly generate `post_copy` from `creative_brief` and `handoff_summary` while consulting any existing `feedback` entries in the run context.  ',
     '> No strategist or normalization node is needed.',
     '',
     '---',
@@ -365,10 +392,14 @@ export function buildPlannerUserPrompt(params: {
 
   const facetRows = facetDefinitionsToUse.map((definition) => {
     const direction = definition.metadata?.direction ?? 'unknown'
+    const semanticsSummary =
+      typeof definition.semantics === 'object' && definition.semantics !== null && 'summary' in definition.semantics
+        ? definition.semantics.summary ?? ''
+        : ''
     return [
       escapeTableCell(definition.name),
       escapeTableCell(String(direction)),
-      escapeTableCell(definition.description ?? definition.semantics?.summary ?? '')
+      escapeTableCell(semanticsSummary || definition.description)
     ]
   })
 
@@ -427,6 +458,70 @@ export function buildPlannerUserPrompt(params: {
   const sections: string[] = []
   sections.push('### TASK ENVELOPE', envelopeSections.join('\n\n'))
 
+  const runContextSections: string[] = []
+  const runContext = input.graphContext?.runContext
+  if (runContext) {
+    if (runContext.facets.length) {
+      const facetLines = runContext.facets.map((entry) => {
+        const provenanceParts: string[] = []
+        if (entry.provenance?.nodeId) {
+          provenanceParts.push(`node=${entry.provenance.nodeId}`)
+        }
+        if (entry.provenance?.capabilityId) {
+          provenanceParts.push(`capability=${entry.provenance.capabilityId}`)
+        }
+        const provenanceSuffix = provenanceParts.length ? ` from ${provenanceParts.join(' ')}` : ''
+        const rationale = entry.provenance?.rationale
+        const rationaleText = rationale
+          ? `\n${indentBlock(
+              `Rationale: ${Array.isArray(rationale) ? rationale.join(' | ') : String(rationale)}`,
+              2
+            )}`
+          : ''
+        return [
+          `- ${entry.facet} (updated ${entry.updatedAt}${provenanceSuffix})`,
+          indentBlock(serializeFacetValue(entry.value)),
+          rationaleText
+        ]
+          .filter(Boolean)
+          .join('\n')
+      })
+      runContextSections.push('Facet values:\n' + facetLines.join('\n'))
+    } else {
+      runContextSections.push('Facet values: none recorded yet.')
+    }
+
+    if (runContext.clarifications.length) {
+      const clarificationLines = runContext.clarifications.map((clarification) => {
+        const metaParts: string[] = []
+        if (clarification.nodeId) metaParts.push(`node=${clarification.nodeId}`)
+        if (clarification.capabilityId) metaParts.push(`capability=${clarification.capabilityId}`)
+        const headerMeta = metaParts.length ? ` (${metaParts.join(' | ')})` : ''
+        const answerText =
+          clarification.answer && clarification.answer.trim().length
+            ? `\n${indentBlock(`Answer: ${clarification.answer}`, 2)}`
+            : ''
+        const answeredAtText =
+          clarification.answeredAt && clarification.answeredAt.trim().length
+            ? `\n${indentBlock(`Answered at: ${clarification.answeredAt}`, 2)}`
+            : ''
+        return [
+          `- ${clarification.questionId}${headerMeta}`,
+          indentBlock(`Question: ${clarification.question}`),
+          answerText,
+          answeredAtText
+        ]
+          .filter(Boolean)
+          .join('\n')
+      })
+      runContextSections.push('HITL clarifications:\n' + clarificationLines.join('\n'))
+    }
+
+    if (runContextSections.length) {
+      sections.push('### RUN CONTEXT', runContextSections.join('\n\n'))
+    }
+  }
+
   const graphSections: string[] = []
   if (input.graphContext?.completedNodes.length) {
     const nodeLines = input.graphContext.completedNodes.map((node) => {
@@ -454,6 +549,17 @@ export function buildPlannerUserPrompt(params: {
   if (graphSections.length) {
     sections.push('### CURRENT GRAPH CONTEXT', graphSections.join('\n\n'))
   }
+
+  sections.push(
+    '### PLANNING INSTRUCTIONS',
+    [
+      '1. Treat the RUN CONTEXT as the current state—avoid replanning completed work unless policies demand revisions.',
+      '2. Identify which required facets from the output contract are still missing from the run context.',
+      '3. Select the minimal set of capabilities needed to cover the missing facets and order them to satisfy their input dependencies.',
+      '4. Respect planner directives, special instructions, and capability constraints when sequencing nodes.',
+      '5. Include validations or revisions only when they are required to fulfil unmet facets or policy requirements.'
+    ].join('\n')
+  )
 
   sections.push('### INTERNAL CHECKLIST REMINDER', INTERNAL_CHECKLIST_LINES.join('\n'))
   sections.push(

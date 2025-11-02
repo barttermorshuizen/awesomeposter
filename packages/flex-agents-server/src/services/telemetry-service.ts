@@ -114,17 +114,24 @@ class TelemetryService {
         ? context.planVersion
         : this.lastPlanVersion.get(context.runId)
 
-    const meta = {
+    const event: FlexTelemetryEvent = {
+      type: 'log',
+      timestamp: new Date().toISOString(),
       runId: context.runId,
       correlationId: context.correlationId ?? undefined,
       planVersion,
-      status
+      payload: { status }
     }
 
-    this.recordCounter('flex.run.status', { status }, meta)
+    this.recordCounter('flex.run.status', { status }, event)
 
     try {
-      getLogger().info('flex_run_status', meta)
+      getLogger().info('flex_run_status', {
+        runId: event.runId,
+        correlationId: event.correlationId,
+        planVersion: event.planVersion,
+        status
+      })
     } catch {}
   }
 
@@ -141,13 +148,17 @@ class TelemetryService {
         ? context.planVersion
         : this.lastPlanVersion.get(context.runId)
 
-    const meta = {
+    const event: FlexTelemetryEvent = {
+      type: 'log',
+      timestamp: new Date().toISOString(),
       runId: context.runId,
       nodeId: context.nodeId ?? undefined,
-      action: context.action,
       correlationId: context.correlationId ?? undefined,
       planVersion,
-      reason: context.reason ?? undefined
+      payload: {
+        action: context.action,
+        reason: context.reason ?? undefined
+      }
     }
 
     const labels: MetricLabels = {
@@ -155,10 +166,17 @@ class TelemetryService {
       ...(context.nodeId ? { nodeId: context.nodeId } : {})
     }
 
-    this.recordCounter('flex.hitl.rejected', labels, meta)
+    this.recordCounter('flex.hitl.rejected', labels, event)
 
     try {
-      getLogger().info('flex_hitl_rejection', meta)
+      getLogger().info('flex_hitl_rejection', {
+        runId: event.runId,
+        nodeId: event.nodeId,
+        action: context.action,
+        correlationId: event.correlationId,
+        planVersion: event.planVersion,
+        reason: context.reason ?? undefined
+      })
     } catch {}
   }
 

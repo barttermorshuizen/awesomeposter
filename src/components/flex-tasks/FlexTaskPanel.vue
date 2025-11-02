@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { getFacetCatalog, type FacetDefinition } from '@awesomeposter/shared'
+import { getFacetCatalog, getMarketingCapabilitiesSnapshot, type FacetDefinition } from '@awesomeposter/shared'
 import type { Component } from 'vue'
 import { useFlexTasksStore, type FlexTaskRecord } from '@/stores/flexTasks'
 import { getFacetWidgetComponent } from './widgets/registry'
@@ -20,8 +20,87 @@ type DraftMap = Map<string, unknown>
 const draftValues = ref<DraftMap>(new Map())
 
 const facetCatalog = getFacetCatalog()
+
+const capabilityOutputFacetMap = (() => {
+  const snapshot = getMarketingCapabilitiesSnapshot()
+  return new Map<string, string[]>(
+    snapshot.all.map((record) => [record.capabilityId, Array.isArray(record.outputFacets) ? [...record.outputFacets] : []])
+  )
+})()
 const inputFacetPanels = ref<number[]>([])
 const fallbackOutputPanels = ref<number[]>([])
+
+function sanitizeFacetNames(values: unknown): string[] {
+  if (!Array.isArray(values)) return []
+  return values
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry): entry is string => entry.length > 0)
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    if (seen.has(value)) continue
+    seen.add(value)
+    output.push(value)
+  }
+  return output
+}
+
+function resolveOutputFacetNames(task: FlexTaskRecord): string[] {
+  const fromFacets = sanitizeFacetNames(task.facets?.output ?? [])
+  const contract = task.contracts?.output
+  const fromContract = contract?.mode === 'facets' ? sanitizeFacetNames(contract.facets) : []
+  const fromCapability =
+    task.capabilityId && capabilityOutputFacetMap.has(task.capabilityId)
+      ? capabilityOutputFacetMap.get(task.capabilityId) ?? []
+      : []
+  const union = uniqueStrings([...fromFacets, ...fromContract, ...fromCapability])
+  const allowed = new Set<string>([...fromContract, ...fromCapability])
+  if (allowed.size === 0) {
+    return union
+  }
+  return union.filter((name) => allowed.has(name))
+}
+
+type FacetProvenanceEntry = {
+  facet: string
+  pointer?: string
+}
+
+function buildRunContextOutput(task: FlexTaskRecord): Record<string, unknown> | null {
+  const metadata = isRecord(task.metadata) ? task.metadata : null
+  const snapshot = metadata && isRecord((metadata as Record<string, unknown>).runContextSnapshot)
+    ? ((metadata as Record<string, unknown>).runContextSnapshot as Record<string, unknown>)
+    : null
+  if (!snapshot) return null
+
+  const facets = isRecord(snapshot.facets) ? (snapshot.facets as Record<string, unknown>) : null
+  if (!facets) return null
+
+  const provenance = Array.isArray(task.facetProvenance?.output)
+    ? (task.facetProvenance?.output as FacetProvenanceEntry[])
+    : []
+
+  const output: Record<string, unknown> = {}
+
+  for (const [facetName, entry] of Object.entries(facets)) {
+    if (!isRecord(entry)) continue
+    const value = (entry as Record<string, unknown>).value
+    if (value === undefined) continue
+    const pointerCandidate =
+      provenance.find((item) => item.facet === facetName)?.pointer ?? `/${facetName}`
+    const pointer = pointerCandidate?.startsWith('/') ? pointerCandidate : `/${pointerCandidate ?? facetName}`
+    try {
+      setValueAtPointer(output, pointer, value)
+    } catch {
+      output[facetName] = cloneValue(value)
+    }
+  }
+
+  return Object.keys(output).length ? output : null
+}
 
 type FacetBinding = {
   name: string
@@ -132,7 +211,7 @@ function pointerForFacet(task: FlexTaskRecord, facetName: string, direction: 'in
 const outputFacetBindings = computed<FacetBinding[]>(() => {
   const task = activeTask.value
   if (!task) return []
-  const names = task.facets?.output ?? []
+  const names = resolveOutputFacetNames(task)
   return names
     .map((name) => {
       const definition = facetCatalog.tryGet(name)
@@ -221,12 +300,15 @@ const declineDisabled = computed(() => {
 })
 
 function initializeDraft(task: FlexTaskRecord | null) {
-  draftValues.value = new Map()
+  const seeded = new Map<string, unknown>()
   submissionNote.value = ''
   validationError.value = null
   fallbackOutputPanels.value = []
   inputFacetPanels.value = []
-  if (!task) return
+  if (!task) {
+    draftValues.value = seeded
+    return
+  }
 
   let payload: Record<string, unknown> | null = null
   if (task.lastSubmittedPayload && typeof task.lastSubmittedPayload === 'object') {
@@ -238,19 +320,64 @@ function initializeDraft(task: FlexTaskRecord | null) {
     }
   }
 
+  const runContextPayload = buildRunContextOutput(task)
+  const sources = [payload, runContextPayload].filter(
+    (entry): entry is Record<string, unknown> => Boolean(entry)
+  )
+  const inputRoot = getInputFacetRoot(task)
+
   for (const binding of outputFacetBindings.value) {
-    const existing = payload ? getValueAtPointer(payload, binding.pointer) : undefined
-    if (existing !== undefined) {
-      draftValues.value.set(binding.pointer, cloneValue(existing))
+    let existing: unknown = undefined
+
+    for (const source of sources) {
+      const candidate = getValueAtPointer(source, binding.pointer)
+      if (candidate !== undefined && candidate !== null) {
+        existing = candidate
+        break
+      }
+
+      const fallbackPointer = `/${binding.name}`
+      if (fallbackPointer !== binding.pointer) {
+        const fallbackCandidate = getValueAtPointer(source, fallbackPointer)
+        if (fallbackCandidate !== undefined && fallbackCandidate !== null) {
+          existing = fallbackCandidate
+          break
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(source, binding.name)) {
+        const directCandidate = (source as Record<string, unknown>)[binding.name]
+        if (directCandidate !== undefined && directCandidate !== null) {
+          existing = directCandidate
+          break
+        }
+      }
+    }
+
+    if ((existing === undefined || existing === null) && inputRoot) {
+      const inputPointer = pointerForFacet(task, binding.name, 'input')
+      existing = getValueAtPointer(inputRoot, inputPointer)
+      if ((existing === undefined || existing === null) && Object.prototype.hasOwnProperty.call(inputRoot, binding.name)) {
+        existing = (inputRoot as Record<string, unknown>)[binding.name]
+      }
+    }
+
+    if (existing !== undefined && existing !== null) {
+      seeded.set(binding.pointer, cloneValue(existing))
     }
   }
 
+  draftValues.value = seeded
   fallbackOutputPanels.value = fallbackOutputFacetBindings.value.length ? [0] : []
 }
 
-watch(activeTask, (task) => {
-  initializeDraft(task)
-})
+watch(
+  activeTask,
+  (task) => {
+    initializeDraft(task)
+  },
+  { immediate: true }
+)
 
 watch(
   fallbackOutputFacetBindings,

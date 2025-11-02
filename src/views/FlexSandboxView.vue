@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import {
   TaskEnvelopeSchema,
@@ -149,8 +149,8 @@ const { pendingRun, hasActiveRequest, operatorProfile } = storeToRefs(hitlStore)
 
 const backoffNotices = ref<string[]>([])
 const expandedEventIds = ref<Set<string>>(new Set())
-const showCapabilitySnapshot = ref(true)
-const showFacetSnapshot = ref(true)
+const showCapabilitySnapshot = ref(false)
+const showFacetSnapshot = ref(false)
 const showCatalogSnapshot = ref(false)
 const rawEditorOpen = ref(false)
 const rawEditorText = ref('')
@@ -162,7 +162,11 @@ const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRu
 
 let saveTimeout: number | null = null
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
-const renameDialog = ref<{ open: boolean; id: string | null; label: string }>({ open: false, id: null, label: '' })
+const envelopeEditorOpen = ref(false)
+const envelopeEditorFocus = ref<'envelope' | 'label'>('envelope')
+const envelopeEditorLabel = ref('')
+const envelopeLabelField = ref<{ focus: () => void } | null>(null)
+const activeRunEnvelopeId = ref<string | null>(null)
 
 const templates = computed(() => metadata.value?.templates ?? [])
 const capabilityRecords = computed(() => metadata.value?.capabilities?.all ?? [])
@@ -229,6 +233,59 @@ const runDisabled = computed(
     conversationMissingFields.value.length > 0
 )
 
+const isEnvelopeActive = computed(() => (id: string) => activeRunEnvelopeId.value === id)
+
+const runStateForEnvelope = computed(() => (id: string) => (activeRunEnvelopeId.value === id ? runStatus.value : 'idle'))
+
+const runStatusChipColor = computed(() => {
+  switch (runStatus.value) {
+    case 'running':
+      return 'primary'
+    case 'hitl':
+      return 'warning'
+    case 'completed':
+      return 'success'
+    case 'error':
+      return 'error'
+    default:
+      return undefined
+  }
+})
+
+const runStatusChipLabel = computed(() => {
+  switch (runStatus.value) {
+    case 'hitl':
+      return 'Awaiting HITL'
+    case 'completed':
+      return 'Completed'
+    case 'running':
+      return 'Running'
+    case 'error':
+      return 'Error'
+    default:
+      return 'Idle'
+  }
+})
+
+const runStatusTooltip = computed(() => {
+  if (runStatus.value === 'error' && runError.value) {
+    return runError.value
+  }
+  if (runStatus.value === 'hitl') {
+    return 'Flex run paused for human-in-the-loop input.'
+  }
+  if (runStatus.value === 'running') {
+    return correlationId.value ? `In progress · CID: ${correlationId.value}` : 'Flex run in progress.'
+  }
+  if (runStatus.value === 'completed') {
+    return correlationId.value ? `Completed · CID: ${correlationId.value}` : 'Flex run finished successfully.'
+  }
+  if (correlationId.value) {
+    return `Last CID: ${correlationId.value}`
+  }
+  return 'Planner is idle.'
+})
+
 function loadDrafts(): DraftStore {
   if (typeof window === 'undefined') return {}
   try {
@@ -282,27 +339,49 @@ function displayLabelForDraft(id: string, entry: StoredDraft | undefined): strin
   return `Draft ${id}`
 }
 
-function openRenameDraft(id: string, entry: StoredDraft | undefined) {
-  renameDialog.value = {
-    open: true,
-    id,
-    label: entry?.label || displayLabelForDraft(id, entry)
+function defaultDraftLabel(id: string, entry: StoredDraft | undefined): string {
+  if (entry?.label) return entry.label
+  if (selectedTemplateId.value === id && selectedTemplate.value) {
+    return displayLabelForTemplate(selectedTemplate.value)
   }
+  return `Draft ${id}`
 }
 
-function applyRenameDraft() {
-  const { id, label } = renameDialog.value
-  if (!id) {
-    renameDialog.value.open = false
-    return
+async function openEnvelopeEditor(options: { id?: string; focus?: 'envelope' | 'label' } = {}) {
+  const id = options.id ?? selectedTemplateId.value
+  if (!id) return
+  if (selectedTemplateId.value !== id) {
+    selectTemplateById(id, { skipPersist: true })
+    await nextTick()
   }
+  envelopeEditorFocus.value = options.focus ?? 'envelope'
+  envelopeEditorOpen.value = true
+}
+
+function closeEnvelopeEditor() {
+  commitEnvelopeLabel()
+  envelopeEditorOpen.value = false
+}
+
+function commitEnvelopeLabel() {
+  const id = selectedTemplateId.value
+  if (!id) return
   const existing = drafts.value[id]
+  const trimmed = envelopeEditorLabel.value.trim()
+  const fallback = defaultDraftLabel(id, existing)
+  const finalLabel = trimmed.length > 0 ? trimmed : fallback
   if (!existing) {
-    renameDialog.value.open = false
+    persistDraftContent(id, draftText.value, {
+      label: finalLabel,
+      templateDerived: Boolean(selectedTemplate.value)
+    })
+    envelopeEditorLabel.value = finalLabel
     return
   }
-  const trimmed = label.trim()
-  const finalLabel = trimmed.length > 0 ? trimmed : displayLabelForDraft(id, existing)
+  if (existing.label === finalLabel) {
+    envelopeEditorLabel.value = finalLabel
+    return
+  }
   const next: StoredDraft = {
     ...existing,
     label: finalLabel,
@@ -312,10 +391,7 @@ function applyRenameDraft() {
     ...drafts.value,
     [id]: next
   })
-  renameDialog.value.open = false
-  if (selectedTemplateId.value === id) {
-    draftText.value = draftText.value // trigger watchers (noop)
-  }
+  envelopeEditorLabel.value = finalLabel
 }
 
 function formatBytes(size: number): string {
@@ -345,12 +421,13 @@ function selectTemplateById(id: string, options: { skipPersist?: boolean } = {})
   updateValidation()
 }
 
-function createLocalDraft() {
+async function createLocalDraft() {
   const id = `draft-${Date.now()}`
   const label = `Scratch ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
   const content = JSON.stringify(DEFAULT_ENVELOPE, null, 2)
   persistDraftContent(id, content, { label, templateDerived: false })
   selectTemplateById(id, { skipPersist: true })
+  await openEnvelopeEditor({ id })
 }
 
 function resetTemplateDraft() {
@@ -997,6 +1074,29 @@ async function runEnvelope(options?: {
   }
 }
 
+async function runPlanForTemplate(id: string) {
+  if (!id) return
+  if (selectedTemplateId.value !== id) {
+    selectTemplateById(id, { skipPersist: true })
+    await nextTick()
+  }
+  updateValidation()
+  if (runStatus.value === 'running') {
+    notifications.notifyInfo('A flex run is already in progress.')
+    return
+  }
+  if (runDisabled.value) {
+    notifications.enqueue({
+      message: 'Resolve validation issues in the TaskEnvelope before running.',
+      kind: 'warning'
+    })
+    await openEnvelopeEditor({ id })
+    return
+  }
+  activeRunEnvelopeId.value = id
+  await runEnvelope()
+}
+
 async function handleHitlResume() {
   if (runStatus.value === 'running') return
   const resumeRunId = pendingRun.value.runId ?? runId.value ?? null
@@ -1211,6 +1311,40 @@ watch(
   { deep: true }
 )
 
+watch(
+  selectedDraftEntry,
+  (entry) => {
+    if (entry?.label) {
+      envelopeEditorLabel.value = entry.label
+    } else if (selectedTemplateId.value && selectedTemplate.value) {
+      envelopeEditorLabel.value = displayLabelForTemplate(selectedTemplate.value)
+    } else if (selectedTemplateId.value) {
+      envelopeEditorLabel.value = `Draft ${selectedTemplateId.value}`
+    } else {
+      envelopeEditorLabel.value = ''
+    }
+  },
+  { immediate: true }
+)
+
+watch(runStatus, (status) => {
+  if (status === 'idle') {
+    activeRunEnvelopeId.value = null
+  }
+})
+
+watch(
+  () => envelopeEditorOpen.value,
+  (open) => {
+    if (!open) return
+    if (envelopeEditorFocus.value === 'label') {
+      nextTick(() => {
+        envelopeLabelField.value?.focus()
+      })
+    }
+  }
+)
+
 watch(draftText, () => {
   updateValidation()
   schedulePersist()
@@ -1238,14 +1372,13 @@ watch(
     />
     <template v-else>
       <v-row>
-        <v-col cols="12" md="3" class="d-flex flex-column ga-4">
+        <v-col cols="12" md="5" class="d-flex flex-column ga-4">
           <v-card>
             <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
-              <span>Payload Templates</span>
+              <span>Task Envelopes</span>
               <v-btn icon="mdi-refresh" variant="text" density="comfortable" @click="loadMetadata(true)" :loading="metadataLoading" />
             </v-card-title>
             <v-card-subtitle>Existing envelopes & local drafts</v-card-subtitle>
-            <v-divider />
             <v-card-text class="pa-0">
               <v-list nav density="compact">
                 <v-list-subheader v-if="templates.length">Templates</v-list-subheader>
@@ -1261,15 +1394,70 @@ watch(
                     {{ formatTimestamp(template.modifiedAt) }} · {{ formatBytes(template.size) }}
                   </v-list-item-subtitle>
                   <template #append>
-                    <div class="d-flex align-center ga-1">
-                      <v-btn
-                        v-if="drafts[template.id]"
-                        icon="mdi-pencil-outline"
-                        size="small"
-                        variant="text"
-                        @click.stop="openRenameDraft(template.id, drafts[template.id])"
-                      />
-                      <v-icon v-if="drafts[template.id]" size="16" icon="mdi-content-save" color="primary" />
+                    <div class="d-flex align-center ga-2">
+                      <div class="d-flex align-center ga-1">
+                        <v-btn
+                          v-if="runStateForEnvelope(template.id) === 'running'"
+                          icon="mdi-stop-circle-outline"
+                          size="small"
+                          variant="text"
+                          :title="'Stop current run'"
+                          @click.stop="abortRun"
+                        />
+                        <v-btn
+                          v-else-if="runStateForEnvelope(template.id) === 'hitl'"
+                          icon="mdi-reload"
+                          size="small"
+                          variant="text"
+                          :title="'Resume run'"
+                          @click.stop="handleHitlResume"
+                        />
+                        <v-btn
+                          v-else
+                          icon="mdi-play"
+                          size="small"
+                          variant="text"
+                          :title="'Run plan'"
+                          :disabled="runStatus !== 'idle' && !isEnvelopeActive(template.id)"
+                          @click.stop="runPlanForTemplate(template.id)"
+                        />
+                      </div>
+                      <v-tooltip v-if="runStateForEnvelope(template.id) !== 'idle'" location="bottom">
+                        <template #activator="{ props }">
+                          <v-chip
+                            size="small"
+                            v-bind="props"
+                            :color="runStatusChipColor"
+                            variant="tonal"
+                            class="text-caption"
+                          >
+                            {{ runStatusChipLabel }}
+                          </v-chip>
+                        </template>
+                        <span>{{ runStatusTooltip }}</span>
+                      </v-tooltip>
+                      <v-menu>
+                        <template #activator="{ props }">
+                          <v-btn
+                            icon="mdi-dots-vertical"
+                            size="small"
+                            variant="text"
+                            v-bind="props"
+                            @click.stop
+                          />
+                        </template>
+                        <v-list density="compact">
+                          <v-list-item @click.stop="openEnvelopeEditor({ id: template.id })">
+                            <v-list-item-title>Edit envelope</v-list-item-title>
+                          </v-list-item>
+                          <v-list-item
+                            v-if="drafts[template.id]"
+                            @click.stop="openEnvelopeEditor({ id: template.id, focus: 'label' })"
+                          >
+                            <v-list-item-title>Rename draft</v-list-item-title>
+                          </v-list-item>
+                        </v-list>
+                      </v-menu>
                     </div>
                   </template>
                 </v-list-item>
@@ -1285,14 +1473,71 @@ watch(
                   <v-list-item-title>{{ displayLabelForDraft(entry.id, entry.data) }}</v-list-item-title>
                   <v-list-item-subtitle>{{ formatTimestamp(entry.data.updatedAt) }}</v-list-item-subtitle>
                   <template #append>
-                    <div class="d-flex align-center ga-1">
-                      <v-btn
-                        icon="mdi-pencil-outline"
-                        variant="text"
-                        size="small"
-                        @click.stop="openRenameDraft(entry.id, entry.data)"
-                      />
-                      <v-btn icon="mdi-delete-outline" variant="text" size="small" @click.stop="removeDraft(entry.id)" />
+                    <div class="d-flex align-center ga-2">
+                      <div class="d-flex align-center ga-1">
+                        <v-btn
+                          v-if="runStateForEnvelope(entry.id) === 'running'"
+                          icon="mdi-stop-circle-outline"
+                          size="small"
+                          variant="text"
+                          :title="'Stop current run'"
+                          @click.stop="abortRun"
+                        />
+                        <v-btn
+                          v-else-if="runStateForEnvelope(entry.id) === 'hitl'"
+                          icon="mdi-reload"
+                          size="small"
+                          variant="text"
+                          :title="'Resume run'"
+                          @click.stop="handleHitlResume"
+                        />
+                        <v-btn
+                          v-else
+                          icon="mdi-play"
+                          size="small"
+                          variant="text"
+                          :title="'Run plan'"
+                          :disabled="runStatus !== 'idle' && !isEnvelopeActive(entry.id)"
+                          @click.stop="runPlanForTemplate(entry.id)"
+                        />
+                      </div>
+                      <v-tooltip v-if="runStateForEnvelope(entry.id) !== 'idle'" location="bottom">
+                        <template #activator="{ props }">
+                          <v-chip
+                            size="small"
+                            v-bind="props"
+                            :color="runStatusChipColor"
+                            variant="tonal"
+                            class="text-caption"
+                          >
+                            {{ runStatusChipLabel }}
+                          </v-chip>
+                        </template>
+                        <span>{{ runStatusTooltip }}</span>
+                      </v-tooltip>
+                      <v-menu>
+                        <template #activator="{ props }">
+                          <v-btn
+                            icon="mdi-dots-vertical"
+                            size="small"
+                            variant="text"
+                            v-bind="props"
+                            @click.stop
+                          />
+                        </template>
+                        <v-list density="compact">
+                          <v-list-item @click.stop="openEnvelopeEditor({ id: entry.id })">
+                            <v-list-item-title>Edit envelope</v-list-item-title>
+                          </v-list-item>
+                          <v-list-item @click.stop="openEnvelopeEditor({ id: entry.id, focus: 'label' })">
+                            <v-list-item-title>Rename draft</v-list-item-title>
+                          </v-list-item>
+                          <v-divider />
+                          <v-list-item @click.stop="removeDraft(entry.id)">
+                            <v-list-item-title class="text-error">Delete draft</v-list-item-title>
+                          </v-list-item>
+                        </v-list>
+                      </v-menu>
                     </div>
                   </template>
                 </v-list-item>
@@ -1313,382 +1558,135 @@ watch(
           </v-card>
 
           <v-card>
-            <v-card-title class="text-subtitle-1">Registry Snapshot</v-card-title>
-            <v-card-subtitle v-if="metadata?.generatedAt">
-              Updated {{ formatTimestamp(metadata?.generatedAt) }}
-            </v-card-subtitle>
-            <v-card-text>
-              <div class="text-body-2 mb-2">
-                <strong>Capabilities:</strong>
-                {{ metadata?.capabilities?.active.length ?? 0 }} active /
-                {{ metadata?.capabilities?.all.length ?? 0 }} total
-              </div>
-              <div v-if="capabilitySnapshot.length" class="mt-3">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <div class="text-caption text-medium-emphasis text-uppercase">Registered capabilities</div>
-                  <v-btn
-                    icon
-                    size="x-small"
-                    variant="text"
-                    :aria-label="showCapabilitySnapshot ? 'Collapse capabilities' : 'Expand capabilities'"
-                    @click="showCapabilitySnapshot = !showCapabilitySnapshot"
-                  >
-                    <v-icon :icon="showCapabilitySnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
-                  </v-btn>
-                </div>
-                <v-expand-transition>
-                  <v-list
-                    v-if="showCapabilitySnapshot"
-                    density="compact"
-                    class="registry-overview-list"
-                  >
-                    <v-list-item
-                      v-for="cap in capabilitySnapshot"
-                      :key="cap.capabilityId"
-                      class="py-1"
-                    >
-                      <v-list-item-title>{{ formatCapabilityName(cap) }}</v-list-item-title>
-                      <v-list-item-subtitle>
-                        {{ formatCapabilityDetails(cap) }}
-                      </v-list-item-subtitle>
-                    </v-list-item>
-                  </v-list>
-                </v-expand-transition>
-              </div>
-              <div class="text-body-2 mt-4 mb-2">
-                <strong>Facets:</strong> {{ metadata?.facets.length ?? 0 }}
-              </div>
-              <div v-if="facetCatalogEntries.length" class="mt-1">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <div class="text-caption text-medium-emphasis text-uppercase">Facet catalog</div>
-                  <v-btn
-                    icon
-                    size="x-small"
-                    variant="text"
-                    :aria-label="showFacetSnapshot ? 'Collapse facets' : 'Expand facets'"
-                    @click="showFacetSnapshot = !showFacetSnapshot"
-                  >
-                    <v-icon :icon="showFacetSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
-                  </v-btn>
-                </div>
-                <v-expand-transition>
-                  <div v-if="showFacetSnapshot" class="registry-facets">
-                    <v-chip
-                      v-for="facet in facetCatalogEntries"
-                      :key="facet.name"
-                      size="small"
-                      class="me-1 mb-1"
-                      variant="outlined"
-                      :color="facetDirectionColor(facet.metadata?.direction)"
-                    >
-                      <span>{{ formatFacetLabel(facet) }}</span>
-                      <span
-                        v-if="facet.metadata?.direction"
-                        class="ms-2 text-caption text-medium-emphasis"
+            <v-expansion-panels variant="accordion">
+              <v-expansion-panel value="registry" :model-value="[]">
+                <v-expansion-panel-title class="text-subtitle-1">
+                  <div class="d-flex flex-column">
+                    <span>Registry Snapshot</span>
+                    <span v-if="metadata?.generatedAt" class="text-caption text-medium-emphasis">
+                      Updated {{ formatTimestamp(metadata?.generatedAt) }}
+                    </span>
+                  </div>
+                </v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <div class="text-body-2 mb-2">
+                    <strong>Capabilities:</strong>
+                    {{ metadata?.capabilities?.active.length ?? 0 }} active /
+                    {{ metadata?.capabilities?.all.length ?? 0 }} total
+                  </div>
+                  <div v-if="capabilitySnapshot.length" class="mt-3">
+                    <div class="d-flex align-center justify-space-between mb-1">
+                      <div class="text-caption text-medium-emphasis text-uppercase">Registered capabilities</div>
+                      <v-btn
+                        icon
+                        size="x-small"
+                        variant="text"
+                        :aria-label="showCapabilitySnapshot ? 'Collapse capabilities' : 'Expand capabilities'"
+                        @click="showCapabilitySnapshot = !showCapabilitySnapshot"
                       >
-                        {{ formatFacetDirectionLabel(facet.metadata?.direction) }}
-                      </span>
-                    </v-chip>
+                        <v-icon :icon="showCapabilitySnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                      </v-btn>
+                    </div>
+                    <v-expand-transition>
+                      <v-list
+                        v-if="showCapabilitySnapshot"
+                        density="compact"
+                        class="registry-overview-list"
+                      >
+                        <v-list-item
+                          v-for="cap in capabilitySnapshot"
+                          :key="cap.capabilityId"
+                          class="py-1"
+                        >
+                          <v-list-item-title>{{ formatCapabilityName(cap) }}</v-list-item-title>
+                          <v-list-item-subtitle>
+                            {{ formatCapabilityDetails(cap) }}
+                          </v-list-item-subtitle>
+                        </v-list-item>
+                      </v-list>
+                    </v-expand-transition>
                   </div>
-                </v-expand-transition>
-              </div>
-              <div v-if="metadata?.capabilityCatalog?.length" class="mt-4">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <div class="text-caption text-medium-emphasis text-uppercase">Capability catalog prompts</div>
-                  <v-btn
-                    icon
-                    size="x-small"
-                    variant="text"
-                    :aria-label="showCatalogSnapshot ? 'Collapse catalog prompts' : 'Expand catalog prompts'"
-                    @click="showCatalogSnapshot = !showCatalogSnapshot"
-                  >
-                    <v-icon :icon="showCatalogSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
-                  </v-btn>
-                </div>
-                <v-expand-transition>
-                  <div v-if="showCatalogSnapshot" class="d-flex flex-wrap">
-                    <v-chip
-                      v-for="cap in metadata.capabilityCatalog"
-                      :key="cap.id"
-                      size="small"
-                      color="primary"
-                      class="me-1 mb-1"
-                      variant="outlined"
-                    >
-                      {{ cap.name }} <span class="text-caption text-medium-emphasis ms-2">({{ cap.id }})</span>
-                    </v-chip>
+                  <div class="text-body-2 mt-4 mb-2">
+                    <strong>Facets:</strong> {{ metadata?.facets.length ?? 0 }}
                   </div>
-                </v-expand-transition>
-              </div>
-              <v-alert
-                v-if="metadataError"
-                type="error"
-                variant="tonal"
-                border="start"
-                class="mt-4"
-                :text="metadataError"
-              />
-            </v-card-text>
-          </v-card>
-        </v-col>
-
-        <v-col cols="12" md="5" class="d-flex flex-column ga-4">
-          <v-card class="flex-grow-1 d-flex flex-column">
-            <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
-              <span>TaskEnvelope Editor</span>
-              <div class="d-flex ga-2">
-                <v-btn icon="mdi-code-braces" variant="text" @click="openRawJsonEditor">
-                  <v-icon icon="mdi-code-braces" />
-                </v-btn>
-                <v-btn icon="mdi-content-copy" variant="text" @click="copyEnvelopeJson">
-                  <v-icon icon="mdi-content-copy" />
-                </v-btn>
-                <v-btn icon="mdi-format-align-justify" variant="text" @click="formatDraft" :disabled="!parsedEnvelope">
-                  <v-icon icon="mdi-code-tags" />
-                </v-btn>
-              </div>
-            </v-card-title>
-            <v-card-text class="flex-grow-1 d-flex flex-column">
-              <v-alert
-                v-if="parseError"
-                type="error"
-                variant="tonal"
-                border="start"
-                class="mb-3"
-                :text="parseError"
-              />
-              <v-alert
-                v-for="issue in validationIssues"
-                :key="issue"
-                type="error"
-                variant="tonal"
-                border="start"
-                class="mb-2"
-                :text="issue"
-              />
-              <v-alert
-                v-for="warning in validationWarnings"
-                :key="warning"
-                type="warning"
-                variant="tonal"
-                border="start"
-                class="mb-2"
-                :text="warning"
-              />
-              <v-alert
-                v-for="field in conversationMissingFields"
-                :key="`missing-${field}`"
-                type="warning"
-                variant="tonal"
-                border="start"
-                class="mb-2"
-              >
-                <div class="text-body-2">
-                  Missing required field: <span class="font-mono">{{ field }}</span>
-                </div>
-              </v-alert>
-              <v-alert
-                v-if="currentTemplateError"
-                type="warning"
-                variant="tonal"
-                border="start"
-                class="mb-2"
-                :text="`Template parsing error: ${currentTemplateError}`"
-              />
-              <div class="envelope-preview flex-grow-1">
-                <VueJsonPretty
-                  v-if="parsedEnvelope"
-                  :data="parsedEnvelope"
-                  :deep="2"
-                  :show-length="false"
-                  class="envelope-json-tree font-mono"
-                />
-                <div v-else class="envelope-preview-placeholder font-mono">
-                  // Provide inputs via the conversational builder or raw JSON editor to render an envelope preview.
-                </div>
-              </div>
-            </v-card-text>
-            <v-divider />
-            <v-card-actions>
-              <v-btn
-                color="primary"
-                prepend-icon="mdi-play"
-                data-testid="flex-run-button"
-                @click="runEnvelope"
-                :disabled="runDisabled"
-              >
-                Run plan
-              </v-btn>
-              <v-btn
-                v-if="runStatus === 'running'"
-                prepend-icon="mdi-stop-circle-outline"
-                variant="text"
-                @click="abortRun"
-              >
-                Stop
-              </v-btn>
-              <v-btn
-                v-else-if="runStatus === 'hitl'"
-                prepend-icon="mdi-reload"
-                variant="text"
-                @click="handleHitlResume"
-              >
-                Resume
-              </v-btn>
-              <v-spacer />
-              <div class="d-flex flex-column text-caption text-medium-emphasis">
-                <span>Status: {{ runStatus }}</span>
-                <span v-if="runError" class="text-error">Error: {{ runError }}</span>
-                <span v-if="correlationId">CID: {{ correlationId }}</span>
-              </div>
-            </v-card-actions>
-          </v-card>
-
-          <v-card class="conversation-card">
-            <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
-              <span>Conversational Builder</span>
-              <div class="d-flex ga-2">
-                <v-btn
-                  icon="mdi-undo"
-                  variant="text"
-                  :disabled="!envelopeBuilder.canUndo"
-                  @click="undoLastBuilderDelta"
-                  :title="envelopeBuilder.canUndo ? 'Undo last assistant change' : 'No changes to undo'"
-                >
-                  <v-icon icon="mdi-undo" />
-                </v-btn>
-                <v-btn
-                  icon="mdi-refresh"
-                  variant="text"
-                  :disabled="envelopeBuilder.pending"
-                  @click="resetEnvelopeConversation"
-                  title="Reset conversation"
-                >
-                  <v-icon icon="mdi-refresh" />
-                </v-btn>
-              </div>
-            </v-card-title>
-            <v-card-subtitle>Guide GPT-5 to refine TaskEnvelope fields one response at a time.</v-card-subtitle>
-            <v-divider />
-            <v-card-text class="conversation-card__body d-flex flex-column ga-3">
-              <v-alert
-                v-if="envelopeBuilder.error"
-                type="error"
-                variant="tonal"
-                border="start"
-              >
-                {{ envelopeBuilder.error }}
-              </v-alert>
-
-              <div v-if="envelopeBuilder.messages.length" class="conversation-history">
-                <div
-                  v-for="message in envelopeBuilder.messages"
-                  :key="message.id"
-                  :class="[
-                    'conversation-entry',
-                    `conversation-entry--${message.role}`,
-                    { 'conversation-entry--error': message.error }
-                  ]"
-                >
-                  <div class="conversation-entry__meta">
-                    <span class="conversation-entry__role">{{ formatConversationRole(message.role) }}</span>
-                    <span class="conversation-entry__timestamp">{{ formatTimestamp(message.timestamp) }}</span>
+                  <div v-if="facetCatalogEntries.length" class="mt-1">
+                    <div class="d-flex align-center justify-space-between mb-1">
+                      <div class="text-caption text-medium-emphasis text-uppercase">Facet catalog</div>
+                      <v-btn
+                        icon
+                        size="x-small"
+                        variant="text"
+                        :aria-label="showFacetSnapshot ? 'Collapse facets' : 'Expand facets'"
+                        @click="showFacetSnapshot = !showFacetSnapshot"
+                      >
+                        <v-icon :icon="showFacetSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                      </v-btn>
+                    </div>
+                    <v-expand-transition>
+                      <div v-if="showFacetSnapshot" class="registry-facets">
+                        <v-chip
+                          v-for="facet in facetCatalogEntries"
+                          :key="facet.name"
+                          size="small"
+                          class="me-1 mb-1"
+                          variant="outlined"
+                          :color="facetDirectionColor(facet.metadata?.direction)"
+                        >
+                          <span>{{ formatFacetLabel(facet) }}</span>
+                          <span
+                            v-if="facet.metadata?.direction"
+                            class="ms-2 text-caption text-medium-emphasis"
+                          >
+                            {{ formatFacetDirectionLabel(facet.metadata?.direction) }}
+                          </span>
+                        </v-chip>
+                      </div>
+                    </v-expand-transition>
                   </div>
-                  <div class="conversation-entry__content">{{ message.content }}</div>
-                </div>
-              </div>
-              <div v-else class="conversation-placeholder text-body-2 text-medium-emphasis">
-                Start a guided conversation to collect objectives, knobs, and policies without hand-editing JSON.
-              </div>
-
-              <div v-if="envelopeBuilder.lastDeltaSummary.length" class="conversation-delta">
-                <div class="text-caption text-medium-emphasis mb-1">Recent updates</div>
-                <ul class="ma-0 ps-4 text-body-2">
-                  <li v-for="item in envelopeBuilder.lastDeltaSummary" :key="item">{{ item }}</li>
-                </ul>
-              </div>
-
-              <div v-if="envelopeBuilder.lastWarnings.length" class="conversation-warnings">
-                <v-alert
-                  v-for="warning in envelopeBuilder.lastWarnings"
-                  :key="warning"
-                  type="warning"
-                  variant="tonal"
-                  border="start"
-                  class="mb-2"
-                >
-                  {{ warning }}
-                </v-alert>
-              </div>
-
-              <div v-if="envelopeBuilder.hasConversation" class="conversation-input">
-                <v-textarea
-                  v-model="builderInput"
-                  variant="outlined"
-                  class="font-mono"
-                  auto-grow
-                  rows="3"
-                  :disabled="envelopeBuilder.pending"
-                  label="Your response"
-                  placeholder="Describe objectives, constraints, or adjustments..."
-                  @keydown.enter.exact.prevent="sendEnvelopeBuilderMessage"
-                  @keydown.enter.shift.stop
-                />
-                <div class="d-flex justify-end mt-2 ga-2">
-                  <v-btn
-                    variant="text"
-                    @click="builderInput = ''"
-                    :disabled="!builderInput"
-                  >
-                    Clear
-                  </v-btn>
-                  <v-btn
-                    color="primary"
-                    prepend-icon="mdi-send"
-                    :loading="envelopeBuilder.pending"
-                    :disabled="!builderInput.trim() || envelopeBuilder.pending"
-                    @click="sendEnvelopeBuilderMessage"
-                  >
-                    Send
-                  </v-btn>
-                </div>
-              </div>
-              <div v-else class="conversation-start">
-                <v-btn
-                  color="primary"
-                  prepend-icon="mdi-message-plus"
-                  :loading="envelopeBuilder.pending"
-                  @click="startEnvelopeConversation"
-                >
-                  Start guided builder
-                </v-btn>
-              </div>
-            </v-card-text>
-            <v-divider />
-            <v-card-actions class="d-flex align-center">
-              <div class="text-caption text-medium-emphasis" v-if="envelopeBuilder.conversationId">
-                Conversation ID: {{ envelopeBuilder.conversationId }}
-              </div>
-              <v-spacer />
-              <v-btn
-                variant="text"
-                prepend-icon="mdi-refresh"
-                :disabled="envelopeBuilder.pending"
-                @click="resetEnvelopeConversation"
-              >
-                Reset
-              </v-btn>
-              <v-btn
-                variant="text"
-                prepend-icon="mdi-undo"
-                :disabled="!envelopeBuilder.canUndo"
-                @click="undoLastBuilderDelta"
-              >
-                Undo change
-              </v-btn>
-            </v-card-actions>
+                  <div v-if="metadata?.capabilityCatalog?.length" class="mt-4">
+                    <div class="d-flex align-center justify-space-between mb-1">
+                      <div class="text-caption text-medium-emphasis text-uppercase">Capability catalog prompts</div>
+                      <v-btn
+                        icon
+                        size="x-small"
+                        variant="text"
+                        :aria-label="showCatalogSnapshot ? 'Collapse catalog prompts' : 'Expand catalog prompts'"
+                        @click="showCatalogSnapshot = !showCatalogSnapshot"
+                      >
+                        <v-icon :icon="showCatalogSnapshot ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                      </v-btn>
+                    </div>
+                    <v-expand-transition>
+                      <div v-if="showCatalogSnapshot" class="d-flex flex-wrap">
+                        <v-chip
+                          v-for="cap in metadata.capabilityCatalog"
+                          :key="cap.id"
+                          size="small"
+                          color="primary"
+                          class="me-1 mb-1"
+                          variant="outlined"
+                        >
+                          {{ cap.name }} <span class="text-caption text-medium-emphasis ms-2">({{ cap.id }})</span>
+                        </v-chip>
+                      </div>
+                    </v-expand-transition>
+                  </div>
+                  <v-alert
+                    v-if="metadataError"
+                    type="error"
+                    variant="tonal"
+                    border="start"
+                    class="mt-4"
+                    :text="metadataError"
+                  />
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
           </v-card>
-
+          <FlexSandboxPlanInspector
+            :plan="plan"
+            :capability-catalog="capabilityRecords"
+          />
           <v-card>
             <v-card-title class="text-subtitle-1">Event Stream</v-card-title>
             <v-card-subtitle>Latest planner telemetry</v-card-subtitle>
@@ -1737,7 +1735,7 @@ watch(
           </v-card>
         </v-col>
 
-        <v-col cols="12" md="4" class="d-flex flex-column ga-4">
+        <v-col cols="12" md="7" class="d-flex flex-column ga-4">
           <FlexTaskPanel
             v-if="hasFlexTasks || flexTasksLoading"
           />
@@ -1745,32 +1743,273 @@ watch(
             v-if="showHitlPanel"
             @resume="handleHitlResume"
           />
-          <FlexSandboxPlanInspector
-            :plan="plan"
-            :capability-catalog="capabilityRecords"
-          />
         </v-col>
       </v-row>
     </template>
   </v-container>
 
-  <v-dialog v-model="renameDialog.open" max-width="420">
-    <v-card>
-      <v-card-title class="text-subtitle-1">Rename draft</v-card-title>
+  <v-dialog
+    :model-value="envelopeEditorOpen"
+    @update:model-value="(value) => {
+      if (!value) {
+        closeEnvelopeEditor()
+      }
+    }"
+    max-width="1200"
+    scrollable
+  >
+    <v-card class="envelope-editor-dialog d-flex flex-column">
+      <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
+        <span>TaskEnvelope Workspace</span>
+        <v-btn icon="mdi-close" variant="text" @click="closeEnvelopeEditor">
+          <v-icon icon="mdi-close" />
+        </v-btn>
+      </v-card-title>
       <v-card-text>
-        <v-text-field
-          v-model="renameDialog.label"
-          label="Draft name"
-          density="comfortable"
-          autofocus
-          hint="Use a descriptive name to identify this payload"
-        />
+        <v-row class="ga-4">
+          <v-col cols="12" md="7" class="d-flex flex-column">
+            <v-card class="flex-grow-1 d-flex flex-column">
+              <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
+                <span>TaskEnvelope Editor</span>
+                <div class="d-flex ga-2">
+                  <v-btn icon="mdi-code-braces" variant="text" @click="openRawJsonEditor">
+                    <v-icon icon="mdi-code-braces" />
+                  </v-btn>
+                  <v-btn icon="mdi-content-copy" variant="text" @click="copyEnvelopeJson">
+                    <v-icon icon="mdi-content-copy" />
+                  </v-btn>
+                  <v-btn icon="mdi-format-align-justify" variant="text" @click="formatDraft" :disabled="!parsedEnvelope">
+                    <v-icon icon="mdi-code-tags" />
+                  </v-btn>
+                </div>
+              </v-card-title>
+              <v-card-text class="flex-grow-1 d-flex flex-column ga-4">
+                <v-text-field
+                  ref="envelopeLabelField"
+                  v-model="envelopeEditorLabel"
+                  label="Draft name"
+                  variant="outlined"
+                  density="comfortable"
+                  :disabled="!selectedTemplateId"
+                  @blur="commitEnvelopeLabel"
+                  @keydown.enter.prevent="commitEnvelopeLabel"
+                />
+                <v-alert
+                  v-if="parseError"
+                  type="error"
+                  variant="tonal"
+                  border="start"
+                  :text="parseError"
+                />
+                <v-alert
+                  v-for="issue in validationIssues"
+                  :key="issue"
+                  type="error"
+                  variant="tonal"
+                  border="start"
+                  class="mb-2"
+                  :text="issue"
+                />
+                <v-alert
+                  v-for="warning in validationWarnings"
+                  :key="warning"
+                  type="warning"
+                  variant="tonal"
+                  border="start"
+                  class="mb-2"
+                  :text="warning"
+                />
+                <v-alert
+                  v-for="field in conversationMissingFields"
+                  :key="`missing-${field}`"
+                  type="warning"
+                  variant="tonal"
+                  border="start"
+                  class="mb-2"
+                >
+                  <div class="text-body-2">
+                    Missing required field: <span class="font-mono">{{ field }}</span>
+                  </div>
+                </v-alert>
+                <v-alert
+                  v-if="currentTemplateError"
+                  type="warning"
+                  variant="tonal"
+                  border="start"
+                  class="mb-2"
+                  :text="`Template parsing error: ${currentTemplateError}`"
+                />
+                <div class="envelope-preview flex-grow-1">
+                  <VueJsonPretty
+                    v-if="parsedEnvelope"
+                    :data="parsedEnvelope"
+                    :deep="2"
+                    :show-length="false"
+                    class="envelope-json-tree font-mono"
+                  />
+                  <div v-else class="envelope-preview-placeholder font-mono">
+                    // Provide inputs via the conversational builder or raw JSON editor to render an envelope preview.
+                  </div>
+                </div>
+              </v-card-text>
+              <v-divider />
+              <v-card-actions>
+                <div class="text-caption text-medium-emphasis">
+                  Run controls now live in the template actions menu.
+                </div>
+                <v-spacer />
+                <v-btn variant="text" @click="closeEnvelopeEditor">Close</v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-col>
+          <v-col cols="12" md="5" class="d-flex flex-column">
+            <v-card class="conversation-card">
+              <v-card-title class="text-subtitle-1 d-flex align-center justify-space-between">
+                <span>Conversational Builder</span>
+                <div class="d-flex ga-2">
+                  <v-btn
+                    icon="mdi-undo"
+                    variant="text"
+                    :disabled="!envelopeBuilder.canUndo"
+                    @click="undoLastBuilderDelta"
+                    :title="envelopeBuilder.canUndo ? 'Undo last assistant change' : 'No changes to undo'"
+                  >
+                    <v-icon icon="mdi-undo" />
+                  </v-btn>
+                  <v-btn
+                    icon="mdi-refresh"
+                    variant="text"
+                    :disabled="envelopeBuilder.pending"
+                    @click="resetEnvelopeConversation"
+                    title="Reset conversation"
+                  >
+                    <v-icon icon="mdi-refresh" />
+                  </v-btn>
+                </div>
+              </v-card-title>
+              <v-card-subtitle>Guide GPT-5 to refine TaskEnvelope fields one response at a time.</v-card-subtitle>
+              <v-divider />
+              <v-card-text class="conversation-card__body d-flex flex-column ga-3">
+                <v-alert
+                  v-if="envelopeBuilder.error"
+                  type="error"
+                  variant="tonal"
+                  border="start"
+                >
+                  {{ envelopeBuilder.error }}
+                </v-alert>
+
+                <div v-if="envelopeBuilder.messages.length" class="conversation-history">
+                  <div
+                    v-for="message in envelopeBuilder.messages"
+                    :key="message.id"
+                    :class="[
+                      'conversation-entry',
+                      `conversation-entry--${message.role}`,
+                      { 'conversation-entry--error': message.error }
+                    ]"
+                  >
+                    <div class="conversation-entry__meta">
+                      <span class="conversation-entry__role">{{ formatConversationRole(message.role) }}</span>
+                      <span class="conversation-entry__timestamp">{{ formatTimestamp(message.timestamp) }}</span>
+                    </div>
+                    <div class="conversation-entry__content">{{ message.content }}</div>
+                  </div>
+                </div>
+                <div v-else class="conversation-placeholder text-body-2 text-medium-emphasis">
+                  Start a guided conversation to collect objectives, knobs, and policies without hand-editing JSON.
+                </div>
+
+                <div v-if="envelopeBuilder.lastDeltaSummary.length" class="conversation-delta">
+                  <div class="text-caption text-medium-emphasis mb-1">Recent updates</div>
+                  <ul class="ma-0 ps-4 text-body-2">
+                    <li v-for="item in envelopeBuilder.lastDeltaSummary" :key="item">{{ item }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="envelopeBuilder.lastWarnings.length" class="conversation-warnings">
+                  <v-alert
+                    v-for="warning in envelopeBuilder.lastWarnings"
+                    :key="warning"
+                    type="warning"
+                    variant="tonal"
+                    border="start"
+                    class="mb-2"
+                  >
+                    {{ warning }}
+                  </v-alert>
+                </div>
+
+                <div v-if="envelopeBuilder.hasConversation" class="conversation-input">
+                  <v-textarea
+                    v-model="builderInput"
+                    variant="outlined"
+                    class="font-mono"
+                    auto-grow
+                    rows="3"
+                    :disabled="envelopeBuilder.pending"
+                    label="Your response"
+                    placeholder="Describe objectives, constraints, or adjustments..."
+                    @keydown.enter.exact.prevent="sendEnvelopeBuilderMessage"
+                    @keydown.enter.shift.stop
+                  />
+                  <div class="d-flex justify-end mt-2 ga-2">
+                    <v-btn
+                      variant="text"
+                      @click="builderInput = ''"
+                      :disabled="!builderInput"
+                    >
+                      Clear
+                    </v-btn>
+                    <v-btn
+                      color="primary"
+                      prepend-icon="mdi-send"
+                      :loading="envelopeBuilder.pending"
+                      :disabled="!builderInput.trim() || envelopeBuilder.pending"
+                      @click="sendEnvelopeBuilderMessage"
+                    >
+                      Send
+                    </v-btn>
+                  </div>
+                </div>
+                <div v-else class="conversation-start">
+                  <v-btn
+                    color="primary"
+                    prepend-icon="mdi-message-plus"
+                    :loading="envelopeBuilder.pending"
+                    @click="startEnvelopeConversation"
+                  >
+                    Start guided builder
+                  </v-btn>
+                </div>
+              </v-card-text>
+              <v-divider />
+              <v-card-actions class="d-flex align-center">
+                <div class="text-caption text-medium-emphasis" v-if="envelopeBuilder.conversationId">
+                  Conversation ID: {{ envelopeBuilder.conversationId }}
+                </div>
+                <v-spacer />
+                <v-btn
+                  variant="text"
+                  prepend-icon="mdi-refresh"
+                  :disabled="envelopeBuilder.pending"
+                  @click="resetEnvelopeConversation"
+                >
+                  Reset
+                </v-btn>
+                <v-btn
+                  variant="text"
+                  prepend-icon="mdi-undo"
+                  :disabled="!envelopeBuilder.canUndo"
+                  @click="undoLastBuilderDelta"
+                >
+                  Undo change
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-col>
+        </v-row>
       </v-card-text>
-      <v-card-actions>
-        <v-spacer />
-        <v-btn variant="text" @click="renameDialog.open = false">Cancel</v-btn>
-        <v-btn color="primary" @click="applyRenameDraft">Save</v-btn>
-      </v-card-actions>
     </v-card>
   </v-dialog>
 

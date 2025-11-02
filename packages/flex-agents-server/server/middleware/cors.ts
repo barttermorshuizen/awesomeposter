@@ -57,7 +57,7 @@ export default defineEventHandler((event) => {
   )
   setHeader(event, 'Access-Control-Allow-Credentials', 'true')
   setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
-  setHeader(event, 'Access-Control-Max-Age', '600')
+  setHeader(event, 'Access-Control-Max-Age', 600)
 
   // Short-circuit preflight
   if (req.method === 'OPTIONS') {

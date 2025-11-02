@@ -30,6 +30,7 @@ class InMemoryRepository implements FlexCapabilityRepository {
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      agentType: payload.agentType ?? 'ai',
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,
       outputContract: (payload.outputContract ?? null) as any,
@@ -38,6 +39,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,
+      instructionTemplates: (payload.instructionTemplates ?? null) as any,
+      assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
       status: 'active',
       lastSeenAt: now,
@@ -65,7 +68,7 @@ class InMemoryRepository implements FlexCapabilityRepository {
 function makeApp(handler: any) {
   const app = createApp()
   app.use('/api/v1/flex/capabilities/register', handler)
-  const listener = toNodeListener(app)
+  const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
   return async (payload?: any) => {
     const method = 'POST'
     const body = payload ? JSON.stringify(payload) : undefined
@@ -108,6 +111,7 @@ describe('POST /api/v1/flex/capabilities/register', () => {
       version: '0.0.1',
       displayName: 'Planner Core',
       summary: 'Plans tasks dynamically.',
+      agentType: 'ai',
       inputContract: {
         mode: 'json_schema',
         schema: {
@@ -121,6 +125,7 @@ describe('POST /api/v1/flex/capabilities/register', () => {
       },
       heartbeat: { intervalSeconds: 5 },
       outputContract: {
+        mode: 'json_schema',
         schema: {
           type: 'object',
           properties: { plan: { type: 'array' } }

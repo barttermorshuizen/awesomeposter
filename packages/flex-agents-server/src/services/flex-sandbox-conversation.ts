@@ -474,42 +474,30 @@ async function executeTurn(
         model: getDefaultModelName(),
         messages: session.messages,
         max_completion_tokens: 1600,
-        response_format: { type: 'json_object' },
-        reasoning: { max_tokens: 256 }
+        response_format: { type: 'json_object' }
       })
     } catch (error) {
       const status = typeof (error as any)?.status === 'number' ? Number((error as any).status) : 500
       const message = error instanceof Error ? error.message : String(error)
-      const unsupportedReasoning =
-        status === 400 && typeof message === 'string' && message.toLowerCase().includes('reasoning')
-      if (unsupportedReasoning) {
-        completion = await client.chat.completions.create({
-          model: getDefaultModelName(),
-          messages: session.messages,
-          max_completion_tokens: 1600,
-          response_format: { type: 'json_object' }
+      const statusCode = status === 429 ? 429 : 502
+      const statusMessage =
+        status === 429
+          ? 'OpenAI rate limit reached. Please retry shortly.'
+          : 'Failed to contact GPT-5 for conversational builder.'
+      try {
+        logger.error('flex_sandbox_conversation_openai_error', {
+          conversationId: session.id,
+          status,
+          error: message
         })
-      } else {
-        const statusCode = status === 429 ? 429 : 502
-        const statusMessage =
-          status === 429
-            ? 'OpenAI rate limit reached. Please retry shortly.'
-            : 'Failed to contact GPT-5 for conversational builder.'
-        try {
-          logger.error('flex_sandbox_conversation_openai_error', {
-            conversationId: session.id,
-            status,
-            error: message
-          })
-        } catch {
-          // ignore logging issues
-        }
-        throw createError({
-          statusCode,
-          statusMessage,
-          data: { detail: message }
-        })
+      } catch {
+        // ignore logging issues
       }
+      throw createError({
+        statusCode,
+        statusMessage,
+        data: { detail: message }
+      })
     }
 
     content = extractAssistantContent(completion)

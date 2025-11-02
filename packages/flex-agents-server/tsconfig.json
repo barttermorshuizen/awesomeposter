@@ -2,7 +2,6 @@
   "extends": "@tsconfig/node22/tsconfig.json",
   "compilerOptions": {
     "outDir": "./.tsbuild",
-    "rootDir": ".",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
@@ -14,11 +13,16 @@
     ]
   },
   "include": [
-    "./**/*.ts"
+    "./src/**/*.ts",
+    "./routes/**/*.ts",
+    "./server/**/*.ts",
+    "./types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     ".nitro",
-    ".output"
+    ".output",
+    "__tests__",
+    "tests"
   ]
 }

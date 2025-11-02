@@ -274,7 +274,7 @@ function parseExpression(ctx: ParseContext): ConditionExpressionNode {
 
 function parseOr(ctx: ParseContext): ConditionExpressionNode {
   let node = parseAnd(ctx)
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const token = matchOperator(ctx, '||')
     if (!token) break
@@ -293,7 +293,7 @@ function parseOr(ctx: ParseContext): ConditionExpressionNode {
 
 function parseAnd(ctx: ParseContext): ConditionExpressionNode {
   let node = parseEquality(ctx)
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const token = matchOperator(ctx, '&&')
     if (!token) break
@@ -312,7 +312,7 @@ function parseAnd(ctx: ParseContext): ConditionExpressionNode {
 
 function parseEquality(ctx: ParseContext): ConditionExpressionNode {
   let node = parseComparison(ctx)
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const eqToken = matchOperator(ctx, '==')
     if (eqToken) {
@@ -347,7 +347,7 @@ function parseEquality(ctx: ParseContext): ConditionExpressionNode {
 
 function parseComparison(ctx: ParseContext): ConditionExpressionNode {
   let node = parseUnary(ctx)
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const gteToken = matchOperator(ctx, '>=')
     if (gteToken) {

@@ -15,6 +15,6 @@ export default defineEventHandler((event) => {
     requestedHeaders || 'content-type,accept,authorization,x-correlation-id'
   )
   setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
-  setHeader(event, 'Access-Control-Max-Age', '600')
+  setHeader(event, 'Access-Control-Max-Age', 600)
   return sendNoContent(event, 204)
 })

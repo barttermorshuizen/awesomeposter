@@ -26,6 +26,7 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      agentType: payload.agentType ?? 'ai',
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,
       outputContract: (payload.outputContract ?? null) as any,
@@ -34,6 +35,8 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
       cost: (payload.cost ?? null) as any,
       preferredModels: payload.preferredModels ?? [],
       heartbeat: (payload.heartbeat ?? null) as any,
+      instructionTemplates: (payload.instructionTemplates ?? null) as any,
+      assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
       status: 'active',
       lastSeenAt: now,
@@ -73,6 +76,7 @@ describe('FlexCapabilityRegistryService', () => {
     version: '1.0.0',
     displayName: 'English Writer',
     summary: 'Writes marketing copy in English.',
+    agentType: 'ai',
     inputTraits: { languages: ['en'] },
     inputContract: {
       mode: 'json_schema',
@@ -86,6 +90,7 @@ describe('FlexCapabilityRegistryService', () => {
       }
     },
     outputContract: {
+      mode: 'json_schema',
       schema: {
         type: 'object',
         properties: {

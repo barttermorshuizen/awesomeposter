@@ -16,7 +16,7 @@ import type {
   Action,
   HitlContractSummary,
   ContextBundle,
-  FlexFacetProvenanceMap
+  FacetProvenance
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -25,10 +25,16 @@ import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } 
 import { getRuntime, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
-import { RunContext, type RunContextSnapshot } from './run-context'
+import { RunContext, type RunContextSnapshot, type FacetSnapshot } from './run-context'
 import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
 import type { RuntimePolicyEffect } from './policy-normalizer'
 import type { PendingPolicyActionState, PolicyAttemptState, RuntimePolicySnapshotMode } from './runtime-policy-types'
+import {
+  ensureFacetPlaceholders,
+  extractFacetSnapshotValues,
+  mergeFacetValuesIntoStructure,
+  stripPlannerFields
+} from './run-context-utils'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
 type AjvInstance = ReturnType<typeof Ajv>
@@ -44,6 +50,20 @@ const POLICY_ACTION_SOURCE = {
   rejection: 'hitl.reject'
 } as const
 type PolicyActionSource = (typeof POLICY_ACTION_SOURCE)[keyof typeof POLICY_ACTION_SOURCE]
+
+type NodeTiming = { startedAt?: Date | null; completedAt?: Date | null }
+
+type EventFacetProvenanceEntry = {
+  title: string
+  direction: 'input' | 'output'
+  facet: string
+  pointer: string
+}
+
+type EventFacetProvenanceMap = {
+  input?: EventFacetProvenanceEntry[]
+  output?: EventFacetProvenanceEntry[]
+}
 
 export class FlexValidationError extends Error {
   constructor(
@@ -68,40 +88,55 @@ function stringifyForPrompt(value: unknown, maxLength = 4000): string {
   return `${text.slice(0, maxLength)}\n... (truncated)`
 }
 
+type JsonPrimitive = string | number | boolean | null
+
+function isJsonSchemaShape(value: unknown): value is JsonSchemaShape {
+  return Boolean(value) && typeof value === 'object'
+}
+
 function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
   if (!schema || typeof schema !== 'object') {
     return z.unknown()
   }
 
-  if (Object.prototype.hasOwnProperty.call(schema, 'const')) {
-    return z.literal((schema as any).const)
+  const schemaRecord = schema as Record<string, unknown>
+
+  if (Object.prototype.hasOwnProperty.call(schemaRecord, 'const')) {
+    const literalValue = schemaRecord.const as JsonPrimitive | undefined
+    if (literalValue !== undefined) {
+      return z.literal(literalValue)
+    }
   }
 
-  if (Array.isArray((schema as any).enum) && (schema as any).enum.length) {
-    const literals = (schema as any).enum.map((value: unknown) => z.literal(value as any))
+  if (Array.isArray(schemaRecord.enum) && schemaRecord.enum.length) {
+    const enumValues = schemaRecord.enum as JsonPrimitive[]
+    const literals = enumValues.map((value) => z.literal(value) as unknown as ZodTypeAny)
     if (literals.length === 1) return literals[0]
-    return z.union(literals as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+    return z.union(literals as unknown as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
   }
 
-  const combinators = (schema as any).anyOf || (schema as any).oneOf
-  if (Array.isArray(combinators) && combinators.length) {
-    const variants = combinators.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+  const combinators =
+    (Array.isArray(schemaRecord.anyOf) ? (schemaRecord.anyOf as JsonSchemaShape[]) : undefined) ??
+    (Array.isArray(schemaRecord.oneOf) ? (schemaRecord.oneOf as JsonSchemaShape[]) : undefined)
+  if (combinators && combinators.length) {
+    const variants = combinators.filter(isJsonSchemaShape).map((entry) => jsonSchemaToZod(entry))
     if (variants.length === 1) return variants[0]
-    return z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
+    return z.union(variants as unknown as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
   }
 
-  if (Array.isArray((schema as any).allOf) && (schema as any).allOf.length) {
-    const variants = (schema as any).allOf.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+  if (Array.isArray(schemaRecord.allOf) && schemaRecord.allOf.length) {
+    const allOfEntries = (schemaRecord.allOf as JsonSchemaShape[]).filter(isJsonSchemaShape)
+    const variants = allOfEntries.map((entry) => jsonSchemaToZod(entry))
     const [first, ...rest] = variants
     if (!first) return z.unknown()
     return rest.reduce((acc, current) => z.intersection(acc, current), first)
   }
 
-  const rawType = (schema as any).type
+  const rawType = schemaRecord.type as string | string[] | undefined
   const typeList = Array.isArray(rawType) ? rawType : rawType ? [rawType] : []
   if (typeList.length > 1) {
     const variants = typeList.map((entry: string) =>
-      jsonSchemaToZod({ ...(schema as any), type: entry } as JsonSchemaShape)
+      jsonSchemaToZod({ ...(schemaRecord as Record<string, unknown>), type: entry } as JsonSchemaShape)
     )
     return z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
   }
@@ -110,12 +145,15 @@ function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
   switch (type) {
     case 'string': {
       let str = z.string()
-      if (typeof (schema as any).minLength === 'number') str = str.min((schema as any).minLength)
-      if (typeof (schema as any).maxLength === 'number') str = str.max((schema as any).maxLength)
-      if (Array.isArray((schema as any).pattern)) {
-        str = str.regex(new RegExp((schema as any).pattern))
-      } else if (typeof (schema as any).pattern === 'string') {
-        str = str.regex(new RegExp((schema as any).pattern))
+      const minLength = schemaRecord.minLength
+      if (typeof minLength === 'number') str = str.min(minLength)
+      const maxLength = schemaRecord.maxLength
+      if (typeof maxLength === 'number') str = str.max(maxLength)
+      const pattern = schemaRecord.pattern
+      if (Array.isArray(pattern)) {
+        str = str.regex(new RegExp(String(pattern)))
+      } else if (typeof pattern === 'string') {
+        str = str.regex(new RegExp(pattern))
       }
       return str
     }
@@ -123,8 +161,10 @@ function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
     case 'integer': {
       let num = z.number()
       if (type === 'integer') num = num.int()
-      if (typeof (schema as any).minimum === 'number') num = num.min((schema as any).minimum)
-      if (typeof (schema as any).maximum === 'number') num = num.max((schema as any).maximum)
+      const minimum = schemaRecord.minimum
+      if (typeof minimum === 'number') num = num.min(minimum)
+      const maximum = schemaRecord.maximum
+      if (typeof maximum === 'number') num = num.max(maximum)
       return num
     }
     case 'boolean':
@@ -132,10 +172,10 @@ function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
     case 'null':
       return z.null()
     case 'array': {
-      const items = (schema as any).items
+      const items = schemaRecord.items
       let elementSchema: ZodTypeAny
       if (Array.isArray(items) && items.length) {
-        const variants = items.map((entry: JsonSchemaShape) => jsonSchemaToZod(entry))
+        const variants = items.filter(isJsonSchemaShape).map((entry) => jsonSchemaToZod(entry))
         elementSchema =
           variants.length === 1 ? variants[0] : z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]])
       } else if (items && typeof items === 'object') {
@@ -144,40 +184,47 @@ function jsonSchemaToZod(schema: JsonSchemaShape): ZodTypeAny {
         elementSchema = z.unknown()
       }
       let arr = z.array(elementSchema)
-      if (typeof (schema as any).minItems === 'number') arr = arr.min((schema as any).minItems)
-      if (typeof (schema as any).maxItems === 'number') arr = arr.max((schema as any).maxItems)
-      if ((schema as any).uniqueItems) arr = arr.superRefine((list, ctx) => {
-        const seen = new Set<string>()
-        for (const item of list) {
-          const key = JSON.stringify(item)
-          if (seen.has(key)) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Items must be unique' })
-            break
+      const minItems = schemaRecord.minItems
+      if (typeof minItems === 'number') arr = arr.min(minItems)
+      const maxItems = schemaRecord.maxItems
+      if (typeof maxItems === 'number') arr = arr.max(maxItems)
+      if (schemaRecord.uniqueItems) {
+        const uniqueArray: ZodTypeAny = arr.superRefine((list, ctx) => {
+          const seen = new Set<string>()
+          for (const item of list) {
+            const key = JSON.stringify(item)
+            if (seen.has(key)) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Items must be unique' })
+              break
+            }
+            seen.add(key)
           }
-          seen.add(key)
-        }
-      })
+        })
+        return uniqueArray
+      }
       return arr
     }
     case 'object':
     default: {
-      const properties = ((schema as any).properties ?? {}) as Record<string, JsonSchemaShape>
-      const required = new Set<string>(Array.isArray((schema as any).required) ? (schema as any).required : [])
+      const properties = (schemaRecord.properties ?? {}) as Record<string, JsonSchemaShape>
+      const requiredList = Array.isArray(schemaRecord.required)
+        ? (schemaRecord.required as string[])
+        : []
+      const required = new Set<string>(requiredList)
       const shape: Record<string, ZodTypeAny> = {}
       for (const [key, definition] of Object.entries(properties)) {
         const childSchema = jsonSchemaToZod(definition)
         shape[key] = required.has(key) ? childSchema : childSchema.optional()
       }
-      let obj = z.object(shape)
-      const additional = (schema as any).additionalProperties
+      const baseObject = z.object(shape)
+      const additional = schemaRecord.additionalProperties
       if (additional === false) {
-        obj = obj.strict()
-      } else if (additional && typeof additional === 'object') {
-        obj = obj.catchall(jsonSchemaToZod(additional as JsonSchemaShape))
-      } else {
-        obj = obj.passthrough()
+        return baseObject.strict()
       }
-      return obj
+      if (additional && typeof additional === 'object') {
+        return baseObject.catchall(jsonSchemaToZod(additional as JsonSchemaShape))
+      }
+      return baseObject.passthrough()
     }
   }
 }
@@ -285,6 +332,7 @@ export class FlexExecutionEngine {
   private readonly runtime: StructuredRuntime
   private readonly capabilityRegistry: FlexCapabilityRegistryService
   private readonly facetCompiler: FacetContractCompiler
+  private readonly facetCatalog = getFacetCatalog()
 
   constructor(
     private readonly persistence = new FlexRunPersistence(),
@@ -297,7 +345,7 @@ export class FlexExecutionEngine {
     this.ajv = options?.ajv ?? new Ajv({ allErrors: true })
     this.runtime = options?.runtime ?? getRuntime()
     this.capabilityRegistry = options?.capabilityRegistry ?? getFlexCapabilityRegistryService()
-    this.facetCompiler = new FacetContractCompiler({ catalog: getFacetCatalog() })
+    this.facetCompiler = new FacetContractCompiler({ catalog: this.facetCatalog })
   }
 
   private getExecutorType(node: FlexPlanNode): 'ai' | 'human' {
@@ -318,11 +366,14 @@ export class FlexExecutionEngine {
     opts: FlexExecutionOptions
   ) {
     const startedAt = new Date()
+    const nodeContext = node.bundle
+      ? (JSON.parse(JSON.stringify(node.bundle)) as ContextBundle)
+      : null
     await this.persistence.markNode(runId, node.id, {
       status: 'running',
       capabilityId: node.capabilityId,
       label: node.label,
-      context: node.bundle,
+      context: nodeContext ?? undefined,
       startedAt
     })
 
@@ -346,7 +397,12 @@ export class FlexExecutionEngine {
           virtual: true,
           startedAt: startedAt.toISOString()
         },
-        { runId, nodeId: node.id, planVersion: plan.version, facetProvenance: node.provenance ?? undefined }
+        {
+          runId,
+          nodeId: node.id,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(node.provenance)
+        }
       )
     )
 
@@ -377,7 +433,12 @@ export class FlexExecutionEngine {
           virtual: true,
           completedAt: completedAt.toISOString()
         },
-        { runId, nodeId: node.id, planVersion: plan.version, facetProvenance: node.provenance ?? undefined }
+        {
+          runId,
+          nodeId: node.id,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(node.provenance)
+        }
       )
     )
   }
@@ -388,7 +449,7 @@ export class FlexExecutionEngine {
     const completedNodeIds = new Set<string>(opts.initialState?.completedNodeIds ?? Object.keys(initialNodeOutputs))
     const runContext = opts.runContext ?? RunContext.fromSnapshot(opts.initialState?.facets)
     const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
-    const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    const nodeTimings = new Map<string, NodeTiming>()
     const policyActions: PendingPolicyActionState[] = Array.isArray(opts.initialState?.policyActions)
       ? opts.initialState!.policyActions.map((action) => ({ ...action }))
       : []
@@ -540,7 +601,7 @@ export class FlexExecutionEngine {
         contracts: node.contracts ? JSON.parse(JSON.stringify(node.contracts)) : undefined,
         facets: node.facets ? JSON.parse(JSON.stringify(node.facets)) : undefined,
         assignment: isHumanExecutor
-          ? this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: runContext.snapshot() })
+          ? this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: runContext.getAllFacets() })
           : undefined
       })
 
@@ -549,7 +610,7 @@ export class FlexExecutionEngine {
           runId,
           nodeId: node.id,
           planVersion: plan.version,
-          facetProvenance: node.provenance ?? undefined
+          facetProvenance: this.normalizeFacetProvenance(node.provenance)
         })
       )
 
@@ -615,12 +676,12 @@ export class FlexExecutionEngine {
               completedAt: completedAt.toISOString(),
               output: result.output
             },
-            {
-              runId,
-              nodeId: node.id,
-              planVersion: plan.version,
-              facetProvenance: node.provenance ?? undefined
-            }
+      {
+        runId,
+        nodeId: node.id,
+        planVersion: plan.version,
+        facetProvenance: this.normalizeFacetProvenance(node.provenance)
+      }
           )
         )
 
@@ -716,7 +777,7 @@ export class FlexExecutionEngine {
               nodeId: node.id,
               message: serialized.message as string | undefined,
               planVersion: plan.version,
-              facetProvenance: node.provenance ?? undefined
+              facetProvenance: this.normalizeFacetProvenance(node.provenance)
             }
           )
         )
@@ -786,7 +847,11 @@ export class FlexExecutionEngine {
       this.buildEvent(
         'complete',
         { output: finalOutput },
-        { runId, planVersion: plan.version, facetProvenance: provenance ?? undefined }
+        {
+          runId,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(provenance)
+        }
       )
     )
     return finalOutput
@@ -801,7 +866,7 @@ export class FlexExecutionEngine {
     runContext: RunContext,
     nodeOutputs: Map<string, Record<string, unknown>>,
     nodeStatuses: Map<string, FlexPlanNodeStatus>,
-    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>,
+    nodeTimings: Map<string, NodeTiming>,
     completedNodeIds: Set<string>,
     policyActions: PendingPolicyActionState[],
     policyAttempts: Map<string, number>
@@ -811,7 +876,8 @@ export class FlexExecutionEngine {
     }
 
     const capability = await this.resolveCapability(node.capabilityId)
-    await this.validateCapabilityInputs(capability, node, runId, opts)
+    const capabilityInputs = this.resolveCapabilityInputs(node, runContext)
+    await this.validateCapabilityInputs(capability, node, runId, opts, capabilityInputs)
 
     const dispatch = async () => {
       try {
@@ -822,7 +888,15 @@ export class FlexExecutionEngine {
           correlationId: opts.correlationId
         })
       } catch {}
-      const outcome = await this.dispatchCapability(capability, node, envelope, plan, runContext, nodeOutputs)
+      const outcome = await this.dispatchCapability(
+        capability,
+        node,
+        envelope,
+        plan,
+        runContext,
+        nodeOutputs,
+        capabilityInputs
+      )
       try {
         getLogger().info('flex_capability_dispatch_complete', {
           runId,
@@ -931,7 +1005,7 @@ export class FlexExecutionEngine {
       runContext: RunContext
       nodeOutputs: Map<string, Record<string, unknown>>
       nodeStatuses: Map<string, FlexPlanNodeStatus>
-      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      nodeTimings: Map<string, NodeTiming>
       completedNodeIds: Set<string>
       policyActions: PendingPolicyActionState[]
       policyAttempts: Map<string, number>
@@ -1052,11 +1126,42 @@ export class FlexExecutionEngine {
     }
   }
 
+  private resolveCapabilityInputs(node: FlexPlanNode, runContext: RunContext): Record<string, unknown> {
+    const base =
+      node.bundle.inputs && typeof node.bundle.inputs === 'object'
+        ? (this.cloneJson(node.bundle.inputs) as Record<string, unknown>)
+        : {}
+    const merged: Record<string, unknown> = { ...base }
+    const facetNames = Array.isArray(node.facets?.input) ? node.facets!.input : []
+    if (facetNames.length) {
+      const facetSnapshot = runContext.getAllFacets()
+      facetNames.forEach((facet) => {
+        const entry = facetSnapshot[facet]
+        if (entry && Object.prototype.hasOwnProperty.call(entry, 'value')) {
+          merged[facet] = this.cloneJson(entry.value)
+        }
+      })
+    }
+    return merged
+  }
+
+  private cloneJson<T>(value: T): T {
+    if (value === undefined || value === null) {
+      return value
+    }
+    try {
+      return JSON.parse(JSON.stringify(value)) as T
+    } catch {
+      return value
+    }
+  }
+
   private async validateCapabilityInputs(
     capability: CapabilityRecord,
     node: FlexPlanNode,
     runId: string,
-    opts: FlexExecutionOptions
+    opts: FlexExecutionOptions,
+    inputs: Record<string, unknown>
   ) {
     if ((node.kind ?? 'execution') !== 'execution') {
       return
@@ -1077,7 +1182,7 @@ export class FlexExecutionEngine {
 
     await this.validateSchema(
       candidateContract.schema as Record<string, unknown>,
-      node.bundle.inputs ?? {},
+      inputs,
       { scope: 'capability_input', runId, nodeId: node.id },
       opts
     )
@@ -1089,9 +1194,10 @@ export class FlexExecutionEngine {
     envelope: TaskEnvelope,
     plan: FlexPlan,
     runContext: RunContext,
-    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeOutputs: Map<string, Record<string, unknown>>,
+    capabilityInputs: Record<string, unknown>
   ): Promise<CapabilityResult> {
-    return this.executeCapability(capability, node, envelope, plan, runContext, nodeOutputs)
+    return this.executeCapability(capability, node, envelope, plan, runContext, nodeOutputs, capabilityInputs)
   }
 
   private async executeCapability(
@@ -1100,7 +1206,8 @@ export class FlexExecutionEngine {
     envelope: TaskEnvelope,
     plan: FlexPlan,
     runContext: RunContext,
-    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeOutputs: Map<string, Record<string, unknown>>,
+    capabilityInputs: Record<string, unknown>
   ): Promise<CapabilityResult> {
     const schemaShape = this.getOutputSchemaShape(node, capability)
     const schema = this.buildOutputSchema(schemaShape)
@@ -1113,18 +1220,20 @@ export class FlexExecutionEngine {
       runContext,
       nodeOutputs,
       schemaShape,
-      promptContext
+      promptContext,
+      inputs: capabilityInputs
     })
+
+    const metadata = (node.metadata ?? {}) as Record<string, unknown>
+    const plannerStage =
+      typeof metadata.plannerStage === 'string' ? (metadata.plannerStage as string) : undefined
 
     const runOptions: {
       schemaName: string
       toolsAllowlist?: string[]
       toolPolicy?: 'auto' | 'required' | 'off'
     } = {
-      schemaName:
-        (typeof (node.metadata as Record<string, unknown> | undefined)?.plannerStage === 'string'
-          ? (node.metadata as Record<string, unknown>).plannerStage
-          : undefined) ?? capability.capabilityId
+      schemaName: plannerStage ?? capability.capabilityId
     }
 
     if (promptContext?.toolsAllowlist?.length) {
@@ -1132,7 +1241,7 @@ export class FlexExecutionEngine {
       runOptions.toolPolicy = 'auto'
     }
 
-    const result = await this.runtime.runStructured<any>(schema, messages, runOptions)
+    const result = await this.runtime.runStructured<Record<string, unknown>>(schema, messages, runOptions)
 
     return {
       output: (result ?? {}) as Record<string, unknown>
@@ -1171,16 +1280,17 @@ export class FlexExecutionEngine {
     nodeOutputs: Map<string, Record<string, unknown>>
     schemaShape: JsonSchemaShape | null
     promptContext: ReturnType<typeof resolveCapabilityPrompt> | null
+    inputs: Record<string, unknown>
   }): Array<{ role: 'system' | 'user'; content: string }> {
-    const { capability, node, envelope, runContext, nodeOutputs, schemaShape, promptContext } = args
+    const { capability, node, envelope, runContext, nodeOutputs, schemaShape, promptContext, inputs } = args
     const instructions = Array.isArray(node.bundle.instructions) ? node.bundle.instructions : []
     const metadata = (node.metadata ?? {}) as Record<string, unknown>
     const plannerStage =
       typeof metadata.plannerStage === 'string' ? metadata.plannerStage : node.label ?? node.kind ?? 'unspecified'
     const rationale = Array.isArray(node.rationale) ? node.rationale : []
-    const inputs = (node.bundle.inputs ?? {}) as Record<string, unknown>
     const policies = (node.bundle.policies ?? {}) as Record<string, unknown>
     const facetSnapshot = runContext.getAllFacets()
+    const outputFacetNames = this.resolveOutputFacets(node, capability)
     const completedOutputs = Array.from(nodeOutputs.entries()).map(([nodeId, value]) => ({
       nodeId,
       sample: value
@@ -1219,6 +1329,11 @@ export class FlexExecutionEngine {
 
     if (completedOutputs.length) {
       userSections.push(`Recently completed node outputs:\n${stringifyForPrompt(completedOutputs)}`)
+    }
+
+    const feedbackSummary = this.buildFeedbackSummary(facetSnapshot, outputFacetNames)
+    if (feedbackSummary) {
+      userSections.push(feedbackSummary)
     }
 
     if (facetSnapshot && Object.keys(facetSnapshot).length) {
@@ -1294,6 +1409,87 @@ export class FlexExecutionEngine {
     return {}
   }
 
+  private resolveOutputFacets(node: FlexPlanNode, capability: CapabilityRecord): string[] {
+    const nodeFacets = Array.isArray(node.facets?.output) ? node.facets.output : []
+    if (nodeFacets.length) {
+      return [...nodeFacets]
+    }
+    const contract = capability.outputContract
+    if (contract && contract.mode === 'facets' && Array.isArray(contract.facets)) {
+      return [...contract.facets]
+    }
+    return []
+  }
+
+  private buildFeedbackSummary(facets: FacetSnapshot | undefined, outputFacets: string[]): string | null {
+    if (!facets || !outputFacets.length) return null
+    const feedbackEntry = facets.feedback
+    const feedbackValue = feedbackEntry?.value
+    if (!Array.isArray(feedbackValue) || !feedbackValue.length) return null
+
+    type FeedbackRecord = {
+      facet: string
+      message: string
+      severity?: string
+      resolution?: string
+      author?: string
+      timestamp?: string
+    }
+
+    const sanitizeMessage = (value: string): string => {
+      const normalized = value.replace(/\s+/g, ' ').trim()
+      if (!normalized) return '(no message provided)'
+      if (normalized.length <= 240) return normalized
+      return `${normalized.slice(0, 237)}…`
+    }
+
+    const candidates: FeedbackRecord[] = []
+    for (const entry of feedbackValue) {
+      if (!entry || typeof entry !== 'object') continue
+      const record = entry as Record<string, unknown>
+      const facet = typeof record.facet === 'string' ? record.facet : null
+      if (!facet || !outputFacets.includes(facet)) continue
+      const message =
+        typeof record.message === 'string' ? sanitizeMessage(record.message) : '(no message provided)'
+      const candidate: FeedbackRecord = { facet, message }
+      if (typeof record.severity === 'string') candidate.severity = record.severity
+      if (typeof record.resolution === 'string') candidate.resolution = record.resolution
+      if (typeof record.author === 'string') candidate.author = record.author
+      if (typeof record.timestamp === 'string') candidate.timestamp = record.timestamp
+      candidates.push(candidate)
+    }
+
+    if (!candidates.length) return null
+
+    const unresolved = candidates.filter(
+      (entry) => !entry.resolution || entry.resolution === 'open'
+    )
+    const prioritized = unresolved.length ? unresolved : candidates
+    const maxItems = 5
+
+    const formatTimestamp = (value?: string): string => {
+      if (!value) return ''
+      const trimmed = value.length > 19 ? value.slice(0, 19) : value
+      return ` @ ${trimmed}`
+    }
+
+    const lines = prioritized.slice(0, maxItems).map((entry) => {
+      const meta: string[] = []
+      if (entry.severity) meta.push(entry.severity)
+      if (entry.resolution && entry.resolution !== 'open') meta.push(entry.resolution)
+      const metaText = meta.length ? ` (${meta.join(', ')})` : ''
+      const authorText = entry.author ? ` — ${entry.author}` : ''
+      const timestampText = formatTimestamp(entry.timestamp)
+      return `- [${entry.facet}]${metaText} ${entry.message}${authorText}${timestampText}`
+    })
+
+    if (prioritized.length > maxItems) {
+      lines.push(`- … ${prioritized.length - maxItems} additional feedback item(s) omitted for brevity.`)
+    }
+
+    return ['Relevant feedback for output facets:', ...lines].join('\n')
+  }
+
   private getTerminalExecutionNode(plan: FlexPlan): FlexPlanNode | undefined {
     for (let i = plan.nodes.length - 1; i >= 0; i -= 1) {
       const node = plan.nodes[i]
@@ -1315,7 +1511,8 @@ export class FlexExecutionEngine {
       node: FlexPlanNode
     }
   ): { payload: HitlRequestPayload; operatorPrompt: string; contractSummary?: HitlContractSummary } {
-    const variants = Array.isArray((finalOutput as any)?.copyVariants) ? (finalOutput as any).copyVariants : []
+    const copyVariantsRaw = (finalOutput as Record<string, unknown>).copyVariants
+    const variants = Array.isArray(copyVariantsRaw) ? copyVariantsRaw : []
     const objective = (envelope.objective || '').trim()
     const summaryLines = [
       objective ? `Objective: ${objective}` : null,
@@ -1334,13 +1531,11 @@ export class FlexExecutionEngine {
     const defaultQuestion = 'Review generated flex run output and approve before completing the request.'
     const question = context.question?.trim() ? context.question.trim() : defaultQuestion
 
+    summaryLines.push('Operator options: Approve output or request revisions.')
+
     const payload: HitlRequestPayload = {
       question,
       kind: 'approval',
-      options: [
-        { id: 'approve', label: 'Approve output' },
-        { id: 'revise', label: 'Request revisions' }
-      ],
       allowFreeForm: true,
       urgency: 'normal',
       additionalContext: summaryLines.join(' ')
@@ -1371,8 +1566,30 @@ export class FlexExecutionEngine {
       facets:
         inputFacets.length || outputFacets.length
           ? {
-              ...(inputFacets.length ? { input: cloneJson(node.provenance.input) } : {}),
-              ...(outputFacets.length ? { output: cloneJson(node.provenance.output) } : {})
+              ...(inputFacets.length
+                ? {
+                    input: cloneJson(
+              node.provenance.input?.map(({ title, facet, pointer }) => ({
+                title,
+                direction: 'input' as const,
+                facet,
+                pointer
+              }))
+                    )
+                  }
+                : {}),
+              ...(outputFacets.length
+                ? {
+                    output: cloneJson(
+              node.provenance.output?.map(({ title, facet, pointer }) => ({
+                title,
+                direction: 'output' as const,
+                facet,
+                pointer
+              }))
+                    )
+                  }
+                : {})
             }
           : undefined
     }
@@ -1515,7 +1732,7 @@ export class FlexExecutionEngine {
       node: FlexPlanNode
       nodeOutputs: Map<string, Record<string, unknown>>
       nodeStatuses: Map<string, FlexPlanNodeStatus>
-      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      nodeTimings: Map<string, NodeTiming>
       completedNodeIds: Set<string>
       policyAttempts: Map<string, number>
     }
@@ -1608,7 +1825,7 @@ export class FlexExecutionEngine {
       runContext: RunContext
       nodeOutputs: Map<string, Record<string, unknown>>
       nodeStatuses: Map<string, FlexPlanNodeStatus>
-      nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+      nodeTimings: Map<string, NodeTiming>
       completedNodeIds: Set<string>
       policyActions: PendingPolicyActionState[]
       policyAttempts: Map<string, number>
@@ -1676,7 +1893,7 @@ export class FlexExecutionEngine {
     runContext: RunContext
     nodeOutputs: Map<string, Record<string, unknown>>
     nodeStatuses: Map<string, FlexPlanNodeStatus>
-    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    nodeTimings: Map<string, NodeTiming>
     completedNodeIds: Set<string>
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
@@ -1832,14 +2049,66 @@ export class FlexExecutionEngine {
     }
 
     const contextExtras: Record<string, unknown> = {}
-    if (node.bundle.inputs) {
-      contextExtras.currentInputs = JSON.parse(JSON.stringify(node.bundle.inputs))
+
+    const bundleInputs =
+      node.bundle.inputs && typeof node.bundle.inputs === 'object'
+        ? stripPlannerFields(JSON.parse(JSON.stringify(node.bundle.inputs)) as Record<string, unknown>)
+        : null
+    const bundleOutputs =
+      node.bundle.priorOutputs && typeof node.bundle.priorOutputs === 'object'
+        ? (JSON.parse(JSON.stringify(node.bundle.priorOutputs)) as Record<string, unknown>)
+        : null
+
+    const runContextSnapshotClone =
+      options.runContextSnapshot && Object.keys(options.runContextSnapshot).length
+        ? JSON.parse(JSON.stringify(options.runContextSnapshot))
+        : null
+
+    const metadataInputs =
+      metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>).currentInputs === 'object'
+        ? stripPlannerFields(
+            JSON.parse(JSON.stringify((metadata as Record<string, unknown>).currentInputs)) as Record<string, unknown>
+          )
+        : null
+
+    const runContextInputValues = extractFacetSnapshotValues(options.runContextSnapshot ?? null, facetsSnapshot.input)
+    const mergedInputs = mergeFacetValuesIntoStructure(
+      metadataInputs ?? bundleInputs ?? null,
+      runContextInputValues,
+      Array.isArray(node.provenance?.input) ? node.provenance?.input : undefined
+    )
+    const sanitizedInputs = stripPlannerFields(mergedInputs)
+    if (sanitizedInputs && Object.keys(sanitizedInputs).length) {
+      contextExtras.currentInputs = ensureFacetPlaceholders(sanitizedInputs, facetsSnapshot.input)
+    } else {
+      contextExtras.currentInputs = ensureFacetPlaceholders(null, facetsSnapshot.input)
     }
-    if (node.bundle.priorOutputs) {
-      contextExtras.currentOutput = JSON.parse(JSON.stringify(node.bundle.priorOutputs))
+
+    const metadataOutputs =
+      metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>).currentOutput === 'object'
+        ? stripPlannerFields(
+            JSON.parse(JSON.stringify((metadata as Record<string, unknown>).currentOutput)) as Record<string, unknown>
+          )
+        : null
+
+    const sanitizedBundleOutputs =
+      bundleOutputs && typeof bundleOutputs === 'object' ? stripPlannerFields(bundleOutputs) : null
+
+    const runContextOutputValues = extractFacetSnapshotValues(options.runContextSnapshot ?? null, facetsSnapshot.output)
+    const mergedOutputs = mergeFacetValuesIntoStructure(
+      metadataOutputs ?? sanitizedBundleOutputs ?? null,
+      runContextOutputValues,
+      Array.isArray(node.provenance?.output) ? node.provenance?.output : undefined
+    )
+    const sanitizedOutputs = stripPlannerFields(mergedOutputs)
+    if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
+      contextExtras.currentOutput = ensureFacetPlaceholders(sanitizedOutputs, facetsSnapshot.output)
+    } else {
+      contextExtras.currentOutput = ensureFacetPlaceholders(null, facetsSnapshot.output)
     }
-    if (options.runContextSnapshot && Object.keys(options.runContextSnapshot).length) {
-      contextExtras.runContextSnapshot = JSON.parse(JSON.stringify(options.runContextSnapshot))
+
+    if (runContextSnapshotClone) {
+      contextExtras.runContextSnapshot = runContextSnapshotClone
     }
 
     const metadataClone =
@@ -1847,13 +2116,21 @@ export class FlexExecutionEngine {
         ? JSON.parse(JSON.stringify(metadata as Record<string, unknown>))
         : {}
     Object.assign(metadataClone, contextExtras)
+    metadataClone.expectedOutputFacets = Array.isArray(facetsSnapshot.output)
+      ? [...facetsSnapshot.output]
+      : []
+    metadataClone.expectedInputFacets = Array.isArray(facetsSnapshot.input)
+      ? [...facetsSnapshot.input]
+      : []
 
     return this.compactPayload({
       ...payload,
       metadata: Object.keys(metadataClone).length ? metadataClone : null,
       facets: facetsSnapshot,
       contracts: contractsSnapshot,
-      facetProvenance: Object.keys(provenanceSnapshot).length ? provenanceSnapshot : null,
+      facetProvenance: Object.keys(provenanceSnapshot).length
+        ? this.normalizeFacetProvenance(provenanceSnapshot)
+        : undefined,
       context: Object.keys(contextExtras).length ? contextExtras : null
     })
   }
@@ -1881,7 +2158,7 @@ export class FlexExecutionEngine {
       provenanceSnapshot.output = node.provenance.output.map((entry) => ({ ...entry }))
     }
     if (Object.keys(provenanceSnapshot).length) {
-      context.facetProvenance = provenanceSnapshot
+      context.facetProvenance = this.normalizeFacetProvenance(provenanceSnapshot)
     }
 
     const contractsSnapshot: Record<string, unknown> = {
@@ -1893,6 +2170,31 @@ export class FlexExecutionEngine {
     const runSnapshot = runContext.snapshot()
     if (runSnapshot && Object.keys(runSnapshot).length) {
       context.runContextSnapshot = JSON.parse(JSON.stringify(runSnapshot))
+      const runContextInputs = extractFacetSnapshotValues(runSnapshot.facets, facetsSnapshot.input)
+      if (Object.keys(runContextInputs).length) {
+        const mergedInputStructure = mergeFacetValuesIntoStructure(
+          context.currentInputs ?? context.inputs ?? null,
+          runContextInputs,
+          Array.isArray(node.provenance?.input) ? node.provenance?.input : undefined
+        )
+        const sanitizedInputs = stripPlannerFields(mergedInputStructure)
+        if (sanitizedInputs && Object.keys(sanitizedInputs).length) {
+          context.currentInputs = sanitizedInputs
+        }
+      }
+
+      const runContextOutputs = extractFacetSnapshotValues(runSnapshot.facets, facetsSnapshot.output)
+      if (Object.keys(runContextOutputs).length) {
+        const mergedOutputStructure = mergeFacetValuesIntoStructure(
+          context.currentOutput ?? context.priorOutputs ?? context.artifacts ?? null,
+          runContextOutputs,
+          Array.isArray(node.provenance?.output) ? node.provenance?.output : undefined
+        )
+        const sanitizedOutputs = stripPlannerFields(mergedOutputStructure)
+        if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
+          context.currentOutput = sanitizedOutputs
+        }
+      }
     }
 
     return context
@@ -1907,7 +2209,7 @@ export class FlexExecutionEngine {
     runContext: RunContext
     nodeStatuses: Map<string, FlexPlanNodeStatus>
     nodeOutputs: Map<string, Record<string, unknown>>
-    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    nodeTimings: Map<string, NodeTiming>
     completedNodeIds: Set<string>
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
@@ -1929,6 +2231,42 @@ export class FlexExecutionEngine {
     } = args
 
     const facetsSnapshot = runContext.snapshot()
+    const bundleRecord = node.bundle as (ContextBundle & Record<string, unknown>) | undefined
+    if (bundleRecord) {
+      const facetState = facetsSnapshot.facets ?? {}
+      const inputFacets = Array.isArray(node.facets?.input) ? node.facets.input : []
+      const outputFacets = Array.isArray(node.facets?.output) ? node.facets.output : []
+
+      const bundleInputsBase = stripPlannerFields(
+        (bundleRecord.currentInputs ?? bundleRecord.inputs ?? null) as Record<string, unknown> | null
+      )
+      const runInputs = extractFacetSnapshotValues(facetState, inputFacets)
+      const mergedInputs = mergeFacetValuesIntoStructure(
+        bundleInputsBase,
+        runInputs,
+        Array.isArray(node.provenance?.input) ? node.provenance?.input : undefined
+      )
+      const sanitizedInputs = stripPlannerFields(mergedInputs)
+      if (sanitizedInputs && Object.keys(sanitizedInputs).length) {
+        bundleRecord.currentInputs = sanitizedInputs
+      }
+
+      const bundleOutputsBase = stripPlannerFields(
+        (bundleRecord.currentOutput ?? bundleRecord.priorOutputs ?? null) as Record<string, unknown> | null
+      )
+      const runOutputs = extractFacetSnapshotValues(facetState, outputFacets)
+      const mergedOutputs = mergeFacetValuesIntoStructure(
+        bundleOutputsBase,
+        runOutputs,
+        Array.isArray(node.provenance?.output) ? node.provenance?.output : undefined
+      )
+      const sanitizedOutputs = stripPlannerFields(mergedOutputs)
+      if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
+        bundleRecord.currentOutput = sanitizedOutputs
+      }
+
+      bundleRecord.runContextSnapshot = JSON.parse(JSON.stringify(facetsSnapshot))
+    }
     const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
 
     await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
@@ -1941,7 +2279,7 @@ export class FlexExecutionEngine {
         nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
         policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
         policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
-        mode: 'human'
+        mode: 'pause'
       }
     })
 
@@ -1955,7 +2293,9 @@ export class FlexExecutionEngine {
       })
     } catch {}
 
-    const assignmentPayload = this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: facetsSnapshot })
+    const assignmentPayload = this.buildHumanAssignmentPayload(node, runId, {
+      runContextSnapshot: facetsSnapshot.facets
+    })
     try {
       await opts.onEvent(
         this.buildEvent(
@@ -1982,7 +2322,7 @@ export class FlexExecutionEngine {
     node: FlexPlanNode
     nodeOutputs: Map<string, Record<string, unknown>>
     nodeStatuses: Map<string, FlexPlanNodeStatus>
-    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    nodeTimings: Map<string, NodeTiming>
     completedNodeIds: Set<string>
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
@@ -2067,7 +2407,7 @@ export class FlexExecutionEngine {
     finalOutput: Record<string, unknown>
     nodeOutputs: Map<string, Record<string, unknown>>
     nodeStatuses: Map<string, FlexPlanNodeStatus>
-    nodeTimings: Map<string, { startedAt?: Date; completedAt?: Date }>
+    nodeTimings: Map<string, NodeTiming>
     completedNodeIds: Set<string>
     schemaHash?: string | null
     rationale?: string
@@ -2110,7 +2450,7 @@ export class FlexExecutionEngine {
         runId,
         threadId: hitl.threadId ?? undefined,
         stepId: targetNode.id,
-        capabilityId: targetNode.capabilityId,
+        capabilityId: targetNode.capabilityId ?? undefined,
         hitlService: hitl.service,
         limit: hitl.limit,
         onRequest: (record, state) => {
@@ -2147,12 +2487,14 @@ export class FlexExecutionEngine {
       hitl.updateState?.(latestState)
     }
 
-    if (!pendingRecord) {
+    const requestRecord = pendingRecord
+    if (!requestRecord) {
       throw new Error('HITL request was not created')
     }
+    const resolvedRecord: HitlRequestRecord = requestRecord
 
     if (pendingPolicyAction) {
-      pendingPolicyAction.requestId = pendingRecord.id
+      pendingPolicyAction.requestId = resolvedRecord.id
     }
 
     await this.persistence.markNode(runId, targetNode.id, {
@@ -2183,7 +2525,7 @@ export class FlexExecutionEngine {
     })
     await this.persistence.updateStatus(runId, 'awaiting_hitl')
     if (hitl.onRequest) {
-      await hitl.onRequest(pendingRecord, latestState)
+      await hitl.onRequest(resolvedRecord, latestState)
     }
     throw new HitlPauseError()
   }
@@ -2232,13 +2574,19 @@ export class FlexExecutionEngine {
   }
 
   private mapAjvErrors(errors: ErrorObject[]) {
-    return errors.map((err) => ({
-      message: err.message,
-      instancePath: (err as any).instancePath ?? err.dataPath ?? '',
-      keyword: err.keyword,
-      params: err.params ?? {},
-      schemaPath: err.schemaPath
-    }))
+    return errors.map((err) => {
+      const legacyPath = (err as { dataPath?: string }).dataPath
+      const candidate = (err as { instancePath?: string }).instancePath
+      const instancePath =
+        typeof candidate === 'string' && candidate.length ? candidate : legacyPath ?? ''
+      return {
+        message: err.message,
+        instancePath,
+        keyword: err.keyword,
+        params: err.params ?? {},
+        schemaPath: err.schemaPath
+      }
+    })
   }
 
   private async emitValidationError(
@@ -2304,7 +2652,7 @@ export class FlexExecutionEngine {
       nodeId?: string
       message?: string
       planVersion?: number
-      facetProvenance?: FlexFacetProvenanceMap | null
+      facetProvenance?: EventFacetProvenanceMap
     }
   ): FlexEvent {
     return {
@@ -2315,7 +2663,47 @@ export class FlexExecutionEngine {
       nodeId: meta?.nodeId,
       message: meta?.message,
       planVersion: typeof meta?.planVersion === 'number' ? meta.planVersion : undefined,
-      facetProvenance: meta?.facetProvenance ?? undefined
+      facetProvenance: meta?.facetProvenance
+    }
+  }
+
+  private normalizeFacetProvenance(
+    provenance: { input?: FacetProvenance[]; output?: FacetProvenance[] } | Record<string, unknown> | null | undefined
+  ): EventFacetProvenanceMap | undefined {
+    if (!provenance || typeof provenance !== 'object') return undefined
+
+    const resolveEntries = (
+      entries: unknown,
+      fallback: 'input' | 'output'
+    ): EventFacetProvenanceEntry[] | undefined => {
+      if (!Array.isArray(entries)) return undefined
+      const normalized = entries
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') return undefined
+          const { title, direction, facet, pointer } = entry as Partial<FacetProvenance>
+          const resolvedDirection: 'input' | 'output' =
+            direction === 'input' || direction === 'output'
+              ? direction
+              : fallback
+          if (!title || !facet || !pointer) return undefined
+          return {
+            title,
+            direction: resolvedDirection,
+            facet,
+            pointer
+          }
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      return normalized.length ? normalized : undefined
+    }
+
+    const raw = provenance as { input?: FacetProvenance[]; output?: FacetProvenance[] }
+    const input = resolveEntries(raw.input, 'input')
+    const output = resolveEntries(raw.output, 'output')
+    if (!input && !output) return undefined
+    return {
+      ...(input ? { input } : {}),
+      ...(output ? { output } : {})
     }
   }
 
@@ -2323,7 +2711,7 @@ export class FlexExecutionEngine {
     plan: FlexPlan,
     nodeStatuses: Map<string, FlexPlanNodeStatus>,
     nodeOutputs: Map<string, Record<string, unknown>>,
-    timings: Map<string, { startedAt?: Date | null; completedAt?: Date | null }>
+    timings: Map<string, NodeTiming>
   ): FlexPlanNodeSnapshot[] {
     return plan.nodes.map((node) => {
       const timing = timings.get(node.id) ?? {}
@@ -2372,7 +2760,7 @@ export class FlexExecutionEngine {
     const activeRunContext = opts.runContext ?? new RunContext()
     const nodeOutputs = new Map<string, Record<string, unknown>>()
     const nodeStatuses = new Map<string, FlexPlanNodeStatus>()
-    const nodeTimings = new Map<string, { startedAt?: Date | null; completedAt?: Date | null }>()
+    const nodeTimings = new Map<string, NodeTiming>()
     const policyActions: PendingPolicyActionState[] = Array.isArray(opts.initialState?.policyActions)
       ? opts.initialState!.policyActions.map((action) => ({ ...action }))
       : []
@@ -2516,7 +2904,7 @@ export class FlexExecutionEngine {
             runId,
             nodeId: terminalNode.id,
             planVersion: plan.version,
-            facetProvenance: terminalNode.provenance ?? undefined
+            facetProvenance: this.normalizeFacetProvenance(terminalNode.provenance)
           }
         )
       )
@@ -2543,7 +2931,7 @@ export class FlexExecutionEngine {
             runId,
             nodeId: terminalNode.id,
             planVersion: plan.version,
-            facetProvenance: terminalNode.provenance ?? undefined
+            facetProvenance: this.normalizeFacetProvenance(terminalNode.provenance)
           }
         )
       )
@@ -2583,7 +2971,11 @@ export class FlexExecutionEngine {
       this.buildEvent(
         'complete',
         { output: finalOutput },
-        { runId, planVersion: plan.version, facetProvenance: provenance ?? undefined }
+        {
+          runId,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(provenance)
+        }
       )
     )
     return finalOutput

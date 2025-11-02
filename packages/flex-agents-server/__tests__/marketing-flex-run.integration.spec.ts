@@ -176,16 +176,16 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             objective,
             instructions: [],
             contract: {
-              input: { mode: 'facets', facets: ['company_information', 'post_context', 'feedback'] },
+              input: { mode: 'facets', facets: ['company_information', 'post_context'] },
               output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
             }
           },
           contracts: {
-            input: { mode: 'facets', facets: ['company_information', 'post_context', 'feedback'] },
+            input: { mode: 'facets', facets: ['company_information', 'post_context'] },
             output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
           },
           facets: {
-            input: ['company_information', 'post_context', 'feedback'],
+            input: ['company_information', 'post_context'],
             output: ['creative_brief', 'strategic_rationale', 'handoff_summary']
           },
           provenance: { input: [], output: [] },
@@ -206,19 +206,19 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             objective,
             instructions: [],
             contract: {
-              input: { mode: 'facets', facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'] },
+              input: { mode: 'facets', facets: ['company_information', 'creative_brief', 'handoff_summary'] },
               output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
             }
           },
           contracts: {
             input: {
               mode: 'facets',
-              facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback']
+              facets: ['company_information', 'creative_brief', 'handoff_summary']
             },
             output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
           },
           facets: {
-            input: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
+            input: ['company_information', 'creative_brief', 'handoff_summary'],
             output: ['post_copy', 'handoff_summary']
           },
           provenance: { input: [], output: [] },

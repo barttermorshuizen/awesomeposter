@@ -5,6 +5,7 @@ export type OrchestratorRunStatus =
   | 'pending'
   | 'running'
   | 'awaiting_hitl'
+  | 'awaiting_human'
   | 'completed'
   | 'cancelled'
   | 'removed'
@@ -29,6 +30,10 @@ export type OrchestratorSnapshot = {
 
 const DEFAULT_PLAN: Plan = { version: 0, steps: [] }
 const DEFAULT_HITL_STATE: HitlRunState = { requests: [], responses: [], pendingRequestId: null, deniedCount: 0 }
+
+type LegacyBridge = typeof globalThis & {
+  __awesomeposter_setOrchestratorPersistence?: (instance: unknown) => void
+}
 
 function clone<T>(value: T): T {
   if (value == null) return value
@@ -291,4 +296,13 @@ export function getOrchestratorPersistence() {
 
 export function setOrchestratorPersistence(instance: PersistenceImpl) {
   singleton = instance
+}
+
+const legacyBridge = globalThis as LegacyBridge
+if (typeof legacyBridge.__awesomeposter_setOrchestratorPersistence !== 'function') {
+  legacyBridge.__awesomeposter_setOrchestratorPersistence = (instance: unknown) => {
+    try {
+      setOrchestratorPersistence(instance as PersistenceImpl)
+    } catch {}
+  }
 }

@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import type { FlexEvent, TaskEnvelope, FlexPlan } from '@awesomeposter/shared'
+import type { FlexEvent, TaskEnvelope } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
+import type { FlexPlan } from '../src/services/flex-planner'
 
 class StubPersistence {
   async createOrUpdateRun() {}
@@ -59,7 +60,7 @@ describe('FlexRunCoordinator sandbox emission', () => {
     const envelope: TaskEnvelope = {
       objective: 'Validate plan stream',
       inputs: {},
-      policies: { runtime: [] },
+      policies: { planner: undefined, runtime: [] },
       specialInstructions: [],
       outputContract: { mode: 'json_schema', schema: { type: 'object', additionalProperties: true } }
     }
@@ -81,13 +82,9 @@ describe('FlexRunCoordinator sandbox emission', () => {
             runId: 'run-test',
             nodeId: 'node-1',
             objective: envelope.objective,
-            instructions: [],
-            contract: {
-              output: { mode: 'json_schema', schema: { type: 'object' } }
-            }
+            instructions: []
           } as any,
           contracts: {
-            input: undefined,
             output: { mode: 'json_schema', schema: { type: 'object' } }
           },
           facets: { input: ['objectiveBrief'], output: ['copyVariants'] },
@@ -107,13 +104,9 @@ describe('FlexRunCoordinator sandbox emission', () => {
             runId: 'run-test',
             nodeId: 'node-2',
             objective: envelope.objective,
-            instructions: [],
-            contract: {
-              output: { mode: 'json_schema', schema: { type: 'object' } }
-            }
+            instructions: []
           } as any,
           contracts: {
-            input: undefined,
             output: { mode: 'json_schema', schema: { type: 'object' } }
           },
           facets: { input: ['copyVariants'], output: ['qaFindings'] },

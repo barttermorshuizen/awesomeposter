@@ -43,6 +43,7 @@
     "@aws-sdk/client-s3": "^3.864.0",
     "@aws-sdk/s3-request-presigner": "^3.873.0",
     "@mdi/font": "^7.4.47",
+    "@openai/agents": "^0.1.0",
     "@upstash/redis": "^1.35.4",
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.4",
@@ -57,6 +58,7 @@
     "vue-json-pretty": "^2.5.0",
     "vue-router": "^4.5.1",
     "vuetify": "^3.9.6",
+    "winston": "^3.11.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

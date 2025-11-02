@@ -1,5 +1,6 @@
 import type {
   AssignmentDefaults,
+  AssignmentSnapshot,
   CapabilityRecord,
   ContextBundle,
   JsonSchemaContract,
@@ -23,7 +24,7 @@ import {
   type PlannerGraphContext,
   type PlannerContextHints
 } from './planner-service'
-import type { FacetSnapshot } from './run-context'
+import type { FacetSnapshot, RunContextSnapshot } from './run-context'
 import type { PlannerDraft, PlannerDraftNode, PlannerDiagnostics } from '../planner/planner-types'
 import { PlannerValidationService } from './planner-validation-service'
 
@@ -96,7 +97,7 @@ export type PlannerGraphState = {
   plan: FlexPlan
   completedNodeIds: string[]
   nodeOutputs: Record<string, Record<string, unknown>>
-  facets?: FacetSnapshot
+  facets?: FacetSnapshot | RunContextSnapshot
 }
 
 export class UnsupportedObjectiveError extends Error {
@@ -212,6 +213,7 @@ export class FlexPlanner {
 
     const completedNodes: PlannerGraphContext['completedNodes'] = []
     const facetValues: PlannerGraphContext['facetValues'] = []
+    let runContext: PlannerGraphContext['runContext']
 
     for (const node of plan.nodes) {
       if (!completedSet.has(node.id)) continue
@@ -224,8 +226,33 @@ export class FlexPlanner {
       })
     }
 
-    if (state.facets) {
-      const entries = Object.entries(state.facets)
+    const resolveRunContextSnapshot = (
+      facets: PlannerGraphState['facets']
+    ): RunContextSnapshot | undefined => {
+      if (!facets) return undefined
+      const candidate = facets as RunContextSnapshot
+      if (
+        candidate &&
+        typeof candidate === 'object' &&
+        'hitlClarifications' in candidate
+      ) {
+        return {
+          facets: candidate.facets ?? {},
+          hitlClarifications: Array.isArray(candidate.hitlClarifications)
+            ? candidate.hitlClarifications
+            : []
+        }
+      }
+      return {
+        facets: facets as FacetSnapshot,
+        hitlClarifications: []
+      }
+    }
+
+    const runContextSnapshot = resolveRunContextSnapshot(state.facets)
+
+    if (runContextSnapshot) {
+      const entries = Object.entries(runContextSnapshot.facets ?? {})
       const recent = entries.slice(-12)
       recent.forEach(([facet, entry]) => {
         const provenance = Array.isArray(entry.provenance)
@@ -239,6 +266,30 @@ export class FlexPlanner {
           value: entry.value
         })
       })
+      runContext = {
+        facets: recent.map(([facet, entry]) => {
+          const provenance = Array.isArray(entry.provenance)
+            ? entry.provenance[entry.provenance.length - 1]
+            : undefined
+          return {
+            facet,
+            value: entry.value,
+            updatedAt: entry.updatedAt ?? 'unknown',
+            provenance
+          }
+        }),
+        clarifications: runContextSnapshot.hitlClarifications
+          .slice(-8)
+          .map((clarification) => ({
+            questionId: clarification.questionId,
+            nodeId: clarification.nodeId,
+            capabilityId: clarification.capabilityId ?? null,
+            question: clarification.question,
+            createdAt: clarification.createdAt,
+            answer: clarification.answer ?? null,
+            answeredAt: clarification.answeredAt ?? null
+          }))
+      }
     } else {
       const nodeOutputs = state.nodeOutputs
       for (const node of plan.nodes) {
@@ -275,7 +326,8 @@ export class FlexPlanner {
 
     return {
       completedNodes,
-      facetValues
+      facetValues,
+      ...(runContext ? { runContext } : {})
     }
   }
 
@@ -661,16 +713,16 @@ export class FlexPlanner {
 
     const assignment =
       executor?.type === 'human'
-        ? {
+        ? ({
             runId,
             nodeId: '',
-            status: 'pending',
-            defaults: executor.assignment?.defaults ?? null,
+            status: 'awaiting_submission',
+            defaults: executor.assignment?.defaults ?? undefined,
             instructions:
               executor.assignment?.instructions ??
               capability?.instructionTemplates?.app ??
               capability?.instructionTemplates?.summary ??
-              null,
+              undefined,
             notifyChannels: capability?.assignmentDefaults?.notifyChannels,
             priority: capability?.assignmentDefaults?.priority,
             timeoutSeconds: capability?.assignmentDefaults?.timeoutSeconds,
@@ -680,8 +732,8 @@ export class FlexPlanner {
             metadata:
               executor.assignment?.metadata && Object.keys(executor.assignment.metadata).length
                 ? executor.assignment.metadata
-                : null
-          }
+                : undefined
+          } as AssignmentSnapshot)
         : undefined
 
     return {
@@ -722,11 +774,13 @@ export class FlexPlanner {
       capabilityId: capability.capabilityId,
       assignment:
         type === 'human'
-          ? {
+          ? ({
               defaults,
               instructions,
-              metadata: assignmentMetadata ? safeJsonClone(assignmentMetadata) : null
-            }
+              metadata: assignmentMetadata
+                ? (safeJsonClone(assignmentMetadata) as Record<string, unknown>)
+                : null
+            } as FlexPlanExecutor['assignment'])
           : undefined
     }
   }

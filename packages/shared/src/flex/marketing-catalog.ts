@@ -27,11 +27,11 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputTraits: {
         languages: ['en'],
         strengths: ['campaign_planning', 'audience_strategy'],
-        limitations: ['Requires structured campaign context to generate a reliable plan.']
+        limitations: ['Requires structured campaign context and relies on run-context feedback for iteration.']
       },
       inputContract: {
         mode: 'facets',
-        facets: ['company_information', 'post_context', 'feedback']
+        facets: ['company_information', 'post_context']
       },
       outputContract: {
         mode: 'facets',
@@ -59,12 +59,13 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['company_information', 'post_context', 'feedback'],
+      inputFacets: ['company_information', 'post_context'],
       outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary']
     },
     prompt: {
       instructions: [
         'Synthesize the campaign context into a creative brief, rationale, and handoff summary.',
+        'Address the feedback in the run context with facet = ["creative_brief", "strategic_rationale", "handoff_summary"] before finalising your update.',
         'If required context is missing or conflicting, pause and escalate with the `hitl_request` tool. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for open questions—expect freeform operator input rather than multiple-choice options.',
         'While waiting on a HITL response, insert descriptive placeholders in the output facets so the run can resume safely.'
       ].join(' '),
@@ -81,11 +82,11 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputTraits: {
         languages: ['en'],
         strengths: ['competitive_analysis', 'market_synthesis'],
-        limitations: ['Needs positioning context data and existing feedback history.']
+        limitations: ['Needs positioning context data and uses run-context feedback history.']
       },
       inputContract: {
         mode: 'facets',
-        facets: ['company_information', 'positioning_context', 'feedback']
+        facets: ['company_information', 'positioning_context']
       },
       outputContract: {
         mode: 'facets',
@@ -113,12 +114,13 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['company_information', 'positioning_context', 'feedback'],
+      inputFacets: ['company_information', 'positioning_context'],
       outputFacets: ['value_canvas', 'positioning_opportunities', 'positioning_recommendation', 'handoff_summary']
     },
     prompt: {
       instructions: [
         'Assess market inputs to produce the value canvas, positioning opportunities, and recommendation; document reasoning in the handoff summary.',
+        'Address the feedback in the run context with facet = ["value_canvas", "positioning_opportunities", "positioning_recommendation", "handoff_summary"] before finalising your update.',
         'Escalate with `hitl_request` whenever competitive intelligence or approvals are missing. Frame the question succinctly, set `kind: "approval"` for yes/no decisions, and otherwise use `kind: "clarify"` and await a freeform answer.',
         'While waiting on humans, keep the recommendation facet populated with placeholders that describe the outstanding decision.'
       ].join(' '),
@@ -140,7 +142,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       inputContract: {
         mode: 'facets',
-        facets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback']
+        facets: ['company_information', 'creative_brief', 'handoff_summary']
       },
       outputContract: {
         mode: 'facets',
@@ -168,12 +170,13 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
+      inputFacets: ['company_information', 'creative_brief', 'handoff_summary'],
       outputFacets: ['post_copy', 'handoff_summary']
     },
     prompt: {
       instructions: [
         'Draft compliant social copy variants from the creative brief and update the handoff summary with decisions made.',
+        'Address the feedback in the run context with facet = ["post_copy", "handoff_summary"] before finalising your update.',
         'If policy, brand, or tone conflicts emerge, raise a `hitl_request` instead of guessing. Describe the human decision, use `kind: "approval"` for binary outcomes or `kind: "clarify"` for follow-up questions, and pause output while awaiting the response.'
       ].join(' '),
       toolsAllowlist: ['hitl_request']
@@ -189,11 +192,11 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       inputTraits: {
         languages: ['en'],
         strengths: ['messaging_frameworks', 'tone_alignment'],
-        limitations: ['Depends on fresh positioning recommendation context.']
+        limitations: ['Depends on fresh positioning recommendation context and prior run-context feedback.']
       },
       inputContract: {
         mode: 'facets',
-        facets: ['company_information', 'positioning_context', 'positioning_recommendation', 'feedback']
+        facets: ['company_information', 'positioning_context', 'positioning_recommendation']
       },
       outputContract: {
         mode: 'facets',
@@ -221,12 +224,13 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       status: 'active',
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
-      inputFacets: ['company_information', 'positioning_context', 'positioning_recommendation', 'feedback'],
+      inputFacets: ['company_information', 'positioning_context', 'positioning_recommendation'],
       outputFacets: ['messaging_stack', 'handoff_summary']
     },
     prompt: {
       instructions: [
         'Transform the positioning recommendation into a messaging stack with proof points and keep the handoff summary current.',
+        'Address the feedback in the run context with facet = ["messaging_stack", "handoff_summary"] before finalising your update.',
         'When stakeholder approval or clarity is missing, call `hitl_request` with a concise question. Provide option lists only when multiple vetted phrasings are available; otherwise rely on the operator response and pause outputs using placeholders.'
       ].join(' '),
       toolsAllowlist: ['hitl_request']

@@ -62,7 +62,7 @@ function buildResumeEnvelope(
   }
   envelope.constraints = constraints
 
-  const metadata = {
+  const metadata: Record<string, unknown> = {
     ...(envelope.metadata ?? {}),
     runId,
     resume: true,
@@ -71,7 +71,7 @@ function buildResumeEnvelope(
   if (threadId) {
     metadata.threadId = metadata.threadId ?? threadId
   }
-  envelope.metadata = metadata
+  envelope.metadata = metadata as TaskEnvelope['metadata']
   return envelope
 }
 
@@ -97,12 +97,11 @@ export default defineEventHandler(async (event) => {
   setHeader(event, 'Access-Control-Expose-Headers', 'content-type,x-correlation-id')
   setHeader(event, 'Cache-Control', 'no-store')
 
-  const params = event.context.params ?? {}
-  const taskIdRaw = typeof (params as Record<string, unknown>).taskId === 'string' ? (params as Record<string, unknown>).taskId : null
-  if (!taskIdRaw) {
+  const taskIdParam = event.context.params?.taskId
+  if (typeof taskIdParam !== 'string' || !taskIdParam.length) {
     throw createError({ statusCode: 400, statusMessage: 'Task ID required', data: { code: 'task_id_required' } })
   }
-  const taskId = decodeURIComponent(taskIdRaw)
+  const taskId = decodeURIComponent(taskIdParam)
 
   const headerCorrelation = trimOrNull(getHeader(event, 'x-correlation-id') ?? null)
   const correlationId = headerCorrelation || genCorrelationId()

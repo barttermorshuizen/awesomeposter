@@ -52,7 +52,7 @@ describe('HITL resume/remove API integration', () => {
     app.use('/api/hitl/remove', removeHandler as any)
     app.use('/api/hitl/pending', pendingHandler as any)
 
-    const nodeListener = toNodeListener(app)
+    const nodeListener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
     const appFetch = async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
       const method = init.method ?? 'GET'
       const headers = init.headers ?? {}

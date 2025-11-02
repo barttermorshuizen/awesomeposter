@@ -79,7 +79,7 @@ describe('HitlService', () => {
   it('persists pending node metadata and operator guidance on HITL requests', async () => {
     const service = getHitlService()
     const runId = 'run_hitl_metadata'
-    let snapshot = await service.loadRunState(runId)
+    const snapshot = await service.loadRunState(runId)
     const metadata = {
       pendingNodeId: 'node_42',
       operatorPrompt: 'Review node_42 output before resuming.',

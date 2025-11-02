@@ -6,8 +6,12 @@ import { buildFacetSystemInstruction, validateFacetInputs, validateFacetOutputs 
 describe('Facet contract planner helpers', () => {
   it('builds compiled facet contracts for mock node', () => {
     const node = buildFacetFixtureNode()
-    expect(node.compiled.input?.schema.properties?.writerBrief).toBeDefined()
-    expect(node.compiled.output?.schema.properties?.copyVariants).toBeDefined()
+    const inputProperties =
+      (node.compiled.input?.schema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {}
+    const outputProperties =
+      (node.compiled.output?.schema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {}
+    expect(inputProperties.writerBrief).toBeDefined()
+    expect(outputProperties.copyVariants).toBeDefined()
   })
 
   it('renders an instruction summary', () => {

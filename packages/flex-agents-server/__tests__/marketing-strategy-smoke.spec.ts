@@ -34,7 +34,7 @@ class StubPlannerService implements PlannerServiceInterface {
         stage: 'strategy',
         capabilityId: node.capabilityId,
         kind: node.kind ?? 'structuring',
-        inputFacets: ['company_information', 'post_context', 'feedback'],
+        inputFacets: ['company_information', 'post_context'],
         outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary'],
         rationale: ['stub']
       })),
@@ -83,9 +83,7 @@ describe('Marketing capabilities smoke test', () => {
     expect(plan.nodes).toHaveLength(1)
     const node = plan.nodes[0]
     expect(node.capabilityId).toBe('strategist.SocialPosting')
-    expect(node.facets.input).toEqual(
-      expect.arrayContaining(['company_information', 'post_context', 'feedback'])
-    )
+    expect(node.facets.input).toEqual(expect.arrayContaining(['company_information', 'post_context']))
     expect(node.facets.output).toEqual(
       expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary'])
     )

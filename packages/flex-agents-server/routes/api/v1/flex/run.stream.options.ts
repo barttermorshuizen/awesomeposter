@@ -6,7 +6,7 @@ export default defineEventHandler((event) => {
   setHeader(event, 'Access-Control-Allow-Origin', origin)
   setHeader(event, 'Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   setHeader(event, 'Access-Control-Allow-Headers', 'content-type,accept,authorization,x-correlation-id')
-  setHeader(event, 'Access-Control-Max-Age', '600')
+  setHeader(event, 'Access-Control-Max-Age', 600)
   event.node.res.statusCode = 204
   try {
     event.node.res.end()

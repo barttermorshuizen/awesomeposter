@@ -92,7 +92,9 @@ describe('FlexPlanner hybrid handshake', () => {
     const invoked: any[] = []
 
     const plan = await planner.buildPlan('run_test', envelope as any, {
-      onRequest: (context) => invoked.push(context)
+      onRequest: (context) => {
+        invoked.push(context)
+      }
     })
 
     expect(invoked).toHaveLength(1)
@@ -103,7 +105,8 @@ describe('FlexPlanner hybrid handshake', () => {
     expect(context.capabilities[0].capabilityId).toBe(ACTIVE_CAPABILITY.capabilityId)
     expect(plan.nodes.length).toBeGreaterThanOrEqual(1)
     expect(plan.nodes[0]?.capabilityId).toBe(ACTIVE_CAPABILITY.capabilityId)
-    expect(plan.metadata.policySummary.runtimeCount).toBe(1)
+    const policySummary = (plan.metadata as any)?.policySummary as { runtimeCount?: number } | undefined
+    expect(policySummary?.runtimeCount).toBe(1)
   })
 
   it('throws PlannerDraftRejectedError with diagnostics when draft references missing capability', async () => {

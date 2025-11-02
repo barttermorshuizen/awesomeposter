@@ -191,7 +191,9 @@ export class DatabaseHitlRepository implements HitlRepository {
   }
 
   private mapRequest(row: typeof hitlRequests.$inferSelect): HitlRequestRecord {
-    const metrics = row.metricsJson ? clone(row.metricsJson) as Record<string, unknown> : undefined
+    const metrics = row.metricsJson ? (clone(row.metricsJson) as Record<string, unknown>) : undefined
+    const createdAt = row.createdAt ? new Date(row.createdAt) : new Date()
+    const updatedAt = row.updatedAt ? new Date(row.updatedAt) : new Date()
     return {
       id: row.id,
       runId: row.runId,
@@ -202,8 +204,8 @@ export class DatabaseHitlRepository implements HitlRepository {
       payload: clone(row.payloadJson) as HitlRequestRecord['payload'],
       status: row.status as HitlRequestStatus,
       denialReason: row.denialReason ?? undefined,
-      createdAt: new Date(row.createdAt),
-      updatedAt: new Date(row.updatedAt),
+      createdAt,
+      updatedAt,
       pendingNodeId: row.pendingNodeId ?? undefined,
       operatorPrompt: row.operatorPrompt ?? undefined,
       contractSummary: row.contractSummaryJson
@@ -215,6 +217,7 @@ export class DatabaseHitlRepository implements HitlRepository {
 
   private mapResponse(row: typeof hitlResponses.$inferSelect): HitlResponse {
     const metadata = row.metadataJson ? (clone(row.metadataJson) as Record<string, unknown>) : undefined
+    const createdAt = row.createdAt ? new Date(row.createdAt) : new Date()
     return {
       id: row.id,
       requestId: row.requestId,
@@ -224,7 +227,7 @@ export class DatabaseHitlRepository implements HitlRepository {
       approved: row.approved ?? undefined,
       responderId: row.responderId ?? undefined,
       responderDisplayName: row.responderDisplayName ?? undefined,
-      createdAt: new Date(row.createdAt),
+      createdAt,
       metadata: metadata && Object.keys(metadata).length > 0 ? metadata : undefined
     }
   }

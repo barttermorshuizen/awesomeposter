@@ -7,17 +7,20 @@ import { DEFAULT_MODEL_FALLBACK } from '../../utils/model'
 export const STRATEGIST_POSITIONING_ID = 'strategist.Positioning' as const
 
 const catalog = getFacetCatalog()
-const INPUT_FACETS = ['company_information', 'positioning_context', 'feedback'] as const
+const INPUT_FACETS = ['company_information', 'positioning_context'] as const
 const OUTPUT_FACETS = ['value_canvas', 'positioning_opportunities', 'positioning_recommendation', 'handoff_summary'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
 catalog.resolveMany([...OUTPUT_FACETS], 'output')
 
+const FEEDBACK_DIRECTIVE = `Address feedback in the run context with facet = ["${OUTPUT_FACETS.join('", "')}"] before finalising your update.`
+
 export const STRATEGIST_POSITIONING_TOOLS = [HITL_TOOL_NAME] as const
 
 export const STRATEGIST_POSITIONING_INSTRUCTIONS_APP = [
   'You are the Strategist evaluating company positioning.',
-  'Review company_information, positioning_context, and feedback to understand brand guardrails and market landscape before generating updates.',
+  'Review company_information and positioning_context to understand brand guardrails and market landscape before generating updates.',
+  FEEDBACK_DIRECTIVE,
   'Emit value_canvas, positioning_opportunities, positioning_recommendation, and update handoff_summary with rationale.',
   'Whenever competitive intel or stakeholder approval is missing, trigger the `hitl_request` tool with a concise question. Use `kind: "approval"` for yes/no decisions and `kind: "clarify"` for open questions—never provide multiple-choice options.',
   'If you have raised approval or clarify HITL, still emit a JSON object matching the output facet schemas; fill each required field with descriptive `PENDING_HITL: …` placeholders and include at least one entry for required arrays so downstream validators receive valid structure.'
@@ -25,6 +28,7 @@ export const STRATEGIST_POSITIONING_INSTRUCTIONS_APP = [
 
 export const STRATEGIST_POSITIONING_INSTRUCTIONS_CHAT = [
   'Explain the recommended positioning in plain language.',
+  FEEDBACK_DIRECTIVE,
   'Highlight open questions and request human input only when required.',
   'Default to conservative recommendations unless clarified otherwise.'
 ].join('\n')
@@ -38,7 +42,7 @@ export const STRATEGIST_POSITIONING_CAPABILITY: CapabilityRegistration = {
   inputTraits: {
     languages: ['en'],
     strengths: ['competitive_analysis', 'market_synthesis'],
-    limitations: ['Needs company profile, positioning context, and prior feedback to operate effectively.']
+    limitations: ['Needs company profile, positioning context, and relies on run-context feedback to operate effectively.']
   },
   inputContract: {
     mode: 'facets',

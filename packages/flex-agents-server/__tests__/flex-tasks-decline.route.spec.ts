@@ -3,10 +3,11 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest'
 import { createApp, eventHandler, readBody as h3ReadBody, toNodeListener } from 'h3'
 import { fetchNodeRequestHandler } from 'node-mock-http'
 
+const listPendingHumanTasksMock = vi.fn()
+const declineLoadFlexRunMock = vi.fn()
+const declineRecordResumeAuditMock = vi.fn()
+
 vi.mock('../src/services/orchestrator-persistence', () => {
-  const listPendingHumanTasksMock = vi.fn()
-  const loadFlexRunMock = vi.fn()
-  const recordResumeAuditMock = vi.fn()
 
   class MockFlexRunPersistence {
     constructor() {}
@@ -14,10 +15,10 @@ vi.mock('../src/services/orchestrator-persistence', () => {
       return listPendingHumanTasksMock(...args)
     }
     async loadFlexRun(...args: any[]) {
-      return loadFlexRunMock(...args)
+      return declineLoadFlexRunMock(...args)
     }
     async recordResumeAudit(...args: any[]) {
-      return recordResumeAuditMock(...args)
+      return declineRecordResumeAuditMock(...args)
     }
   }
 
@@ -25,38 +26,40 @@ vi.mock('../src/services/orchestrator-persistence', () => {
     FlexRunPersistence: MockFlexRunPersistence,
     __mocks: {
       listPendingHumanTasksMock,
-      loadFlexRunMock,
-      recordResumeAuditMock
+      loadFlexRunMock: declineLoadFlexRunMock,
+      recordResumeAuditMock: declineRecordResumeAuditMock
     }
   }
+})
+
+const telemetryCreateRunEmitterMock = vi.fn((_base, sink) => async (frame: any) => {
+  await sink(frame)
 })
 
 vi.mock('../src/services/telemetry-service', () => {
-  const createRunEmitterMock = vi.fn((_base, sink) => async (frame: any) => {
-    await sink(frame)
-  })
   return {
     getTelemetryService: () => ({
-      createRunEmitter: createRunEmitterMock
+      createRunEmitter: telemetryCreateRunEmitterMock
     }),
     __mocks: {
-      createRunEmitterMock
+      createRunEmitterMock: telemetryCreateRunEmitterMock
     }
   }
 })
 
+const declineCoordinatorRunMock = vi.fn()
+
 vi.mock('../src/services/flex-run-coordinator', () => {
-  const runMock = vi.fn()
   class MockFlexRunCoordinator {
     constructor() {}
     async run(...args: any[]) {
-      return runMock(...args)
+      return declineCoordinatorRunMock(...args)
     }
   }
   return {
     FlexRunCoordinator: MockFlexRunCoordinator,
     __mocks: {
-      runMock
+      runMock: declineCoordinatorRunMock
     }
   }
 })
@@ -71,9 +74,19 @@ vi.mock('../src/services/logger', () => {
   }
 })
 
-import { __mocks as persistenceMocks } from '../src/services/orchestrator-persistence'
-import { __mocks as telemetryMocks } from '../src/services/telemetry-service'
-import { __mocks as coordinatorMocks } from '../src/services/flex-run-coordinator'
+const persistenceMocks = {
+  listPendingHumanTasksMock,
+  loadFlexRunMock: declineLoadFlexRunMock,
+  recordResumeAuditMock: declineRecordResumeAuditMock
+}
+
+const telemetryMocks = {
+  createRunEmitterMock: telemetryCreateRunEmitterMock
+}
+
+const coordinatorMocks = {
+  runMock: declineCoordinatorRunMock
+}
 
 function makeDeclineRequest(handler: any) {
   const app = createApp()
@@ -86,7 +99,7 @@ function makeDeclineRequest(handler: any) {
       return handler(event)
     })
   )
-  const listener = toNodeListener(app)
+  const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
   return async (taskId: string, body: Record<string, unknown>) => {
     const res = await fetchNodeRequestHandler(
       listener,
