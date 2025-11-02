@@ -66,6 +66,14 @@ export interface FlexTaskDeclineInput {
   note?: string
 }
 
+export interface PostVisualAssetRecord {
+  assetId: string
+  url: string
+  ordering: number
+  originalName?: string | null
+  mimeType?: string | null
+}
+
 type HydrateOptions = {
   assignedTo?: string
   syncLegacyHitl?: boolean
@@ -711,6 +719,181 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
       notifications.notifyError(message)
       throw err
     }
+}
+
+  async function uploadPostVisualAsset(taskId: string, file: File): Promise<PostVisualAssetRecord> {
+    const task = tasksById.value.get(taskId)
+    if (!task) throw new Error('Flex task not found.')
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('facet', 'post_visual')
+    formData.append('assignmentId', task.assignmentId)
+    formData.append('flexRunId', task.runId)
+    formData.append('nodeId', task.nodeId)
+
+    try {
+      const res = await fetch('/api/flex/assets/upload', {
+        method: 'POST',
+        body: formData
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !isRecord(body) || !isRecord(body.asset)) {
+        const message =
+          (isRecord(body) && (toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error))) ||
+          `Failed to upload asset (${res.status})`
+        throw new Error(message ?? 'Failed to upload asset.')
+      }
+
+      const assetRecord = body.asset as Record<string, unknown>
+      const assetId = toStringOrNull(assetRecord.id)
+      const url = toStringOrNull(assetRecord.url)
+      if (!assetId || !url) {
+        throw new Error('Upload response missing asset metadata.')
+      }
+
+      const ordering =
+        toNumberOrNull(assetRecord.ordering) ??
+        (isRecord(assetRecord.meta) ? toNumberOrNull((assetRecord.meta as Record<string, unknown>).ordering) : null) ??
+        0
+      const originalName =
+        toStringOrNull(assetRecord.originalName) ??
+        (isRecord(assetRecord.meta) ? toStringOrNull((assetRecord.meta as Record<string, unknown>).originalName) : null) ??
+        file.name
+      const mimeType =
+        toStringOrNull(assetRecord.mimeType) ??
+        (isRecord(assetRecord.meta) ? toStringOrNull((assetRecord.meta as Record<string, unknown>).mimeType) : null) ??
+        file.type ?? null
+
+      return {
+        assetId,
+        url,
+        ordering,
+        originalName,
+        mimeType
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Asset upload failed.'
+      notifications.notifyError(message)
+      throw err instanceof Error ? err : new Error(message)
+    }
+  }
+
+  async function listFlexAssets(taskId: string, facet: string): Promise<PostVisualAssetRecord[]> {
+    const task = tasksById.value.get(taskId)
+    if (!task) throw new Error('Flex task not found.')
+    const params = new URLSearchParams({ assignmentId: task.assignmentId })
+    if (facet?.trim().length) {
+      params.set('facet', facet.trim())
+    }
+    try {
+      const res = await fetch(`/api/flex/assets?${params.toString()}`, {
+        method: 'GET',
+        headers: { accept: 'application/json' }
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !isRecord(body)) {
+        const message =
+          (isRecord(body) && (toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error))) ??
+          `Failed to load flex assets (${res.status})`
+        throw new Error(message ?? 'Failed to load flex assets.')
+      }
+      const items = Array.isArray(body.assets) ? body.assets : []
+      const results: PostVisualAssetRecord[] = []
+      for (const entry of items) {
+        if (!isRecord(entry)) continue
+        const id = toStringOrNull(entry.id)
+        const url = toStringOrNull(entry.url)
+        if (!id || !url) continue
+        results.push({
+          assetId: id,
+          url,
+          ordering: toNumberOrNull(entry.ordering) ?? results.length,
+          originalName: toStringOrNull(entry.originalName),
+          mimeType: toStringOrNull(entry.mimeType)
+        })
+      }
+      return results
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to load flex assets.'
+      notifications.notifyError(message)
+      throw err instanceof Error ? err : new Error(message)
+    }
+  }
+
+  async function updatePostVisualAssetOrdering(
+    taskId: string,
+    updates: Array<{ assetId: string | null | undefined; ordering: number }>
+  ): Promise<void> {
+    const task = tasksById.value.get(taskId)
+    if (!task) throw new Error('Flex task not found.')
+    const valid = updates.filter(
+      (entry) => typeof entry.assetId === 'string' && entry.assetId.trim().length > 0
+    ) as Array<{ assetId: string; ordering: number }>
+    if (!valid.length) return
+
+    try {
+      await Promise.all(
+        valid.map(async (entry) => {
+          const res = await fetch(`/api/flex/assets/${encodeURIComponent(entry.assetId)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              ordering: entry.ordering,
+              metaOverrides: {
+                flexRunId: task.runId,
+                nodeId: task.nodeId,
+                assignmentId: task.assignmentId,
+                facet: 'post_visual'
+              }
+            })
+          })
+          if (res.ok) return
+          let errorBody: unknown = null
+          try {
+            errorBody = await res.json()
+          } catch {
+            errorBody = await res.text().catch(() => null)
+          }
+          const message =
+            isRecord(errorBody) && (toStringOrNull(errorBody.statusMessage) ?? toStringOrNull(errorBody.error))
+              ? toStringOrNull(errorBody.statusMessage) ?? toStringOrNull(errorBody.error)
+              : `Failed to update asset ordering (${res.status})`
+          throw new Error(message ?? 'Failed to update asset ordering.')
+        })
+      )
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to update asset ordering.'
+      notifications.notifyError(message)
+      throw err instanceof Error ? err : new Error(message)
+    }
+  }
+
+  async function deletePostVisualAsset(taskId: string, assetId: string): Promise<void> {
+    const task = tasksById.value.get(taskId)
+    if (!task) throw new Error('Flex task not found.')
+    const trimmed = assetId.trim()
+    if (!trimmed) return
+    try {
+      const res = await fetch(`/api/flex/assets/${encodeURIComponent(trimmed)}`, {
+        method: 'DELETE'
+      })
+      if (res.ok || res.status === 404) return
+      let errorBody: unknown = null
+      try {
+        errorBody = await res.json()
+      } catch {
+        errorBody = await res.text().catch(() => null)
+      }
+      const message =
+        isRecord(errorBody) && (toStringOrNull(errorBody.statusMessage) ?? toStringOrNull(errorBody.error))
+          ? toStringOrNull(errorBody.statusMessage) ?? toStringOrNull(errorBody.error)
+          : `Failed to remove asset (${res.status})`
+      throw new Error(message ?? 'Failed to remove asset.')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to remove asset.'
+      notifications.notifyError(message)
+      throw err instanceof Error ? err : new Error(message)
+    }
   }
 
   function clearAll() {
@@ -736,6 +919,10 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
     hydrateFromBacklog,
     submitTask,
     declineTask,
+    uploadPostVisualAsset,
+    listFlexAssets,
+    updatePostVisualAssetOrdering,
+    deletePostVisualAsset,
     clearAll
   }
 })

@@ -3,12 +3,14 @@ import DefaultFacetWidget from './DefaultFacetWidget.vue'
 import ToneOfVoiceWidget from './ToneOfVoiceWidget.vue'
 import ObjectiveBriefWidget from './ObjectiveBriefWidget.vue'
 import ClarificationResponseWidget from './ClarificationResponseWidget.vue'
+import PostVisualWidget from './PostVisualWidget.vue'
 
 const registry = new Map<string, Component>([
   ['toneOfVoice', markRaw(ToneOfVoiceWidget)],
   ['toneGuidelines', markRaw(ToneOfVoiceWidget)],
   ['objectiveBrief', markRaw(ObjectiveBriefWidget)],
-  ['clarificationResponse', markRaw(ClarificationResponseWidget)]
+  ['clarificationResponse', markRaw(ClarificationResponseWidget)],
+  ['post_visual', markRaw(PostVisualWidget)]
 ])
 
 export function getFacetWidgetComponent(facetName: string): Component {

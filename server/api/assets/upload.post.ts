@@ -61,6 +61,7 @@ export default defineEventHandler(async (event) => {
 
     const fileExtension = file.filename.split('.').pop()
     const key = briefId ? `briefs/${briefId}/${crypto.randomUUID()}.${fileExtension}` : `clients/${clientId}/${crypto.randomUUID()}.${fileExtension}`
+
     console.log('Generated key:', key)
 
     console.log('Uploading to R2...')
@@ -106,5 +107,3 @@ export default defineEventHandler(async (event) => {
     console.log('=== ASSET UPLOAD END ===')
   }
 })
-
-

@@ -1,4 +1,4 @@
-import { pgTable, foreignKey, uuid, jsonb, timestamp, text, unique, integer, primaryKey, boolean } from "drizzle-orm/pg-core"
+import { pgTable, foreignKey, uuid, jsonb, timestamp, text, unique, integer, primaryKey, boolean, index } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 
@@ -221,6 +221,26 @@ export const assets = pgTable("assets", {
 			foreignColumns: [briefs.id],
 			name: "assets_brief_id_briefs_id_fk"
 		}).onDelete("cascade"),
+]);
+
+export const flexAssets = pgTable("flex_assets", {
+	id: uuid().primaryKey().notNull(),
+	assignmentId: text("assignment_id").notNull(),
+	runId: text("run_id"),
+	nodeId: text("node_id"),
+	facet: text().notNull(),
+	url: text().notNull(),
+	filename: text().notNull(),
+	originalName: text("original_name"),
+	mimeType: text("mime_type"),
+	fileSize: integer("file_size"),
+	ordering: integer().default(0),
+	metaJson: jsonb("meta_json").default({}),
+	uploadedBy: text("uploaded_by"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("flex_assets_assignment_idx").on(table.assignmentId),
+	index("flex_assets_run_idx").on(table.runId),
 ]);
 
 export const briefVersions = pgTable("brief_versions", {

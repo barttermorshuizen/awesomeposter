@@ -86,6 +86,23 @@ export const assets = pgTable('assets', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 })
 
+export const flexAssets = pgTable('flex_assets', {
+  id: uuid('id').primaryKey(),
+  assignmentId: text('assignment_id').notNull(),
+  runId: text('run_id'),
+  nodeId: text('node_id'),
+  facet: text('facet').notNull(),
+  url: text('url').notNull(),
+  filename: text('filename').notNull(),
+  originalName: text('original_name'),
+  mimeType: text('mime_type'),
+  fileSize: integer('file_size'),
+  ordering: integer('ordering').default(0),
+  metaJson: jsonb('meta_json').$type<Record<string, unknown>>().default({}),
+  uploadedBy: text('uploaded_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
+})
+
 export const emailsIngested = pgTable('emails_ingested', {
   id: uuid('id').primaryKey(),
   clientId: uuid('client_id'),

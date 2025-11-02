@@ -1,4 +1,0 @@
-# Context & Reuse
-Discovery rides on the same Nitro + server runtime that already powers AwesomePoster. We stay inside the monorepo, keeping a single Postgres database (`packages/db`), the Nitropack API (`server/`), and the processing utilities under `packages/shared`. Existing utilities—Drizzle migrations, shared type contracts, SSE envelopes, feature flag helpers, and logging—are reused wholesale. New work is limited to additive tables, endpoints, and synchronous processing helpers required by the six discovery epics.
-
-> **Terminology note**: earlier drafts referred to a “discovery agent”, but the scoring and dedup logic now run as deterministic functions invoked during ingestion. There is no separate agent runtime or queue; everything executes inline with the ingestion lifecycle alongside normalization.
