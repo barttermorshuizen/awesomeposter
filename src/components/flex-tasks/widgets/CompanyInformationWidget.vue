@@ -11,6 +11,7 @@ const props = defineProps<FacetWidgetProps>()
 
 const notifications = useNotificationsStore()
 const failedThumbnails = ref<Set<string>>(new Set())
+const panelState = ref<number[]>([])
 
 const EMPTY_COMPANY: CompanyInformationFacetRecord = {
   name: null,
@@ -92,6 +93,8 @@ const company = computed<CompanyInformationFacetRecord>(() => {
 
 const companyName = computed(() => toDisplayString(company.value.name) ?? 'Company name unavailable')
 
+const panelTitle = computed(() => toDisplayString((props.definition?.title as string | null) ?? null) ?? 'Company information')
+
 const websiteHref = computed(() => normalizeUrlCandidate(toDisplayString(company.value.website)))
 
 const infoFields = computed<
@@ -148,105 +151,125 @@ function markThumbnailFailed(asset: { uri: string; label: string }) {
 </script>
 
 <template>
-  <div class="company-info-widget" data-test="company-info-widget">
-    <div class="company-header">
-      <h3 class="company-name" data-test="company-info-name">
-        {{ companyName }}
-      </h3>
-      <v-btn
-        v-if="websiteHref"
-        :href="websiteHref"
-        target="_blank"
-        rel="noopener noreferrer"
-        variant="text"
-        icon="mdi-web"
-        class="company-website"
-        size="small"
-        data-test="company-info-website"
-        :aria-label="`Open ${companyName} website in new tab`"
-      />
-    </div>
-
-    <div class="company-details">
-      <div
-        v-for="field in infoFields"
-        :key="field.key"
-        class="detail-card"
-        :data-test="`company-info-field-${field.key}`"
-      >
-        <span class="detail-label">{{ field.label }}</span>
-        <span class="detail-value">
-          {{ field.value ?? derivePlaceholderLabel(field.label) }}
-        </span>
-      </div>
-    </div>
-
-    <div class="company-instructions">
-      <span class="detail-label">Special Instructions</span>
-      <p
-        class="instructions-value"
-        :class="{ 'instructions-placeholder': !specialInstructions }"
-        data-test="company-info-instructions"
-      >
-        <em v-if="specialInstructions">
-          {{ specialInstructions }}
-        </em>
-        <span v-else>
-          {{ derivePlaceholderLabel('Special instructions') }}
-        </span>
-      </p>
-    </div>
-
-    <div class="company-assets">
-      <h4 class="section-title">Brand Assets</h4>
-      <div v-if="assets.length" class="assets-grid">
-        <div
-          v-for="asset in assets"
-          :key="asset.uri"
-          class="asset-card"
-          data-test="company-info-asset"
-        >
-          <div class="asset-thumb">
-            <img
-              v-if="asset.isImage && !asset.failed"
-              :src="asset.uri"
-              :alt="`Preview for ${asset.label}`"
-              loading="lazy"
-              decoding="async"
-              data-test="company-info-asset-thumb"
-              @error="markThumbnailFailed(asset)"
+  <v-expansion-panels
+    v-model="panelState"
+    multiple
+    density="compact"
+    class="company-info-panels"
+    data-test="company-info-panels"
+  >
+    <v-expansion-panel :value="0" data-test="company-info-panel">
+      <v-expansion-panel-title data-test="company-info-panel-title">
+        {{ panelTitle }}
+      </v-expansion-panel-title>
+      <v-expansion-panel-text>
+        <div class="company-info-widget" data-test="company-info-widget">
+          <div class="company-header">
+            <h3 class="company-name" data-test="company-info-name">
+              {{ companyName }}
+            </h3>
+            <v-btn
+              v-if="websiteHref"
+              :href="websiteHref"
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="text"
+              icon="mdi-web"
+              class="company-website"
+              size="small"
+              data-test="company-info-website"
+              :aria-label="`Open ${companyName} website in new tab`"
             />
-            <div v-else class="asset-thumb-placeholder" data-test="company-info-asset-placeholder">
-              <v-icon :icon="asset.failed ? 'mdi-image-off' : 'mdi-file-outline'" size="20" />
+          </div>
+
+          <div class="company-details">
+            <div
+              v-for="field in infoFields"
+              :key="field.key"
+              class="detail-card"
+              :data-test="`company-info-field-${field.key}`"
+            >
+              <span class="detail-label">{{ field.label }}</span>
+              <span class="detail-value">
+                {{ field.value ?? derivePlaceholderLabel(field.label) }}
+              </span>
             </div>
           </div>
-          <div class="asset-content">
-            <div class="asset-label" :title="asset.label">
-              {{ asset.label }}
+
+          <div class="company-instructions">
+            <span class="detail-label">Special Instructions</span>
+            <p
+              class="instructions-value"
+              :class="{ 'instructions-placeholder': !specialInstructions }"
+              data-test="company-info-instructions"
+            >
+              <em v-if="specialInstructions">
+                {{ specialInstructions }}
+              </em>
+              <span v-else>
+                {{ derivePlaceholderLabel('Special instructions') }}
+              </span>
+            </p>
+          </div>
+
+          <div class="company-assets">
+            <h4 class="section-title">Brand Assets</h4>
+            <div v-if="assets.length" class="assets-grid">
+              <div
+                v-for="asset in assets"
+                :key="asset.uri"
+                class="asset-card"
+                data-test="company-info-asset"
+              >
+                <div class="asset-thumb">
+                  <img
+                    v-if="asset.isImage && !asset.failed"
+                    :src="asset.uri"
+                    :alt="`Preview for ${asset.label}`"
+                    loading="lazy"
+                    decoding="async"
+                    data-test="company-info-asset-thumb"
+                    @error="markThumbnailFailed(asset)"
+                  />
+                  <div v-else class="asset-thumb-placeholder" data-test="company-info-asset-placeholder">
+                    <v-icon :icon="asset.failed ? 'mdi-image-off' : 'mdi-file-outline'" size="20" />
+                  </div>
+                </div>
+                <div class="asset-content">
+                  <div class="asset-label" :title="asset.label">
+                    {{ asset.label }}
+                  </div>
+                  <div class="asset-actions">
+                    <v-btn
+                      :href="asset.uri"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      variant="text"
+                      icon="mdi-download"
+                      size="small"
+                      data-test="company-info-asset-download"
+                      :aria-label="`Download ${asset.label}`"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="asset-actions">
-              <v-btn
-                :href="asset.uri"
-                target="_blank"
-                rel="noopener noreferrer"
-                variant="text"
-                icon="mdi-download"
-                size="small"
-                data-test="company-info-asset-download"
-                :aria-label="`Download ${asset.label}`"
-              />
-            </div>
+            <p v-else class="assets-empty" data-test="company-info-assets-empty">
+              No brand assets provided.
+            </p>
           </div>
         </div>
-      </div>
-      <p v-else class="assets-empty" data-test="company-info-assets-empty">
-        No brand assets provided.
-      </p>
-    </div>
-  </div>
+      </v-expansion-panel-text>
+    </v-expansion-panel>
+  </v-expansion-panels>
 </template>
 
 <style scoped>
+.company-info-panels {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
 .company-info-widget {
   display: flex;
   flex-direction: column;
@@ -269,7 +292,13 @@ function markThumbnailFailed(asset: { uri: string; label: string }) {
 .company-details {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .company-details {
+    grid-template-columns: 1fr;
+  }
 }
 
 .detail-card {

@@ -1,20 +1,9 @@
 import { markRaw, type Component } from 'vue'
 import DefaultFacetWidget from './DefaultFacetWidget.vue'
-import ToneOfVoiceWidget from './ToneOfVoiceWidget.vue'
-import ObjectiveBriefWidget from './ObjectiveBriefWidget.vue'
-import ClarificationResponseWidget from './ClarificationResponseWidget.vue'
 import PostVisualWidget from './PostVisualWidget.vue'
 import CompanyInformationWidget from './CompanyInformationWidget.vue'
 
 const registry = new Map<string, Component>([
-  ['toneOfVoice', markRaw(ToneOfVoiceWidget)],
-  ['toneOfVoice.output', markRaw(ToneOfVoiceWidget)],
-  ['toneGuidelines', markRaw(ToneOfVoiceWidget)],
-  ['toneGuidelines.output', markRaw(ToneOfVoiceWidget)],
-  ['objectiveBrief', markRaw(ObjectiveBriefWidget)],
-  ['objectiveBrief.output', markRaw(ObjectiveBriefWidget)],
-  ['clarificationResponse', markRaw(ClarificationResponseWidget)],
-  ['clarificationResponse.output', markRaw(ClarificationResponseWidget)],
   ['post_visual', markRaw(PostVisualWidget)],
   ['post_visual.output', markRaw(PostVisualWidget)],
   ['company_information.input', markRaw(CompanyInformationWidget)]

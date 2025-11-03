@@ -238,9 +238,19 @@ const customOutputFacetBindings = computed(() =>
   outputFacetBindings.value.filter((binding) => !binding.isDefault)
 )
 
+const postVisualBinding = computed<FacetBinding | null>(() => {
+  return customOutputFacetBindings.value.find((binding) => binding.name === 'post_visual') ?? null
+})
+
+const otherCustomOutputFacetBindings = computed(() =>
+  customOutputFacetBindings.value.filter((binding) => binding.name !== 'post_visual')
+)
+
 const fallbackOutputFacetBindings = computed(() =>
   outputFacetBindings.value.filter((binding) => binding.isDefault)
 )
+
+const postVisualPanels = ref<number[]>([])
 
 function getInputFacetRoot(task: FlexTaskRecord): Record<string, unknown> | null {
   const metadata = isRecord(task.metadata) ? (task.metadata as Record<string, unknown>) : null
@@ -410,6 +420,14 @@ watch(
     if (!fallbackOutputPanels.value.length) {
       fallbackOutputPanels.value = [0]
     }
+  },
+  { immediate: true }
+)
+
+watch(
+  postVisualBinding,
+  (binding) => {
+    postVisualPanels.value = binding ? [0] : []
   },
   { immediate: true }
 )
@@ -765,8 +783,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
             <div v-if="outputFacetBindings.length" class="widgets">
               <h4 class="section-title">Output Facets</h4>
               <div v-if="customOutputFacetBindings.length" class="custom-widgets">
+                <div
+                  v-if="postVisualBinding"
+                  class="custom-widget"
+                >
+                  <v-expansion-panels
+                    v-model="postVisualPanels"
+                    multiple
+                    density="comfortable"
+                    class="facet-panels"
+                    data-test="post-visual-output-panel"
+                  >
+                    <v-expansion-panel :value="0">
+                      <v-expansion-panel-title>
+                        {{ postVisualBinding.definition.title }}
+                      </v-expansion-panel-title>
+                      <v-expansion-panel-text>
+                        <component
+                          :is="postVisualBinding.component"
+                          :definition="postVisualBinding.definition"
+                          :schema="postVisualBinding.schema"
+                          :model-value="facetValue(postVisualBinding.pointer)"
+                          :readonly="submissionDisabled"
+                          :task-context="postVisualBinding.context"
+                          @update:model-value="updateFacetValue(postVisualBinding.pointer, $event)"
+                        />
+                      </v-expansion-panel-text>
+                    </v-expansion-panel>
+                  </v-expansion-panels>
+                </div>
                 <component
-                  v-for="binding in customOutputFacetBindings"
+                  v-for="binding in otherCustomOutputFacetBindings"
                   :key="binding.pointer"
                   :is="binding.component"
                   :definition="binding.definition"

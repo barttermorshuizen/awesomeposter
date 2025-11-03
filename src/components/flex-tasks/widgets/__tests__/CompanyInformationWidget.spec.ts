@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import CompanyInformationWidget from '@/components/flex-tasks/widgets/CompanyInformationWidget.vue'
 import vuetify from '@/plugins/vuetify'
@@ -28,7 +28,13 @@ describe('CompanyInformationWidget', () => {
     })
   }
 
-  it('renders populated company information with website and assets', () => {
+  async function expandPanel(wrapper: VueWrapper) {
+    const header = wrapper.get('[data-test="company-info-panel-title"]')
+    await header.trigger('click')
+    await wrapper.vm.$nextTick()
+  }
+
+  it('renders populated company information with website and assets', async () => {
     const wrapper = mountWidget({
       name: 'Acme Analytics',
       website: 'https://acmeanalytics.example.com',
@@ -48,6 +54,10 @@ describe('CompanyInformationWidget', () => {
         }
       ]
     })
+
+    expect(wrapper.get('[data-test="company-info-panel-title"]').text()).toBe('Company information')
+
+    await expandPanel(wrapper)
 
     expect(wrapper.get('[data-test="company-info-name"]').text()).toBe('Acme Analytics')
     expect(wrapper.get('[data-test="company-info-website"]').attributes('href')).toBe(
@@ -81,7 +91,7 @@ describe('CompanyInformationWidget', () => {
     expect(downloadButtons[0].attributes('href')).toBe('https://cdn.example.com/assets/logo.png')
   })
 
-  it('shows placeholders when optional fields are missing', () => {
+  it('shows placeholders when optional fields are missing', async () => {
     const wrapper = mountWidget({
       name: null,
       website: null,
@@ -92,6 +102,8 @@ describe('CompanyInformationWidget', () => {
       preferredChannels: null,
       brandAssets: []
     })
+
+    await expandPanel(wrapper)
 
     expect(wrapper.get('[data-test="company-info-name"]').text()).toBe('Company name unavailable')
     expect(wrapper.find('[data-test="company-info-website"]').exists()).toBe(false)
@@ -121,6 +133,8 @@ describe('CompanyInformationWidget', () => {
         }
       ]
     })
+
+    await expandPanel(wrapper)
 
     const thumb = wrapper.get('[data-test="company-info-asset-thumb"]')
     await thumb.trigger('error')

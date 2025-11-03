@@ -4,8 +4,6 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import vuetify from '@/plugins/vuetify'
 import FlexTaskPanel from '@/components/flex-tasks/FlexTaskPanel.vue'
-import ToneOfVoiceWidget from '@/components/flex-tasks/widgets/ToneOfVoiceWidget.vue'
-import ClarificationResponseWidget from '@/components/flex-tasks/widgets/ClarificationResponseWidget.vue'
 import DefaultFacetWidget from '@/components/flex-tasks/widgets/DefaultFacetWidget.vue'
 import { useFlexTasksStore } from '@/stores/flexTasks'
 import type { FlexEventWithId } from '@/lib/flex-sse'
@@ -54,8 +52,15 @@ describe('FlexTaskPanel', () => {
 
     await nextTick()
 
-    const toneWidget = wrapper.findComponent(ToneOfVoiceWidget)
+    const fallbackPanel = wrapper.get('[data-test="fallback-output-panel"]')
+    if (!fallbackPanel.classes().includes('v-expansion-panel--active')) {
+      await fallbackPanel.find('.v-expansion-panel-title').trigger('click')
+      await nextTick()
+    }
+
+    const toneWidget = wrapper.findComponent(DefaultFacetWidget)
     expect(toneWidget.exists()).toBe(true)
+    expect(toneWidget.props('definition')?.name).toBe('toneOfVoice')
 
     toneWidget.vm.$emit('update:modelValue', 'Warm & Friendly')
     await nextTick()
@@ -98,22 +103,25 @@ describe('FlexTaskPanel', () => {
     })
     await nextTick()
 
-    const widget = wrapper.findComponent(ClarificationResponseWidget)
+    const panel = wrapper.get('[data-test="fallback-output-panel"]')
+    if (!panel.classes().includes('v-expansion-panel--active')) {
+      await panel.find('.v-expansion-panel-title').trigger('click')
+      await nextTick()
+    }
+
+    const widget = panel.findComponent(DefaultFacetWidget)
     expect(widget.exists()).toBe(true)
+    expect(widget.props('definition')?.name).toBe('clarificationResponse')
 
-    const addButton = wrapper.find('[data-test="clarification-response-add"]')
-    expect(addButton.exists()).toBe(true)
-    await addButton.trigger('click')
-
-    const questionFields = wrapper.findAll('[data-test="clarification-response-question-id"] input')
-    expect(questionFields.length).toBeGreaterThan(0)
-    await questionFields[0].setValue('clarify_1')
-    await nextTick()
-
-    const responseAreas = wrapper.findAll('[data-test="clarification-response-response"] textarea')
-    expect(responseAreas.length).toBeGreaterThan(0)
-    await responseAreas[0].setValue('Answer for clarify_1')
-    await nextTick()
+    widget.vm.$emit('update:modelValue', {
+      responses: [
+        {
+          questionId: 'clarify_1',
+          status: 'answered',
+          response: 'Answer for clarify_1'
+        }
+      ]
+    })
 
     const submitButton = wrapper.find('[data-test="flex-task-submit"]')
     await submitButton.trigger('click')
@@ -127,72 +135,6 @@ describe('FlexTaskPanel', () => {
             questionId: 'clarify_1'
           })
         ])
-      }
-    })
-  })
-
-  it('prefills clarification responses when metadata includes pending questions', async () => {
-    const store = useFlexTasksStore()
-    store.handleNodeStart({
-      type: 'node_start',
-      timestamp: BASE_TIMESTAMP,
-      runId: 'run_clarify',
-      nodeId: 'node_clarify',
-      payload: {
-        executorType: 'human',
-        assignment: {
-          assignmentId: 'task_clarify',
-          runId: 'run_clarify',
-          nodeId: 'node_clarify',
-          label: 'Clarify questions',
-          status: 'awaiting_submission',
-          metadata: {
-            currentInputs: {
-              clarificationRequest: {
-                pendingQuestions: [
-                  {
-                    id: 'clarify_budget',
-                    question: 'What is the approved budget?',
-                    required: true
-                  }
-                ]
-              }
-            }
-          }
-        },
-        facets: { output: ['clarificationResponse'] },
-        contracts: { output: { mode: 'facets', facets: ['clarificationResponse'] } }
-      }
-    } as FlexEventWithId)
-
-    const submitSpy = vi.spyOn(store, 'submitTask').mockResolvedValue()
-
-    const wrapper = mount(FlexTaskPanel, {
-      global: { plugins: [vuetify] }
-    })
-    await nextTick()
-
-    const questionField = wrapper.find('[data-test="clarification-response-question-id"] input')
-    expect(questionField.element.value).toBe('clarify_budget')
-    expect(wrapper.text()).toContain('What is the approved budget?')
-
-    const responseArea = wrapper.find('[data-test="clarification-response-response"] textarea')
-    await responseArea.setValue('$5k')
-    await nextTick()
-
-    const submitButton = wrapper.find('[data-test="flex-task-submit"]')
-    await submitButton.trigger('click')
-
-    expect(submitSpy).toHaveBeenCalledTimes(1)
-    const [, payload] = submitSpy.mock.calls[0]
-    expect(payload.output).toMatchObject({
-      clarificationResponse: {
-        responses: [
-          expect.objectContaining({
-            questionId: 'clarify_budget',
-            response: '$5k'
-          })
-        ]
       }
     })
   })
@@ -225,9 +167,21 @@ describe('FlexTaskPanel', () => {
     })
     await nextTick()
 
-    const responseAreas = wrapper.findAll('[data-test="clarification-response-response"] textarea')
-    expect(responseAreas.length).toBeGreaterThan(0)
-    await responseAreas[0].setValue('Answer without question id')
+    const panel = wrapper.get('[data-test="fallback-output-panel"]')
+    if (!panel.classes().includes('v-expansion-panel--active')) {
+      await panel.find('.v-expansion-panel-title').trigger('click')
+      await nextTick()
+    }
+
+    const widget = panel.findComponent(DefaultFacetWidget)
+    widget.vm.$emit('update:modelValue', {
+      responses: [
+        {
+          status: 'answered',
+          response: 'Answer without question id'
+        }
+      ]
+    })
     await nextTick()
 
     const submitButton = wrapper.find('[data-test="flex-task-submit"]')
