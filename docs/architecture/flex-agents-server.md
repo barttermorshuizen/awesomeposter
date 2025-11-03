@@ -2190,6 +2190,7 @@ interface ClarificationEntry {
 - Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
 - A facet widget registry (for example `PostVisualWidget`, `CompanyInformationWidget`) maps facet names to reusable UI components that assemble into the task surface.
 - Registry keys follow the `<facet>.<direction>` namespace (for example `post_visual.output`, `company_information.input`) so input and output facets can ship dedicated widgets without collisions.
+- The reviewer gallery registers under `post_visual.input`, delivering read-only thumbnails, featured labels, and download links while preserving the editable `post_visual.output` widget for designers.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
@@ -2197,7 +2198,8 @@ interface ClarificationEntry {
 
 | Facet | Example Widget | User Role |
 | --- | --- | --- |
-| `post_visual` | Post visual asset manager | Designer |
+| `post_visual.output` | Post visual asset manager | Designer |
+| `post_visual.input` | Post visual gallery (read-only thumbnails & downloads) | Marketing reviewer |
 | `company_information.input` | Company Information widget (name, tone, assets) | Marketing operators |
 
 ### 15.5 Notification and Assignment Model

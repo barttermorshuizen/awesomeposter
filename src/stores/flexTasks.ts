@@ -74,6 +74,17 @@ export interface PostVisualAssetRecord {
   mimeType?: string | null
 }
 
+export interface PostVisualInputFacetAssetRecord {
+  key: string
+  assetId: string | null
+  url: string
+  ordering: number
+  name: string
+  originalName: string | null
+  mimeType: string | null
+  meta: Record<string, unknown> | null
+}
+
 export interface CompanyInformationAssetRecord {
   uri: string
   label: string
@@ -217,8 +228,92 @@ function normalizeCompanyInformationFacet(value: unknown): CompanyInformationFac
   return normalized
 }
 
+function normalizePostVisualInputFacet(value: unknown): PostVisualInputFacetAssetRecord[] {
+  const entries: unknown[] = Array.isArray(value) ? value : []
+  if (!entries.length) return []
+
+  const normalized: PostVisualInputFacetAssetRecord[] = []
+  const seen = new Set<string>()
+
+  entries.forEach((entry, index) => {
+    if (typeof entry === 'string') {
+      const url = toStringOrNull(entry)
+      if (!url) return
+      const dedupeKey = url
+      if (seen.has(dedupeKey)) return
+      seen.add(dedupeKey)
+      normalized.push({
+        key: dedupeKey,
+        assetId: null,
+        url,
+        ordering: index,
+        name: deriveAssetLabelFromUrl(url),
+        originalName: null,
+        mimeType: null,
+        meta: null
+      })
+      return
+    }
+
+    if (!isRecord(entry)) return
+    const url = toStringOrNull(entry.url)
+    if (!url) return
+    const assetId =
+      toStringOrNull(entry.assetId) ??
+      toStringOrNull(entry.id) ??
+      toStringOrNull(entry.asset_id)
+    const dedupeKey = assetId ?? url
+    if (seen.has(dedupeKey)) return
+    seen.add(dedupeKey)
+
+    const ordering =
+      typeof entry.ordering === 'number'
+        ? entry.ordering
+        : toNumberOrNull(entry.ordering) ?? index
+    const nameCandidate =
+      toStringOrNull(entry.displayName) ??
+      toStringOrNull(entry.display_name) ??
+      toStringOrNull(entry.name) ??
+      toStringOrNull(entry.label) ??
+      toStringOrNull(entry.title) ??
+      toStringOrNull(entry.originalName) ??
+      toStringOrNull(entry.original_name) ??
+      toStringOrNull(entry.filename)
+    const mimeType =
+      toStringOrNull(entry.mimeType) ??
+      toStringOrNull(entry.contentType) ??
+      toStringOrNull(entry.mime_type) ??
+      toStringOrNull(entry.type)
+
+    normalized.push({
+      key: dedupeKey,
+      assetId: assetId ?? null,
+      url,
+      ordering,
+      name: nameCandidate ?? deriveAssetLabelFromUrl(url),
+      originalName:
+        toStringOrNull(entry.originalName) ??
+        toStringOrNull(entry.original_name) ??
+        nameCandidate ??
+        null,
+      mimeType: mimeType ?? null,
+      meta: cloneIfObject(entry)
+    })
+  })
+
+  if (!normalized.length) return []
+
+  normalized.sort((a, b) => a.ordering - b.ordering)
+  return normalized.map((asset, index) => ({
+    ...asset,
+    key: asset.assetId ?? `${asset.url}::${index}`,
+    ordering: index
+  }))
+}
+
 const INPUT_FACET_SANITIZERS = new Map<string, (value: unknown) => unknown>([
-  ['company_information', normalizeCompanyInformationFacet]
+  ['company_information', normalizeCompanyInformationFacet],
+  ['post_visual', normalizePostVisualInputFacet]
 ])
 
 function sanitizeStatus(value: unknown): FlexAssignmentStatus {

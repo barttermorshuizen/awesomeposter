@@ -1,11 +1,13 @@
 import { markRaw, type Component } from 'vue'
 import DefaultFacetWidget from './DefaultFacetWidget.vue'
 import PostVisualWidget from './PostVisualWidget.vue'
+import PostVisualInputGallery from './PostVisualInputGallery.vue'
 import CompanyInformationWidget from './CompanyInformationWidget.vue'
 
 const registry = new Map<string, Component>([
   ['post_visual', markRaw(PostVisualWidget)],
   ['post_visual.output', markRaw(PostVisualWidget)],
+  ['post_visual.input', markRaw(PostVisualInputGallery)],
   ['company_information.input', markRaw(CompanyInformationWidget)]
 ])
 

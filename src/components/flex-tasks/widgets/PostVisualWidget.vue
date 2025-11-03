@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useFlexTasksStore, type PostVisualAssetRecord } from '@/stores/flexTasks'
+import { resolveFlexAssetSource } from './flexAssetUtils'
 import type { FacetWidgetProps, FacetWidgetEmits } from './types'
 
 type VisualAsset = {
@@ -423,17 +424,12 @@ function markThumbnailFailed(key: string) {
 }
 
 function getAssetDisplayUrl(asset: VisualAsset): string {
-  if (asset.assetId && asset.assetId.trim().length) {
-    return `/api/flex/assets/${encodeURIComponent(asset.assetId)}/download`
-  }
-  if (asset.meta && isRecord(asset.meta)) {
-    const meta = asset.meta as Record<string, unknown>
-    const metaAssetId = toStringOrNull(meta.assetId ?? meta.id ?? meta.asset_id)
-    if (metaAssetId) {
-      return `/api/flex/assets/${encodeURIComponent(metaAssetId)}/download`
-    }
-  }
-  return asset.url
+  const { url } = resolveFlexAssetSource({
+    assetId: asset.assetId,
+    url: asset.url,
+    meta: asset.meta && isRecord(asset.meta) ? (asset.meta as Record<string, unknown>) : null
+  })
+  return url
 }
 
 async function hydrateRemoteAssets(taskId: string) {
