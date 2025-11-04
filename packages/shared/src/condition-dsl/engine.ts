@@ -1279,13 +1279,19 @@ function buildCatalogLookup(
   return map
 }
 
+interface EvaluationScope {
+  value: unknown
+  parent?: EvaluationScope
+}
+
 function evaluate(
   expr: JsonLogicExpression,
   payload: unknown,
   resolved: Record<string, unknown>,
+  scope?: EvaluationScope,
 ): unknown {
   if (Array.isArray(expr)) {
-    return expr.map((item) => evaluate(item, payload, resolved))
+    return expr.map((item) => evaluate(item, payload, resolved, scope))
   }
 
   if (expr === null || typeof expr !== 'object') {
@@ -1303,7 +1309,7 @@ function evaluate(
     case 'and': {
       const list = Array.isArray(operand) ? operand : [operand]
       for (const item of list) {
-        const value = evaluate(item, payload, resolved)
+        const value = evaluate(item, payload, resolved, scope)
         if (!truthy(value)) return false
       }
       return true
@@ -1311,17 +1317,21 @@ function evaluate(
     case 'or': {
       const list = Array.isArray(operand) ? operand : [operand]
       for (const item of list) {
-        const value = evaluate(item, payload, resolved)
+        const value = evaluate(item, payload, resolved, scope)
         if (truthy(value)) return true
       }
       return false
     }
     case '!': {
-      const value = evaluate(operand, payload, resolved)
+      const value = evaluate(operand, payload, resolved, scope)
       return !truthy(value)
     }
     case 'var': {
       if (typeof operand === 'string') {
+        const scoped = resolveScopedValue(operand, scope)
+        if (scoped.found) {
+          return scoped.value
+        }
         const value = readPath(payload, operand)
         resolved[operand] = value
         return value
@@ -1330,6 +1340,10 @@ function evaluate(
         const path = operand[0]
         if (typeof path !== 'string') {
           throw new Error('Invalid `var` operand; expected string path.')
+        }
+        const scoped = resolveScopedValue(path, scope)
+        if (scoped.found) {
+          return scoped.value
         }
         const value = readPath(payload, path)
         resolved[path] = value
@@ -1347,8 +1361,8 @@ function evaluate(
         throw new Error(`Operator \`${operator}\` expects two operands.`)
       }
       const [leftOperand, rightOperand] = operand
-      const left = evaluate(leftOperand, payload, resolved)
-      const right = evaluate(rightOperand, payload, resolved)
+      const left = evaluate(leftOperand, payload, resolved, scope)
+      const right = evaluate(rightOperand, payload, resolved, scope)
       switch (operator) {
         case '==':
           return left === right
@@ -1366,6 +1380,48 @@ function evaluate(
           return false
       }
     }
+    case 'some':
+    case 'all': {
+      if (!Array.isArray(operand) || operand.length !== 2) {
+        throw new Error(`Operator \`${operator}\` expects an array with [source, predicate] operands.`)
+      }
+      const [sourceExpr, predicateExpr] = operand
+      if (predicateExpr === undefined) {
+        throw new Error(`Operator \`${operator}\` requires a predicate expression.`)
+      }
+      const sourcePath = extractVarPath(sourceExpr)
+      const sourceValue = evaluate(sourceExpr, payload, resolved, scope)
+      const array = toArrayOperand(sourceValue, operator, sourcePath)
+      if (array.length === 0) {
+        return false
+      }
+      if (operator === 'some') {
+        for (const item of array) {
+          const predicate = evaluate(
+            predicateExpr,
+            payload,
+            resolved,
+            createScope(item, scope),
+          )
+          if (truthy(predicate)) {
+            return true
+          }
+        }
+        return false
+      }
+      for (const item of array) {
+        const predicate = evaluate(
+          predicateExpr,
+          payload,
+          resolved,
+          createScope(item, scope),
+        )
+        if (!truthy(predicate)) {
+          return false
+        }
+      }
+      return true
+    }
     default:
       throw new Error(`Unsupported operator \`${operator}\` in evaluator.`)
   }
@@ -1373,6 +1429,46 @@ function evaluate(
 
 function truthy(value: unknown): boolean {
   return Boolean(value)
+}
+
+function createScope(value: unknown, parent?: EvaluationScope): EvaluationScope {
+  return { value, parent }
+}
+
+function resolveScopedValue(path: string, scope?: EvaluationScope): { found: boolean; value: unknown } {
+  if (!scope) {
+    return { found: false, value: undefined }
+  }
+  let current: EvaluationScope | undefined = scope
+  while (current) {
+    const result = readPathWithExistence(current.value, path)
+    if (result.exists) {
+      return { found: true, value: result.value }
+    }
+    current = current.parent
+  }
+  return { found: false, value: undefined }
+}
+
+function readPathWithExistence(source: unknown, path: string): { exists: boolean; value: unknown } {
+  if (path === '') {
+    return { exists: true, value: source }
+  }
+  if (source === null || typeof source !== 'object') {
+    return { exists: false, value: undefined }
+  }
+  const segments = path.split('.')
+  let current: any = source
+  for (const segment of segments) {
+    if (current === null || typeof current !== 'object') {
+      return { exists: false, value: undefined }
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) {
+      return { exists: false, value: undefined }
+    }
+    current = current[segment]
+  }
+  return { exists: true, value: current }
 }
 
 function readPath(payload: unknown, path: string): unknown {
@@ -1388,6 +1484,51 @@ function readPath(payload: unknown, path: string): unknown {
     current = current[segment]
   }
   return current
+}
+
+function extractVarPath(expr: JsonLogicExpression): string | null {
+  if (expr === null || typeof expr !== 'object' || Array.isArray(expr)) {
+    return null
+  }
+  const entries = Object.entries(expr)
+  if (entries.length !== 1) {
+    return null
+  }
+  const [operator, operand] = entries[0]!
+  if (operator !== 'var') {
+    return null
+  }
+  if (typeof operand === 'string') {
+    return operand
+  }
+  if (Array.isArray(operand) && operand.length > 0) {
+    const path = operand[0]
+    return typeof path === 'string' ? path : null
+  }
+  return null
+}
+
+function describeValue(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function toArrayOperand(
+  value: unknown,
+  operator: 'some' | 'all',
+  sourcePath: string | null,
+): unknown[] {
+  if (value === undefined || value === null) {
+    return []
+  }
+  if (!Array.isArray(value)) {
+    const reference = sourcePath ? `path "${sourcePath}"` : 'first operand'
+    throw new Error(
+      `Operator \`${operator}\` expected ${reference} to resolve to an array, received ${describeValue(value)}.`,
+    )
+  }
+  return value
 }
 
 export function defaultAllowedOperatorsForType(

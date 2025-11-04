@@ -101,6 +101,79 @@ describe('PolicyNormalizer', () => {
     expect(effect && effect.kind === 'replan' ? effect.trigger.details?.policyId : undefined).toBe('stage_replan')
   })
 
+  it('evaluates runtime policies using quantifier-based conditions', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'quantifier-policy',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'unresolved_feedback_replan',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                some: [
+                  { var: 'metadata.qaFindings.feedback' },
+                  { '==': [{ var: 'resolution' }, 'unresolved'] }
+                ]
+              }
+            },
+            action: { type: 'replan', rationale: 'Address unresolved QA feedback' }
+          }
+        ]
+      }
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const effect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-review-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-review-node', objective: 'quantifier-policy', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        qaFindings: {
+          feedback: [
+            { id: 'fb-1', resolution: 'resolved' },
+            { id: 'fb-2', resolution: 'unresolved' }
+          ]
+        }
+      }
+    } as any)
+
+    expect(effect?.kind).toBe('replan')
+
+    const noEffect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-review-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-review-node', objective: 'quantifier-policy', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        qaFindings: {
+          feedback: [
+            { id: 'fb-1', resolution: 'resolved' },
+            { id: 'fb-2', resolution: 'resolved' }
+          ]
+        }
+      }
+    } as any)
+
+    expect(noEffect).toBeNull()
+  })
+
   it('returns action effect for hitl runtime policies', () => {
     const normalizer = new PolicyNormalizer()
     const envelope: TaskEnvelope = {

@@ -94,6 +94,14 @@ export interface NodeSelector {
 
 Runtime policy validation now rejects unknown action names with migration hints (for example `hitl_pause → hitl`) so callers only reference the canonical union above. `goto` handlers track per-policy attempt counts and stop retrying once `maxAttempts` (default `1`) is exhausted. `hitl` directives can chain follow-up `Action`s that execute once the operator approves or rejects a request; approval defaults to “resume” when no nested action is supplied while rejection falls back to a terminal `fail`. `pause` actions persist the full execution snapshot – including policy state – so resumptions continue deterministically without re-planning.
 
+#### Runtime Condition Evaluation
+
+- Supported JSON-Logic operators: logical combinators (`and`, `or`, `!`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), variable references (`var`), and array quantifiers (`some`, `all`).
+- `some` returns `true` once any element in the target array satisfies the predicate; missing or empty arrays resolve to `false`.
+- `all` returns `true` only when every element satisfies the predicate; empty arrays resolve to `false`.
+- When referencing array payloads (for example `{"var": "metadata.qaFindings.feedback"}`) callers must ensure the path resolves to an array. Non-array values trigger `invalid_condition` errors with descriptive messaging so misconfigured policies surface quickly.
+- Predicate expressions execute in the scope of each element, so `{"var": "resolution"}` and nested paths like `{"var": "item.score"}` refer to fields on the current element while still allowing access to the root payload.
+
 Example payload:
 
 ```json

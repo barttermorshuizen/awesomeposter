@@ -81,6 +81,22 @@ type StoredDraft = {
 
 type DraftStore = Record<string, StoredDraft>
 
+type HitlResumeTrigger = {
+  nodeId: string | null
+  responseType: 'approval' | 'rejection' | 'freeform'
+  approved?: boolean
+  selectedOptionId?: string | null
+  freeformText?: string | null
+}
+
+type FlexResumeSubmission = {
+  nodeId: string
+  output?: Record<string, unknown>
+  decline?: { reason: string; note?: string | null }
+  submittedAt?: string
+  note?: string | null
+}
+
 const FLEX_BASE_URL =
   import.meta.env.VITE_FLEX_AGENTS_BASE_URL ||
   import.meta.env.VITE_AGENTS_BASE_URL ||
@@ -998,6 +1014,7 @@ async function runEnvelope(options?: {
   envelope?: TaskEnvelope
   resumeContext?: { runId?: string | null; threadId?: string | null }
   mode?: 'start' | 'resume'
+  resumeSubmission?: FlexResumeSubmission | null
 }) {
   if (runStatus.value === 'running') {
     return
@@ -1024,6 +1041,25 @@ async function runEnvelope(options?: {
     const resumePayload: Record<string, unknown> = { runId: resumeRunId }
     if (typeof expectedPlanVersion === 'number') {
       resumePayload.expectedPlanVersion = expectedPlanVersion
+    }
+    if (options?.resumeSubmission) {
+      const submission = options.resumeSubmission
+      const payloadBody: Record<string, unknown> = {
+        nodeId: submission.nodeId
+      }
+      if (submission.output) {
+        payloadBody.output = submission.output
+      }
+      if (submission.decline) {
+        payloadBody.decline = submission.decline
+      }
+      if (submission.submittedAt) {
+        payloadBody.submittedAt = submission.submittedAt
+      }
+      if (submission.note) {
+        payloadBody.note = submission.note
+      }
+      resumePayload.payload = payloadBody
     }
     const profile = operatorProfile.value
     if (profile && (profile.id || profile.displayName || profile.email)) {
@@ -1127,7 +1163,7 @@ async function runPlanForTemplate(id: string) {
   await runEnvelope()
 }
 
-async function handleHitlResume() {
+async function handleHitlResume(trigger?: HitlResumeTrigger) {
   if (runStatus.value === 'running') return
   const resumeRunId = pendingRun.value.runId ?? runId.value ?? null
   const threadId = pendingRun.value.threadId ?? null
@@ -1135,12 +1171,14 @@ async function handleHitlResume() {
     runError.value = 'No flex run is available for resume.'
     return
   }
+  const resumeSubmission = buildResumeSubmission(trigger)
   await runEnvelope({
     mode: 'resume',
     resumeContext: {
       runId: resumeRunId,
       threadId
-    }
+    },
+    resumeSubmission
   })
 }
 
@@ -1312,7 +1350,69 @@ function extractHitlResolution(payload: unknown): { id: string } | null {
   if (!id) return null
   return { id }
 }
+
+function buildResumeSubmission(trigger?: HitlResumeTrigger | null): FlexResumeSubmission | null {
+  if (!trigger || !trigger.nodeId) return null
+  const submittedAt = new Date().toISOString()
+  const note = trigger.freeformText?.trim() ?? ''
+  if (trigger.responseType === 'rejection' || trigger.approved === false) {
+    const reason = note || 'Operator rejected request'
+    return {
+      nodeId: trigger.nodeId,
+      decline: {
+        reason,
+        note: note ? note : null
+      },
+      submittedAt,
+      note: note || undefined
+    }
+  }
+  const output: Record<string, unknown> = {}
+  if (trigger.responseType === 'approval') {
+    output.decision = trigger.approved ? 'approved' : 'rejected'
+    output.approved = trigger.approved ?? false
+    if (note) {
+      output.note = note
+    }
+  } else {
+    if (note) {
+      output.response = note
+    }
+    if (trigger.selectedOptionId) {
+      output.selectedOptionId = trigger.selectedOptionId
+    }
+  }
+  if (!Object.keys(output).length) {
+    return null
+  }
+  return {
+    nodeId: trigger.nodeId,
+    output,
+    submittedAt,
+    note: note || undefined
+  }
+}
+
+async function hydrateHitlState(options?: { force?: boolean }) {
+  if (typeof window === 'undefined') return
+  try {
+    await hitlStore.hydrateFromPending({ force: options?.force ?? false })
+    if (pendingRun.value.runId) {
+      runId.value = pendingRun.value.runId ?? undefined
+    }
+    if (
+      (pendingRun.value.pendingRequestId || hasActiveRequest.value) &&
+      runStatus.value !== 'running'
+    ) {
+      runStatus.value = 'hitl'
+    }
+  } catch (err) {
+    console.warn('Failed to hydrate HITL state', err)
+  }
+}
+
 onMounted(() => {
+  void hydrateHitlState({ force: true })
   if (FLEX_SANDBOX_ENABLED) {
     void loadMetadata()
   }
@@ -1352,6 +1452,46 @@ watch(
       envelopeEditorLabel.value = `Draft ${selectedTemplateId.value}`
     } else {
       envelopeEditorLabel.value = ''
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => pendingRun.value.runId,
+  (nextRunId) => {
+    if (nextRunId) {
+      runId.value = nextRunId
+    } else if (!pendingRun.value.pendingRequestId && runStatus.value === 'idle') {
+      runId.value = undefined
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => pendingRun.value.pendingRequestId,
+  (pendingRequestId) => {
+    if (pendingRequestId) {
+      if (runStatus.value !== 'running') {
+        runStatus.value = 'hitl'
+      }
+    } else if (!hasActiveRequest.value && runStatus.value === 'hitl') {
+      runStatus.value = 'idle'
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  hasActiveRequest,
+  (active) => {
+    if (active) {
+      if (runStatus.value !== 'running') {
+        runStatus.value = 'hitl'
+      }
+    } else if (!pendingRun.value.pendingRequestId && runStatus.value === 'hitl') {
+      runStatus.value = 'idle'
     }
   },
   { immediate: true }

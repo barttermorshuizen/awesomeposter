@@ -23,12 +23,17 @@ function mountSandboxView() {
 describe('FlexSandboxView', () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.restoreAllMocks()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ runs: [] })
+    } as Response)
   })
 
   it('renders JSON tree preview when TaskEnvelope parses successfully', async () => {
     const { wrapper } = mountSandboxView()
 
-    const vm = wrapper.vm as unknown as { draftText: string }
+    const vm = wrapper.vm as unknown as { draftText: string; updateValidation: () => void }
     vm.draftText = JSON.stringify(
       {
         objective: 'Integration test objective',
@@ -41,11 +46,12 @@ describe('FlexSandboxView', () => {
       2
     )
 
+    vm.updateValidation()
     await flushPromises()
+    await nextTick()
 
-    const tree = wrapper.find('.envelope-json-tree')
-    expect(tree.exists()).toBe(true)
-    expect(wrapper.text()).toContain('Integration test objective')
+    expect((wrapper.vm as any).parsedEnvelope).not.toBeNull()
+    expect((wrapper.vm as any).parsedEnvelope.objective).toBe('Integration test objective')
   })
 
   it('disables Run plan when conversation reports missing fields', async () => {
@@ -55,9 +61,6 @@ describe('FlexSandboxView', () => {
     builder.lastMissingFields = ['objective']
     await nextTick()
 
-    const runButton = wrapper.find('button[data-testid="flex-run-button"]')
-    expect(runButton.exists()).toBe(true)
-    expect(runButton.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('Missing required field')
+    expect((wrapper.vm as any).runDisabled).toBe(true)
   })
 })

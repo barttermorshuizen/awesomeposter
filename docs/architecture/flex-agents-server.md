@@ -2191,6 +2191,7 @@ interface ClarificationEntry {
 - A facet widget registry (for example `PostVisualWidget`, `CompanyInformationWidget`) maps facet names to reusable UI components that assemble into the task surface.
 - Registry keys follow the `<facet>.<direction>` namespace (for example `post_visual.output`, `company_information.input`) so input and output facets can ship dedicated widgets without collisions.
 - The reviewer gallery registers under `post_visual.input`, delivering read-only thumbnails, featured labels, and download links while preserving the editable `post_visual.output` widget for designers.
+- The `post` facet renders a combined copy + thumbnail preview, stitching together `post_copy` text with related `post_visual` assets. When no images are available the widget renders an explicit “No visuals provided” state while still showing copy for context.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
@@ -2201,6 +2202,7 @@ interface ClarificationEntry {
 | `post_visual.output` | Post visual asset manager | Designer |
 | `post_visual.input` | Post visual gallery (read-only thumbnails & downloads) | Marketing reviewer |
 | `company_information.input` | Company Information widget (name, tone, assets) | Marketing operators |
+| `post` | Social Post Preview (copy plus stacked image thumbnails) | Marketing director |
 
 ### 15.5 Notification and Assignment Model
 - `node_start` events for human-executed nodes include capability metadata (`capabilityId`, `kind`, `inputFacets`, `outputFacets`, `rationale`) plus optional `dueAt` hints so downstream tooling can route work using information already present in the plan graph.

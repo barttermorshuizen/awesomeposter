@@ -145,4 +145,92 @@ describe('evaluateCondition', () => {
       'qaFindings.flagsCount': 4,
     })
   })
+
+  it('supports `some` quantifier semantics with scoped predicate variables', () => {
+    const expression: JsonLogicExpression = {
+      some: [
+        { var: 'qaFindings.feedback' },
+        { '==': [{ var: 'resolution' }, 'unresolved'] },
+      ],
+    }
+    const payload = {
+      qaFindings: {
+        feedback: [
+          { id: 'fb-1', resolution: 'resolved' },
+          { id: 'fb-2', resolution: 'unresolved' },
+        ],
+      },
+    }
+
+    const result = evaluateCondition(expression, payload)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.result).toBe(true)
+    expect(result.resolvedVariables).toMatchObject({
+      'qaFindings.feedback': payload.qaFindings.feedback,
+    })
+    expect(result.resolvedVariables).not.toHaveProperty('resolution')
+  })
+
+  it('supports `all` quantifier semantics including empty arrays', () => {
+    const expression: JsonLogicExpression = {
+      all: [
+        { var: 'qaFindings.findings' },
+        { '!=': [{ var: 'severity' }, 'critical'] },
+      ],
+    }
+    const payload = {
+      qaFindings: {
+        findings: [
+          { severity: 'minor' },
+          { severity: 'moderate' },
+        ],
+      },
+    }
+
+    const positive = evaluateCondition(expression, payload)
+    expect(positive.ok).toBe(true)
+    if (!positive.ok) return
+    expect(positive.result).toBe(true)
+
+    const failing = evaluateCondition(expression, {
+      qaFindings: {
+        findings: [
+          { severity: 'critical' },
+          { severity: 'moderate' },
+        ],
+      },
+    })
+    expect(failing.ok).toBe(true)
+    if (failing.ok) {
+      expect(failing.result).toBe(false)
+    }
+
+    const empty = evaluateCondition(expression, { qaFindings: { findings: [] } })
+    expect(empty.ok).toBe(true)
+    if (empty.ok) {
+      expect(empty.result).toBe(false)
+    }
+  })
+
+  it('returns descriptive errors when quantifier source does not resolve to an array', () => {
+    const expression: JsonLogicExpression = {
+      some: [
+        { var: 'qaFindings.overallScore' },
+        { '==': [{ var: '' }, 0.6] },
+      ],
+    }
+    const payload = {
+      qaFindings: {
+        overallScore: 0.42,
+      },
+    }
+
+    const result = evaluateCondition(expression, payload)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    expect(result.error).toContain('Operator `some` expected path "qaFindings.overallScore" to resolve to an array')
+  })
 })

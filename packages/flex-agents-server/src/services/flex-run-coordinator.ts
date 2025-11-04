@@ -22,6 +22,7 @@ import {
   FlexPlanner,
   PlannerDraftRejectedError,
   type FlexPlan,
+  type FlexPlanNode,
   type FlexPlanNodeContracts,
   type FlexPlanNodeFacets,
   type FlexPlanNodeProvenance,
@@ -260,6 +261,7 @@ export class FlexRunCoordinator {
     const runContext = resumeCandidate?.run.contextSnapshot
       ? RunContext.fromSnapshot(resumeCandidate.run.contextSnapshot)
       : new RunContext()
+    this.seedRunContextFromEnvelopeInputs(runContext, envelopeToUse)
     const schemaHashValue = schemaHash(envelopeToUse.outputContract)
     const executionEnvelope: TaskEnvelope = {
       ...envelopeToUse,
@@ -1279,7 +1281,17 @@ export class FlexRunCoordinator {
                   updateState: updateHitlState
                 },
                 onStart: pendingStartupEffect ? () => consumeStartupEffect() : undefined,
-                onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
+                onNodeComplete: ({ node }) => {
+                  const runContextSnapshot = runContext.snapshot()
+                  const enrichedNode: FlexPlanNode = {
+                    ...node,
+                    metadata: {
+                      ...(node.metadata ?? {}),
+                      runContextSnapshot
+                    }
+                  }
+                  return this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, enrichedNode)
+                },
                 initialState: pendingState,
                 runContext,
                 schemaHash: schemaHashValue
@@ -1597,7 +1609,17 @@ export class FlexRunCoordinator {
               updateState: updateHitlState
             },
             onStart: pendingStartupEffect ? () => consumeStartupEffect() : undefined,
-            onNodeComplete: ({ node }) => this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, node),
+            onNodeComplete: ({ node }) => {
+              const runContextSnapshot = runContext.snapshot()
+              const enrichedNode: FlexPlanNode = {
+                ...node,
+                metadata: {
+                  ...(node.metadata ?? {}),
+                  runContextSnapshot
+                }
+              }
+              return this.policyNormalizer.evaluateRuntimeEffect(normalizedPolicies, enrichedNode)
+            },
             initialState: pendingState,
             runContext,
             schemaHash: schemaHashValue
@@ -2002,6 +2024,22 @@ export class FlexRunCoordinator {
       nodeId: node.nodeId,
       objective: envelope.objective,
       contract: fallbackContract
+    }
+  }
+
+  private seedRunContextFromEnvelopeInputs(runContext: RunContext, envelope: TaskEnvelope): void {
+    const inputs = envelope.inputs
+    if (!inputs || typeof inputs !== 'object') return
+    const records = inputs as Record<string, unknown>
+    for (const [facet, value] of Object.entries(records)) {
+      if (value === undefined) continue
+      const existing = runContext.getFacet(facet)
+      if (existing && typeof existing.value !== 'undefined') continue
+      runContext.updateFacet(facet, value, {
+        nodeId: 'envelope_input',
+        capabilityId: null,
+        rationale: 'envelope_seed'
+      })
     }
   }
 }

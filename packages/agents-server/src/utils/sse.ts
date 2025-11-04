@@ -43,10 +43,43 @@ export function createSse(
 
   const writeRaw = (chunk: string) =>
     new Promise<void>((resolve) => {
-      if (closed) return resolve();
+      const req = event.node.req as import('http').IncomingMessage | undefined;
+
+      if (closed || res.writableEnded || res.destroyed) {
+        closed = true;
+        return resolve();
+      }
+
       const ok = res.write(chunk);
       if (ok) return resolve();
+
+      if (closed || res.writableEnded || res.destroyed) {
+        closed = true;
+        return resolve();
+      }
+
       const start = Date.now();
+
+      const cleanup = () => {
+        res.off('drain', handleDrain);
+        req?.off('close', handleTerminate);
+        req?.off('aborted', handleTerminate);
+      };
+
+      const handleDrain = () => {
+        cleanup();
+        try {
+          const log = getLogger();
+          log.info('sse_drain', { correlationId, waitMs: Date.now() - start });
+        } catch {}
+        resolve();
+      };
+
+      const handleTerminate = () => {
+        cleanup();
+        resolve();
+      };
+
       try {
         const log = getLogger();
         log.warn('sse_backpressure', {
@@ -54,13 +87,10 @@ export function createSse(
           bytes: typeof chunk === 'string' ? Buffer.byteLength(chunk) : 0
         });
       } catch {}
-      res.once('drain', () => {
-        try {
-          const log = getLogger();
-          log.info('sse_drain', { correlationId, waitMs: Date.now() - start });
-        } catch {}
-        resolve();
-      });
+
+      res.once('drain', handleDrain);
+      req?.once('close', handleTerminate);
+      req?.once('aborted', handleTerminate);
     });
 
   const sendNamed = async (type: string, data: any) => {

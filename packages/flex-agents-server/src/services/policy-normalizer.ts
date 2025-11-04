@@ -1,10 +1,13 @@
 import {
+  evaluateCondition as evaluateJsonLogicCondition,
   parseTaskPolicies,
+  type JsonLogicExpression,
   type PlannerPolicy,
   type RuntimePolicy,
   type TaskEnvelope,
   type TaskPolicies
 } from '@awesomeposter/shared'
+import { getLogger } from './logger'
 import type { FlexPlanNode } from './flex-planner'
 import type { ReplanTrigger } from './flex-execution-engine'
 import { ZodError, type ZodIssue } from 'zod'
@@ -368,27 +371,36 @@ export class PolicyNormalizer {
 
   private evaluateCondition(condition: Record<string, unknown>, node: FlexPlanNode): boolean {
     if (!condition || typeof condition !== 'object') return false
-    if ('==' in condition) {
-      const comparator = (condition as Record<string, unknown>)['==']
-      if (Array.isArray(comparator) && comparator.length === 2) {
-        const left = this.resolveConditionTerm(comparator[0], node)
-        const right = this.resolveConditionTerm(comparator[1], node)
-        return left === right
-      }
-    }
-    return false
-  }
+    const metadata = node.metadata && typeof node.metadata === 'object' ? (node.metadata as Record<string, unknown>) : null
+    const snapshot = metadata && typeof metadata.runContextSnapshot === 'object'
+      ? (metadata.runContextSnapshot as Record<string, unknown> | undefined)
+      : undefined
+    const facets = snapshot && typeof snapshot === 'object' && snapshot && 'facets' in snapshot
+      ? (snapshot.facets as unknown)
+      : null
 
-  private resolveConditionTerm(term: unknown, node: FlexPlanNode): unknown {
-    if (term && typeof term === 'object' && !Array.isArray(term)) {
-      const record = term as Record<string, unknown>
-      if (typeof record.var === 'string') {
-        if (record.var === 'metadata.plannerStage') {
-          const stage = node.metadata?.plannerStage
-          return typeof stage === 'string' ? stage : undefined
-        }
-      }
+    const evaluation = evaluateJsonLogicCondition(condition as JsonLogicExpression, node)
+    if (!evaluation.ok) {
+      try {
+        getLogger().info('flex_runtime_policy_condition_error', {
+          nodeId: node.id,
+          capabilityId: node.capabilityId,
+          error: evaluation.error,
+          condition,
+          runContextFacets: facets ?? null
+        })
+      } catch {}
+      return false
     }
-    return term
+    try {
+      getLogger().info('flex_runtime_policy_condition_eval', {
+        nodeId: node.id,
+        capabilityId: node.capabilityId,
+        result: evaluation.result,
+        condition,
+        runContextFacets: facets ?? null
+      })
+    } catch {}
+    return evaluation.result
   }
 }

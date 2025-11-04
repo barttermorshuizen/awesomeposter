@@ -59,8 +59,23 @@ const receivedTimestamp = computed(() => {
   }).format(created) : null
 })
 
+const resolvedNodeId = computed(() => {
+  if (activeRequest.value?.pendingNodeId) {
+    return activeRequest.value.pendingNodeId
+  }
+  return activeRequest.value?.contractSummary?.nodeId ?? null
+})
+
+type ResumeEventPayload = {
+  nodeId: string | null
+  responseType: 'approval' | 'rejection' | 'freeform'
+  approved?: boolean
+  selectedOptionId?: string | null
+  freeformText?: string | null
+}
+
 const emit = defineEmits<{
-  (e: 'resume'): void
+  (e: 'resume', payload: ResumeEventPayload): void
 }>()
 
 watch(activeRequest, (req) => {
@@ -120,7 +135,13 @@ async function submit() {
   })
 
   if (submissionState.value === 'success') {
-    emit('resume')
+    emit('resume', {
+      nodeId: resolvedNodeId.value,
+      responseType: computeResponseType(),
+      approved: request.kind === 'approval' ? approvalDecision.value === 'approve' : undefined,
+      selectedOptionId: selectedOptionId.value,
+      freeformText: freeformText.value.trim().length > 0 ? freeformText.value.trim() : null
+    })
   }
 }
 

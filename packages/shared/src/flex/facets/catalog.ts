@@ -1155,6 +1155,49 @@ const marketingFacetDefinitions: FacetDefinition[] = [
       tags: ['marketing-agency', 'sandbox'],
       requiredByDefault: true
     }
+  },
+  {
+    name: 'social_post.preview',
+    title: 'Social Post Preview',
+    description:
+      'Composite preview that pairs post copy with associated visual thumbnails for human review workflows.',
+    schema: {
+      type: 'object',
+      properties: {
+        copy: { type: ['string', 'null'] },
+        visuals: {
+          type: 'array',
+          items: {
+            anyOf: [
+              { type: 'string', minLength: 1 },
+              {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', minLength: 1 },
+                  assetId: { type: ['string', 'null'] },
+                  meta: { type: 'object' }
+                },
+                required: ['url'],
+                additionalProperties: true
+              }
+            ]
+          }
+        }
+      },
+      required: [],
+      additionalProperties: true
+    },
+    semantics: {
+      summary: 'Enables HITL panels to render a combined preview built from post_copy and post_visual facets.',
+      instruction:
+        'Populate from run context facets. Treat non-image assets as secondary metadata rather than inline visuals.'
+    },
+    metadata: {
+      version: 'v1',
+      direction: 'output',
+      tags: ['marketing-agency', 'sandbox'],
+      requiredByDefault: false
+    }
   }
 ]
 

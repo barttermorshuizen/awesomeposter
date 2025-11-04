@@ -228,7 +228,11 @@ export const useHitlStore = defineStore('hitl', () => {
     const hasIdentifiers = Boolean(pendingRun.value.pendingRequestId || targetThreadId || targetBriefId)
     if (!hasIdentifiers && !options?.force) return
     try {
-      const res = await fetch('/api/hitl/pending', {
+      const endpoint =
+        typeof window !== 'undefined' && typeof window.location?.origin === 'string'
+          ? new URL('/api/hitl/pending', window.location.origin).toString()
+          : '/api/hitl/pending'
+      const res = await fetch(endpoint, {
         headers: buildHeaders()
       })
       if (!res.ok) return
@@ -251,26 +255,60 @@ export const useHitlStore = defineStore('hitl', () => {
         }
       }> = Array.isArray(payload?.runs) ? payload.runs : []
 
-      const match = runs.find((run) => {
+      let match = runs.find((run) => {
         if (pendingRun.value.pendingRequestId && run.pendingRequestId === pendingRun.value.pendingRequestId) return true
         if (targetThreadId && run.threadId === targetThreadId) return true
         if (targetBriefId && run.briefId === targetBriefId) return true
         return false
       })
 
-      if (!match) {
-        if (options?.force) {
-          pendingRun.value = {
-            runId: null,
-            threadId: targetThreadId ?? null,
-            pendingRequestId: null,
-            status: null,
-            briefId: targetBriefId ?? null,
-            updatedAt: null,
-            isSuspended: false
+      if (!match && options?.force) {
+        const parseTimestamp = (input: unknown) => {
+          if (typeof input === 'string') {
+            const time = Date.parse(input)
+            return Number.isFinite(time) ? time : 0
           }
-          activeRequest.value = null
+          if (input instanceof Date) {
+            const time = input.getTime()
+            return Number.isFinite(time) ? time : 0
+          }
+          return 0
         }
+        const fallback = runs
+          .filter((run) => {
+            const hasPendingId = typeof run?.pendingRequestId === 'string' && run.pendingRequestId.length > 0
+            const pendingRequest = run?.pendingRequest
+            const hasRequest =
+              hasPendingId ||
+              (pendingRequest && typeof pendingRequest === 'object' && typeof pendingRequest.id === 'string')
+            return hasRequest
+          })
+          .sort((a, b) => {
+            const aTime = Math.max(
+              parseTimestamp(a?.updatedAt),
+              parseTimestamp(a?.pendingRequest?.createdAt)
+            )
+            const bTime = Math.max(
+              parseTimestamp(b?.updatedAt),
+              parseTimestamp(b?.pendingRequest?.createdAt)
+            )
+            return bTime - aTime
+          })[0]
+        match = fallback
+      }
+
+      if (!match) {
+        if (!options?.force) return
+        pendingRun.value = {
+          runId: null,
+          threadId: targetThreadId ?? null,
+          pendingRequestId: null,
+          status: null,
+          briefId: targetBriefId ?? null,
+          updatedAt: null,
+          isSuspended: false
+        }
+        activeRequest.value = null
         return
       }
 
@@ -278,13 +316,17 @@ export const useHitlStore = defineStore('hitl', () => {
       pendingRun.value.threadId = match.threadId ?? null
       pendingRun.value.briefId = match.briefId ?? pendingRun.value.briefId ?? null
       pendingRun.value.pendingRequestId = match.pendingRequestId ?? match.pendingRequest?.id ?? pendingRun.value.pendingRequestId
-      pendingRun.value.status = (match.status as OrchestratorStatus) ?? pendingRun.value.status ?? null
+      const derivedStatus: OrchestratorStatus =
+        (match.status as OrchestratorStatus) ??
+        (pendingRun.value.pendingRequestId ? 'awaiting_hitl' : pendingRun.value.status ?? null)
+      pendingRun.value.status = derivedStatus
       pendingRun.value.updatedAt = typeof match.updatedAt === 'string'
         ? match.updatedAt
         : match.updatedAt instanceof Date
           ? match.updatedAt.toISOString()
           : pendingRun.value.updatedAt
-      pendingRun.value.isSuspended = pendingRun.value.status === 'awaiting_hitl'
+      pendingRun.value.isSuspended =
+        pendingRun.value.status === 'awaiting_hitl' || Boolean(pendingRun.value.pendingRequestId)
 
       if (match.pendingRequest) {
         const createdAtValue = match.pendingRequest.createdAt ? new Date(match.pendingRequest.createdAt) : undefined

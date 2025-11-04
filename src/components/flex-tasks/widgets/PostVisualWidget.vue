@@ -294,7 +294,7 @@ watch(
       internalUpdate = false
       return
     }
-    setAssets(parseModelValue(value), { skipEmit: true })
+    setAssets(parseModelValue(value))
   },
   { immediate: true, deep: true }
 )
@@ -437,7 +437,7 @@ async function hydrateRemoteAssets(taskId: string) {
     initialLoadError.value = null
     const records = await flexTasksStore.listFlexAssets(taskId, 'post_visual')
     if (!records.length) return
-    const mapped = records
+  const mapped = records
       .sort((a, b) => a.ordering - b.ordering)
       .map((record, index) => ({
         key: record.assetId ?? `remote-${index}-${record.url}`,
@@ -455,7 +455,7 @@ async function hydrateRemoteAssets(taskId: string) {
               }
             : null
       }))
-    setAssets(mapped, { skipEmit: true })
+    setAssets(mapped)
   } catch (err: unknown) {
     initialLoadError.value = err instanceof Error ? err.message : 'Failed to load existing assets.'
   }

@@ -108,7 +108,8 @@ describe('useHitlStore', () => {
 
     await store.hydrateFromPending()
 
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/hitl/pending', expect.any(Object))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toMatch(/\/api\/hitl\/pending$/)
     expect(pendingRun.value.runId).toBe('run_abc')
     expect(pendingRun.value.threadId).toBe('thread-123')
     expect(pendingRun.value.briefId).toBe('brief-789')

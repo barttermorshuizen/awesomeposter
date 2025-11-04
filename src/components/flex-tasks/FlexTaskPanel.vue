@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { getFacetCatalog, getMarketingCapabilitiesSnapshot, type FacetDefinition } from '@awesomeposter/shared'
 import type { Component } from 'vue'
@@ -29,6 +29,7 @@ const capabilityOutputFacetMap = (() => {
 })()
 const inputFacetPanels = ref<number[]>([])
 const fallbackOutputPanels = ref<number[]>([])
+const customOutputPanelStates = reactive<Record<string, number[]>>({})
 
 function sanitizeFacetNames(values: unknown): string[] {
   if (!Array.isArray(values)) return []
@@ -48,6 +49,89 @@ function uniqueStrings(values: string[]): string[] {
   return output
 }
 
+function findExistingFacetValue(task: FlexTaskRecord, binding: FacetBinding): unknown {
+  const sources: Record<string, unknown>[] = []
+  const { pointer, name } = binding
+
+  if (task.lastSubmittedPayload && isRecord(task.lastSubmittedPayload)) {
+    sources.push(task.lastSubmittedPayload as Record<string, unknown>)
+  }
+
+  const metadata = isRecord(task.metadata) ? (task.metadata as Record<string, unknown>) : null
+  if (metadata) {
+    const currentOutput = isRecord(metadata.currentOutput)
+      ? (metadata.currentOutput as Record<string, unknown>)
+      : null
+    if (currentOutput) {
+      sources.push(currentOutput)
+    }
+  }
+
+  const runContext = buildRunContextOutput(task)
+  if (runContext) {
+    sources.push(runContext)
+  }
+
+  for (const source of sources) {
+    const candidate = getValueAtPointer(source, pointer)
+    if (candidate !== undefined && candidate !== null) return candidate
+
+    const fallbackPointer = `/${name}`
+    if (fallbackPointer !== pointer) {
+      const fallbackCandidate = getValueAtPointer(source, fallbackPointer)
+      if (fallbackCandidate !== undefined && fallbackCandidate !== null) {
+        return fallbackCandidate
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(source, name)) {
+      const directCandidate = (source as Record<string, unknown>)[name]
+      if (directCandidate !== undefined && directCandidate !== null) {
+        return directCandidate
+      }
+    }
+  }
+
+  if (metadata && isRecord(metadata.runContextSnapshot)) {
+    const snapshot = metadata.runContextSnapshot as Record<string, unknown>
+    const facets = isRecord(snapshot.facets) ? (snapshot.facets as Record<string, unknown>) : null
+    if (facets) {
+      const entry = facets[name]
+      if (isRecord(entry) && 'value' in entry) {
+        const value = (entry as Record<string, unknown>).value
+        if (value !== undefined && value !== null) {
+          return value
+        }
+      } else if (entry !== undefined && entry !== null) {
+        return entry
+      }
+    }
+  }
+
+  return undefined
+}
+
+function isFacetRequiredForTask(task: FlexTaskRecord, binding: FacetBinding): boolean {
+  const contract = task.contracts?.output
+  if (contract?.mode === 'facets' && Array.isArray(contract.facets)) {
+    return contract.facets.includes(binding.name)
+  }
+
+  if (task.capabilityId && capabilityOutputFacetMap.has(task.capabilityId)) {
+    const capabilityFacets = capabilityOutputFacetMap.get(task.capabilityId) ?? []
+    if (capabilityFacets.length) {
+      return capabilityFacets.includes(binding.name)
+    }
+  }
+
+  const metadata = binding.definition?.metadata
+  if (metadata && typeof metadata === 'object' && 'requiredByDefault' in metadata) {
+    return Boolean((metadata as Record<string, unknown>).requiredByDefault)
+  }
+
+  return true
+}
+
 function resolveOutputFacetNames(task: FlexTaskRecord): string[] {
   const fromFacets = sanitizeFacetNames(task.facets?.output ?? [])
   const contract = task.contracts?.output
@@ -56,12 +140,12 @@ function resolveOutputFacetNames(task: FlexTaskRecord): string[] {
     task.capabilityId && capabilityOutputFacetMap.has(task.capabilityId)
       ? capabilityOutputFacetMap.get(task.capabilityId) ?? []
       : []
-  const union = uniqueStrings([...fromFacets, ...fromContract, ...fromCapability])
+  const combined = uniqueStrings([...fromFacets, ...fromContract, ...fromCapability])
   const allowed = new Set<string>([...fromContract, ...fromCapability])
   if (allowed.size === 0) {
-    return union
+    return combined
   }
-  return union.filter((name) => allowed.has(name))
+  return combined.filter((name) => allowed.has(name))
 }
 
 type FacetProvenanceEntry = {
@@ -341,11 +425,15 @@ function initializeDraft(task: FlexTaskRecord | null) {
     return
   }
 
+  const metadata = isRecord(task.metadata)
+    ? (task.metadata as Record<string, unknown>)
+    : null
+
   let payload: Record<string, unknown> | null = null
   if (task.lastSubmittedPayload && typeof task.lastSubmittedPayload === 'object') {
     payload = cloneValue(task.lastSubmittedPayload as Record<string, unknown>)
-  } else if (isRecord(task.metadata)) {
-    const candidate = (task.metadata as Record<string, unknown>)['currentOutput']
+  } else if (metadata) {
+    const candidate = metadata['currentOutput']
     if (isRecord(candidate)) {
       payload = cloneValue(candidate)
     }
@@ -393,6 +481,22 @@ function initializeDraft(task: FlexTaskRecord | null) {
       }
     }
 
+    if ((existing === undefined || existing === null) && metadata && isRecord(metadata.runContextSnapshot)) {
+      const snapshot = metadata.runContextSnapshot as Record<string, unknown>
+      const facets = isRecord(snapshot.facets) ? (snapshot.facets as Record<string, unknown>) : null
+      if (facets) {
+        const entry = facets[binding.name]
+        if (isRecord(entry) && 'value' in entry) {
+          const value = (entry as Record<string, unknown>).value
+          if (value !== undefined && value !== null) {
+            existing = value
+          }
+        } else if (entry !== undefined && entry !== null) {
+          existing = entry
+        }
+      }
+    }
+
     if (existing !== undefined && existing !== null) {
       seeded.set(binding.pointer, cloneValue(existing))
     }
@@ -432,6 +536,24 @@ watch(
   { immediate: true }
 )
 
+watch(
+  otherCustomOutputFacetBindings,
+  (bindings) => {
+    const pointers = bindings.map((binding) => binding.pointer)
+    for (const pointer of pointers) {
+      if (!customOutputPanelStates[pointer]) {
+        customOutputPanelStates[pointer] = [0]
+      }
+    }
+    for (const existing of Object.keys(customOutputPanelStates)) {
+      if (!pointers.includes(existing)) {
+        delete customOutputPanelStates[existing]
+      }
+    }
+  },
+  { immediate: true }
+)
+
 function selectTask(taskId: string) {
   flexTasksStore.setActiveTask(taskId)
 }
@@ -461,10 +583,17 @@ function updateFacetValue(pointer: string, value: unknown) {
   draftValues.value = next
 }
 
-function isValueFilled(value: unknown): boolean {
+function isValueFilled(binding: FacetBinding, value: unknown): boolean {
   if (value === null || value === undefined) return false
   if (typeof value === 'string') return value.trim().length > 0
-  if (Array.isArray(value)) return value.length > 0
+  if (Array.isArray(value)) {
+    const schema = binding.schema as Record<string, unknown> | undefined
+    const minItems = schema && typeof schema['minItems'] === 'number' ? (schema['minItems'] as number) : 0
+    if (minItems > 0) {
+      return value.length >= minItems
+    }
+    return true
+  }
   if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0
   return true
 }
@@ -519,9 +648,22 @@ function isValidClarificationResponseValue(value: unknown): value is { responses
 function validateDraft(): boolean {
   const missing: string[] = []
   const invalidMessages: string[] = []
+  const task = activeTask.value
   for (const binding of outputFacetBindings.value) {
     const value = draftValues.value.get(binding.pointer)
-    if (!isValueFilled(value)) {
+    if (binding.name === 'social_post.preview') {
+      continue
+    }
+    if (task && !isFacetRequiredForTask(task, binding)) {
+      continue
+    }
+    if (!isValueFilled(binding, value)) {
+      if (task) {
+        const existing = findExistingFacetValue(task, binding)
+        if (isValueFilled(binding, existing)) {
+          continue
+        }
+      }
       missing.push(binding.definition.title)
       continue
     }
@@ -812,17 +954,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
                     </v-expansion-panel>
                   </v-expansion-panels>
                 </div>
-                <component
+                <div
                   v-for="binding in otherCustomOutputFacetBindings"
                   :key="binding.pointer"
-                  :is="binding.component"
-                  :definition="binding.definition"
-                  :schema="binding.schema"
-                  :model-value="facetValue(binding.pointer)"
-                  :readonly="submissionDisabled"
-                  :task-context="binding.context"
-                  @update:model-value="updateFacetValue(binding.pointer, $event)"
-                />
+                  class="custom-widget"
+                  :data-test="`output-facet-${binding.name}`"
+                >
+                  <v-expansion-panels
+                    :model-value="customOutputPanelStates[binding.pointer] ?? [0]"
+                    multiple
+                    density="comfortable"
+                    class="facet-panels"
+                    @update:model-value="(value) => (customOutputPanelStates[binding.pointer] = Array.isArray(value) ? (value as number[]) : [value as number])"
+                  >
+                    <v-expansion-panel :value="0">
+                      <v-expansion-panel-title>
+                        {{ binding.definition.title }}
+                      </v-expansion-panel-title>
+                      <v-expansion-panel-text>
+                        <p
+                          v-if="binding.definition.description"
+                          class="text-body-2 text-medium-emphasis mb-3"
+                        >
+                          {{ binding.definition.description }}
+                        </p>
+                        <component
+                          :is="binding.component"
+                          :definition="binding.definition"
+                          :schema="binding.schema"
+                          :model-value="facetValue(binding.pointer)"
+                          :readonly="submissionDisabled"
+                          :task-context="binding.context"
+                          @update:model-value="updateFacetValue(binding.pointer, $event)"
+                        />
+                      </v-expansion-panel-text>
+                    </v-expansion-panel>
+                  </v-expansion-panels>
+                </div>
               </div>
 
               <v-expansion-panels
