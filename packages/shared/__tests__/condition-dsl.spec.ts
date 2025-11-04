@@ -233,4 +233,48 @@ describe('evaluateCondition', () => {
 
     expect(result.error).toContain('Operator `some` expected path "qaFindings.overallScore" to resolve to an array')
   })
+
+  it('evaluates nested predicate lookups within quantifiers', () => {
+    const expression: JsonLogicExpression = {
+      some: [
+        { var: 'qaFindings.feedback' },
+        {
+          'and': [
+            { '>=': [{ var: 'item.score' }, 0.8] },
+            { '==': [{ var: 'resolution' }, 'unresolved'] }
+          ]
+        }
+      ]
+    }
+
+    const payload = {
+      qaFindings: {
+        feedback: [
+          { resolution: 'resolved', item: { score: 0.82 } },
+          { resolution: 'unresolved', item: { score: 0.81 } }
+        ],
+        threshold: 0.75
+      }
+    }
+
+    const result = evaluateCondition(expression, payload)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.result).toBe(true)
+
+    const noMatch = evaluateCondition(expression, {
+      qaFindings: {
+        feedback: [
+          { resolution: 'resolved', item: { score: 0.9 } },
+          { resolution: 'unresolved', item: { score: 0.7 } }
+        ]
+      }
+    })
+
+    expect(noMatch.ok).toBe(true)
+    if (!noMatch.ok) return
+
+    expect(noMatch.result).toBe(false)
+  })
 })

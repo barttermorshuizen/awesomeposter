@@ -174,6 +174,99 @@ describe('PolicyNormalizer', () => {
     expect(noEffect).toBeNull()
   })
 
+  it('evaluates runtime policies using `all` quantifier conditions', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'all-quantifier-policy',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'all_feedback_resolved',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                all: [
+                  { var: 'metadata.qaFindings.feedback' },
+                  { '==': [{ var: 'resolution' }, 'resolved'] }
+                ]
+              }
+            },
+            action: { type: 'replan', rationale: 'Ensure unresolved items are addressed' }
+          }
+        ]
+      }
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const effect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-review-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-review-node', objective: 'all-quantifier-policy', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        qaFindings: {
+          feedback: [
+            { id: 'fb-1', resolution: 'resolved' },
+            { id: 'fb-2', resolution: 'resolved' }
+          ]
+        }
+      }
+    } as any)
+
+    expect(effect?.kind).toBe('replan')
+
+    const noEffect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-review-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-review-node', objective: 'all-quantifier-policy', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        qaFindings: {
+          feedback: [
+            { id: 'fb-1', resolution: 'resolved' },
+            { id: 'fb-2', resolution: 'unresolved' }
+          ]
+        }
+      }
+    } as any)
+
+    expect(noEffect).toBeNull()
+
+    const emptyArray = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-review-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-review-node', objective: 'all-quantifier-policy', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        qaFindings: {
+          feedback: []
+        }
+      }
+    } as any)
+
+    expect(emptyArray).toBeNull()
+  })
+
   it('returns action effect for hitl runtime policies', () => {
     const normalizer = new PolicyNormalizer()
     const envelope: TaskEnvelope = {
