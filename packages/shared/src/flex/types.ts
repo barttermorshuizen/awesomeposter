@@ -100,6 +100,38 @@ export type LooseRecord = z.infer<typeof LooseRecordSchema>
 export const AgentTypeSchema = z.enum(['ai', 'human'])
 export type AgentType = z.infer<typeof AgentTypeSchema>
 
+export const ContextKnowledgeSnippetSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  body: z.string().min(1),
+  tags: z.array(z.string().min(1)).default([]),
+  source: z.string().min(1),
+  lastUpdated: z.string().min(1),
+  score: z.number().nonnegative().optional(),
+  fallback: z.boolean().optional(),
+  metadata: LooseRecordSchema.optional()
+})
+export type ContextKnowledgeSnippet = z.infer<typeof ContextKnowledgeSnippetSchema>
+
+export const ContextKnowledgeRefreshSchema = z.object({
+  frequency: z.string().min(1),
+  lastRefreshedAt: z.string().min(1),
+  nextRefreshDueAt: z.string().min(1).optional(),
+  notes: z.string().optional()
+})
+export type ContextKnowledgeRefresh = z.infer<typeof ContextKnowledgeRefreshSchema>
+
+export const ContextKnowledgeBundleSchema = z.object({
+  corpusId: z.string().min(1),
+  version: z.string().min(1),
+  refreshCadence: ContextKnowledgeRefreshSchema,
+  status: z.enum(['ready', 'fallback', 'disabled', 'unavailable']),
+  reason: z.string().optional(),
+  snippets: z.array(ContextKnowledgeSnippetSchema)
+})
+export type ContextKnowledgeBundle = z.infer<typeof ContextKnowledgeBundleSchema>
+
 const InstructionTemplatesSchemaCore = z
   .record(z.string(), z.string().min(1))
   .superRefine((value, ctx) => {
@@ -239,7 +271,8 @@ export const ContextBundleSchema = z.object({
       traceId: z.string().optional(),
       stepOrder: z.number().int().nonnegative().optional()
     })
-    .optional()
+    .optional(),
+  knowledge: ContextKnowledgeBundleSchema.optional()
 })
 export type ContextBundle = z.infer<typeof ContextBundleSchema>
 

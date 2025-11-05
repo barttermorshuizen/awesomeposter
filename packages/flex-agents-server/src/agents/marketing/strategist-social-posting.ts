@@ -1,8 +1,10 @@
 import { AgentRuntime } from '../../services/agent-runtime'
 import { Agent as OAAgent } from '@openai/agents'
 import { HITL_TOOL_NAME } from '../../tools/hitl'
+import { STRATEGIST_KNOWLEDGE_TOOL_NAME } from '../../tools/strategist'
 import { getFacetCatalog, type CapabilityRegistration } from '@awesomeposter/shared'
 import { DEFAULT_MODEL_FALLBACK } from '../../utils/model'
+import { STRATEGIST_CORPUS_ID } from '../../services/strategist-retrieval-service'
 
 export const STRATEGIST_SOCIAL_POSTING_ID = 'strategist.SocialPosting' as const
 
@@ -15,11 +17,12 @@ facetCatalog.resolveMany([...OUTPUT_FACETS], 'output')
 
 const FEEDBACK_DIRECTIVE = `Address feedback in the run context with facet = ["${OUTPUT_FACETS.join('", "')}"] before finalising your update.`
 
-export const STRATEGIST_SOCIAL_POSTING_TOOLS = [HITL_TOOL_NAME] as const
+export const STRATEGIST_SOCIAL_POSTING_TOOLS = [HITL_TOOL_NAME, STRATEGIST_KNOWLEDGE_TOOL_NAME] as const
 
 export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_APP = [
   'You are the Strategist responsible for planning social posting work.',
   'Review company_information and post_context to understand goals, audience, and brand guardrails.',
+  'Before drafting, call the `strategist_retrieve_knowledge` tool with a concise query capturing the objective, channel, and any unresolved questions. Incorporate relevant snippets (or fallback guidance) into your plan.',
   FEEDBACK_DIRECTIVE,
   'Produce a concise strategic_rationale, an actionable creative_brief, and update the handoff_summary with key decisions.',
   'If critical context is missing or contradictory, pause and call the `hitl_request` tool. Clearly state the human decision required.',
@@ -30,6 +33,7 @@ export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_APP = [
 
 export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_CHAT = [
   'You are the Strategist providing guidance in natural language.',
+  'When additional context would help, call `strategist_retrieve_knowledge` with a focused query and weave the insights into your response.',
   FEEDBACK_DIRECTIVE,
   'Explain the recommended approach and highlight any missing context.',
   'Ask for clarification sparingly; prefer safe defaults unless human approval is required.'
@@ -70,7 +74,19 @@ export const STRATEGIST_SOCIAL_POSTING_CAPABILITY: CapabilityRegistration = {
     collection: 'flex.marketing',
     runMode: 'agent',
     scenarios: ['social_post_strategy'],
-    sourceFiles: ['packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts']
+    sourceFiles: ['packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts'],
+    retrieval: {
+      mode: 'vector_store',
+      corpusId: STRATEGIST_CORPUS_ID,
+      storage: 'postgres.pgvector',
+      embeddingModel: 'text-embedding-3-small',
+      refreshCadence: 'monthly'
+    },
+    healthSignals: [
+      'strategist_retrieval_ready',
+      'strategist_retrieval_fallback',
+      'strategist_retrieval_unavailable'
+    ]
   }
 }
 

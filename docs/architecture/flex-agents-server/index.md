@@ -83,4 +83,5 @@
     - [15.8 Example](./15-supporting-human-agents-to-be-implemented.md#158-example)
     - [15.9 Offline and Notification Semantics](./15-supporting-human-agents-to-be-implemented.md#159-offline-and-notification-semantics)
     - [15.10 Registration & Governance Notes](./15-supporting-human-agents-to-be-implemented.md#1510-registration-governance-notes)
-    - [15.11 Post Visual R2 Endpoint Patterns](./1511-post-visual-r2-endpoint-patterns.md)
+  - [15.11 Post Visual R2 Endpoint Patterns](./1511-post-visual-r2-endpoint-patterns.md)
+  - [16. Retrieval Knowledge Stores](./16-retrieval-knowledge-stores.md)

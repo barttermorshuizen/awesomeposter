@@ -1,5 +1,6 @@
 import { pgTable, text, uuid, timestamp, jsonb, integer, primaryKey, boolean, numeric, unique, uniqueIndex, index } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+import { vector } from 'drizzle-orm/pg-core/columns/vector_extension/vector'
 
 export const clients = pgTable('clients', {
   id: uuid('id').primaryKey(),
@@ -194,6 +195,31 @@ export const postTelemetry = pgTable('post_telemetry', {
   renderMetricsJson: jsonb('render_metrics_json').$type<Record<string, unknown>>(), // Content analysis
   capturedAt: timestamp('captured_at', { withTimezone: true }).defaultNow()
 })
+
+export const capabilitySnippets = pgTable(
+  'flex_capability_snippets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    corpusId: text('corpus_id').notNull(),
+    chunkId: text('chunk_id').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    body: text('body').notNull(),
+    tags: jsonb('tags').$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    source: text('source').notNull(),
+    embedding: vector('embedding', { dimensions: 1536 }).notNull(),
+    embeddingModel: text('embedding_model').notNull(),
+    scoreBoost: numeric('score_boost').default('0').notNull(),
+    metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
+    refreshedAt: timestamp('refreshed_at', { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    corpusIdx: index('flex_capability_snippets_corpus_idx').on(table.corpusId),
+    chunkUnique: unique('flex_capability_snippets_chunk_unique').on(table.corpusId, table.chunkId)
+  })
+)
 
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey(),

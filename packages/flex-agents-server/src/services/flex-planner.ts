@@ -27,7 +27,6 @@ import {
 import type { FacetSnapshot, RunContextSnapshot } from './run-context'
 import type { PlannerDraft, PlannerDraftNode, PlannerDiagnostics } from '../planner/planner-types'
 import { PlannerValidationService } from './planner-validation-service'
-
 export type FlexPlanNodeKind =
   | 'structuring'
   | 'branch'
