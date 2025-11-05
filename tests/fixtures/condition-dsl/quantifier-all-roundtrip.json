@@ -1,0 +1,6 @@
+{
+  "all": [
+    { "var": "qaFindings.flagCodes" },
+    { "!=": [ { "var": "item" }, "deprecated" ] }
+  ]
+}

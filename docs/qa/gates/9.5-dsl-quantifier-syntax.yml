@@ -2,9 +2,9 @@ schema: 1
 story: '9.5'
 story_title: 'DSL Quantifier Syntax Support'
 gate: PASS
-status_reason: 'Quantifier grammar, validation, and UI guidance meet AC1-AC5; vitest suite passes locally.'
+status_reason: 'Quantifier grammar, alias validation, and UI guidance meet AC1-AC5; track missing all-roundtrip fixture to align docs/tests.'
 reviewer: 'Quinn (Test Architect)'
-updated: '2025-11-05T05:37:30Z'
+updated: '2025-11-05T13:58:24Z'
 
 top_issues: []
 

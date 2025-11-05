@@ -112,6 +112,17 @@ describe('parseDsl', () => {
     expect(result.canonical).toBe(dsl)
   })
 
+  it('parses all-quantifier expressions with the default alias', () => {
+    const { dsl, json } = loadFixture('quantifier-all-roundtrip')
+
+    const result = parseDsl(dsl, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.jsonLogic).toEqual(json)
+    expect(result.canonical).toBe(dsl)
+  })
+
   it('rejects quantifiers applied to non-array variables', () => {
     const result = parseDsl('some(qaFindings.overallScore, item > 0.5)', conditionVariableCatalog)
     expect(result.ok).toBe(false)
@@ -174,6 +185,16 @@ describe('toDsl', () => {
 
   it('renders quantifier payloads with explicit aliases', () => {
     const { dsl, json } = loadFixture('quantifier-alias-roundtrip')
+
+    const result = toDsl(json, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.expression).toBe(dsl)
+  })
+
+  it('renders all-quantifier payloads with the default alias', () => {
+    const { dsl, json } = loadFixture('quantifier-all-roundtrip')
 
     const result = toDsl(json, conditionVariableCatalog)
     expect(result.ok).toBe(true)
