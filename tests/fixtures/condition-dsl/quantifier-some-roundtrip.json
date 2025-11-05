@@ -1,0 +1,6 @@
+{
+  "some": [
+    { "var": "qaFindings.flagCodes" },
+    { "==": [ { "var": "item" }, "plagiarism" ] }
+  ]
+}

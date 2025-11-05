@@ -20,6 +20,15 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 | `evaluateCondition(jsonLogic, payload)` | Lightweight evaluator used by the playground to preview results and resolved variable values. |
 | `conditionVariableCatalog` | Default registry shared by UI and server logic. |
 
+## Quantifier Support
+
+- The grammar accepts `some(<collection>, <predicate>)` and `all(<collection>, <predicate>)`.
+- `<collection>` must resolve to a catalog variable whose type is `array`. Validation surfaces an `invalid_quantifier` error when a non-array source is used.
+- Predicates evaluate against the current item. The default alias is `item`; authors may override it with `as <alias>` (e.g. `some(results as r, r.status == "ready")`).
+- Aliases must be referenced inside the predicate. Missing alias usage triggers an `invalid_quantifier` diagnostic.
+- JSON-Logic output encodes the quantifier as `[collection, predicate, alias?]`. The alias element is omitted when the default `item` alias is used.
+- `toDsl` infers the alias from the JSON-Logic payload, including legacy payloads that omit explicit alias metadata, and renders the canonical DSL with `item.` prefixes.
+
 ## Server helper
 
 - `server/utils/condition-dsl.ts` exposes `validateConditionInput({ dsl?, jsonLogic? })`.
@@ -32,6 +41,7 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 ## Tests & fixtures
 
 - Golden fixtures live in `tests/fixtures/condition-dsl/` for regression coverage.
+  - `quantifier-*.dsl/json` fixtures pin the `some`/`all` syntax and alias rendering.
 - Unit tests:
   - `packages/shared/__tests__/condition-dsl.spec.ts` exercises round-trip parsing/rendering,
     unknown variable/type errors, and evaluator behaviour.

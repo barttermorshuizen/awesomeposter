@@ -89,6 +89,44 @@ describe('parseDsl', () => {
 
     expect(result.errors.some((error) => error.code === 'type_mismatch')).toBe(true)
   })
+
+  it('parses quantifier expressions with the default alias', () => {
+    const { dsl, json } = loadFixture('quantifier-some-roundtrip')
+
+    const result = parseDsl(dsl, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.jsonLogic).toEqual(json)
+    expect(result.canonical).toBe(dsl)
+  })
+
+  it('parses quantifier expressions with an explicit alias', () => {
+    const { dsl, json } = loadFixture('quantifier-alias-roundtrip')
+
+    const result = parseDsl(dsl, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.jsonLogic).toEqual(json)
+    expect(result.canonical).toBe(dsl)
+  })
+
+  it('rejects quantifiers applied to non-array variables', () => {
+    const result = parseDsl('some(qaFindings.overallScore, item > 0.5)', conditionVariableCatalog)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    expect(result.errors.some((error) => error.code === 'invalid_quantifier')).toBe(true)
+  })
+
+  it('requires predicates to reference the current quantifier alias', () => {
+    const result = parseDsl('some(qaFindings.flagCodes, qaFindings.flagsCount > 1)', conditionVariableCatalog)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    expect(result.errors.some((error) => error.code === 'invalid_quantifier')).toBe(true)
+  })
 })
 
 describe('toDsl', () => {
@@ -122,6 +160,41 @@ describe('toDsl', () => {
     if (!rendered.ok) return
 
     expect(rendered.expression).toBe(source)
+  })
+
+  it('renders quantifier payloads with default alias formatting', () => {
+    const { dsl, json } = loadFixture('quantifier-some-roundtrip')
+
+    const result = toDsl(json, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.expression).toBe(dsl)
+  })
+
+  it('renders quantifier payloads with explicit aliases', () => {
+    const { dsl, json } = loadFixture('quantifier-alias-roundtrip')
+
+    const result = toDsl(json, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.expression).toBe(dsl)
+  })
+
+  it('infers default alias usage when legacy payloads omit alias metadata', () => {
+    const json: JsonLogicExpression = {
+      some: [
+        { var: 'qaFindings.flagCodes' },
+        { '==': [{ var: 'resolution' }, 'open'] },
+      ],
+    }
+
+    const result = toDsl(json, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.expression).toBe('some(qaFindings.flagCodes, item.resolution == "open")')
   })
 })
 

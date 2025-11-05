@@ -177,6 +177,27 @@ const builderInput = ref('')
 
 const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRun.value.pendingRequestId))
 
+const conditionDslHelpSections = [
+  {
+    title: 'Use quantifiers for arrays',
+    description:
+      'Apply `some` when at least one item should match and `all` when every item must satisfy the predicate.',
+    example: 'some(qaFindings.flagCodes, item == "plagiarism")',
+  },
+  {
+    title: 'Reference the current item with aliases',
+    description:
+      'Predicates run with the `item` alias by default. Override it with `as <alias>` when you need a clearer name.',
+    example: 'all(qaFindings.flagCodes as code, code != "deprecated")',
+  },
+  {
+    title: 'Reach nested fields inside predicates',
+    description:
+      'Dot notation stays available inside quantifiers. Combine comparisons and logic just like top-level expressions.',
+    example: 'some(qaFindings.feedback as f, f.owner.email == "qa@awesomeposter.ai")',
+  },
+] as const
+
 let saveTimeout: number | null = null
 let streamHandle: { abort: () => void; done: Promise<void> } | null = null
 const envelopeEditorOpen = ref(false)
@@ -2187,6 +2208,36 @@ watch(
                 </v-btn>
               </v-card-actions>
             </v-card>
+            <v-card class="dsl-help-card mt-4" elevation="1">
+              <v-card-title class="text-subtitle-1">
+                Condition DSL Quick Reference
+              </v-card-title>
+              <v-card-subtitle class="text-body-2 text-medium-emphasis">
+                Quantifiers & alias tips for runtime policies
+              </v-card-subtitle>
+              <v-divider />
+              <v-card-text class="d-flex flex-column ga-3">
+                <div
+                  v-for="entry in conditionDslHelpSections"
+                  :key="entry.title"
+                  class="dsl-help-card__entry"
+                >
+                  <div class="text-body-2 font-weight-medium">
+                    {{ entry.title }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    {{ entry.description }}
+                  </div>
+                  <div class="dsl-help-card__example">
+                    <code>{{ entry.example }}</code>
+                  </div>
+                </div>
+                <v-alert type="info" variant="tonal" border="start" class="mb-0">
+                  See <code>docs/architecture/condition-dsl.md</code> for the full grammar, operator matrix,
+                  and error reference.
+                </v-alert>
+              </v-card-text>
+            </v-card>
           </v-col>
         </v-row>
       </v-card-text>
@@ -2364,6 +2415,26 @@ watch(
 }
 .conversation-input :deep(textarea) {
   font-size: 14px;
+}
+.dsl-help-card__entry {
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  padding-left: 12px;
+}
+.dsl-help-card__entry + .dsl-help-card__entry {
+  margin-top: 8px;
+}
+.dsl-help-card__example {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.05);
+  font-family: 'Roboto Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  word-break: break-word;
+}
+.dsl-help-card__example code {
+  color: inherit;
 }
 .registry-overview-list {
   background-color: transparent;

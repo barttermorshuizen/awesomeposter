@@ -11,7 +11,7 @@ Deliver a human-friendly policy condition authoring experience so operators can 
 - Integration points: `src/views/FlexSandboxView.vue` (policy editing), shared policy types in `@awesomeposter/shared`, persistence APIs under `server/api/flex/*`, and orchestrator evaluation utilities in `packages/agents-server`.
 
 **Enhancement Details:**
-- What's being added/changed: Introduce a lightweight expression DSL (`qaFindings.overallScore < 0.6 && ...`) with autocomplete, validation, and round-trip conversion to/from JSON-Logic.
+- What's being added/changed: Introduce a lightweight expression DSL (`qaFindings.overallScore < 0.6 && ...`) with autocomplete, validation, round-trip conversion to/from JSON-Logic, and native quantifier helpers (`some`/`all`) so authors can express array predicates without dropping to raw JSON-Logic.
 - How it integrates: A shared parsing/transpile module converts the DSL to JSON-Logic for storage; the management UI surfaces an expression editor with variable/help metadata driven from a central registry; the backend validates expressions before persisting policies.
 - Success criteria: Product/dev teams can author conditions via the new editor, errors are surfaced before save, existing policies continue to execute unchanged, and exports still emit canonical JSON-Logic.
 

@@ -9,6 +9,7 @@ import {
   type ConditionDslRenderSuccess,
   type ConditionDslWarning,
   type ConditionExpressionNode,
+  type ConditionQuantifierOperator,
   type ConditionUnaryOperator,
   type ConditionVariableCatalog,
   type ConditionVariableDefinition,
@@ -35,6 +36,7 @@ type TokenKind =
   | 'operator'
   | 'not'
   | 'paren'
+  | 'comma'
 
 interface ParseContext {
   tokens: readonly Token[]
@@ -129,7 +131,8 @@ export function toDsl(
 ): ConditionDslRenderResult {
   const index = createLineIndex('')
   try {
-    const ast = jsonLogicToExpression(jsonLogic)
+    const lookup = buildCatalogLookup(catalog)
+    const ast = jsonLogicToExpression(jsonLogic, lookup)
     const validationErrors = validateAst(ast, catalog, index)
     if (validationErrors.length > 0) {
       return {
@@ -457,6 +460,13 @@ function parsePrimary(ctx: ParseContext): ConditionExpressionNode {
     }
     case 'identifier': {
       consume(ctx)
+      if (
+        (token.value === 'some' || token.value === 'all') &&
+        peek(ctx)?.kind === 'paren' &&
+        peek(ctx)?.value === '('
+      ) {
+        return parseQuantifier(ctx, token)
+      }
       if (token.value === 'null') {
         return {
           type: 'literal',
@@ -498,6 +508,61 @@ function combineRanges(left: SourceRange | null, right: SourceRange | null): Sou
     start: Math.min(left.start, right.start),
     end: Math.max(left.end, right.end),
   }
+}
+
+function parseQuantifier(ctx: ParseContext, operatorToken: Token): ConditionExpressionNode {
+  const opening = matchKind(ctx, 'paren')
+  if (!opening || opening.value !== '(') {
+    throw createParseError(`Expected \`(\` after \`${operatorToken.value}\`.`, ctx, operatorToken.end)
+  }
+
+  const collection = parseExpression(ctx)
+
+  let alias = 'item'
+  let aliasProvided = false
+  let aliasRange: SourceRange | null = null
+
+  const maybeAs = peek(ctx)
+  if (maybeAs && maybeAs.kind === 'identifier' && maybeAs.value === 'as') {
+    consume(ctx) // consume `as`
+    const aliasToken = matchKind(ctx, 'identifier')
+    if (!aliasToken) {
+      throw createParseError('Expected alias identifier after `as`.', ctx)
+    }
+    if (aliasToken.value.includes('.')) {
+      throw createParseError('Alias may not contain `.` segments.', ctx, aliasToken.start)
+    }
+    alias = aliasToken.value
+    aliasProvided = true
+    aliasRange = { start: aliasToken.start, end: aliasToken.end }
+  }
+
+  const comma = matchKind(ctx, 'comma')
+  if (!comma) {
+    throw createParseError('Expected `,` after quantifier collection.', ctx)
+  }
+
+  const predicate = parseExpression(ctx)
+  const closing = consume(ctx)
+  if (!closing || closing.kind !== 'paren' || closing.value !== ')') {
+    throw createParseError('Unclosed quantifier predicate.', ctx, operatorToken.start)
+  }
+
+  const node: ConditionExpressionNode = {
+    type: 'quantifier',
+    operator: operatorToken.value as 'some' | 'all',
+    collection,
+    predicate,
+    alias,
+    aliasProvided,
+    range: { start: operatorToken.start, end: closing.end },
+    operatorRange: { start: operatorToken.start, end: operatorToken.end },
+    collectionRange: collection.range,
+    aliasRange,
+    predicateRange: predicate.range,
+  }
+
+  return node
 }
 
 function matchOperator(ctx: ParseContext, operator: ConditionBinaryOperator): Token | null {
@@ -554,6 +619,17 @@ function tokenize(input: string): Token[] {
       tokens.push({
         kind: 'paren',
         value: char,
+        start: index,
+        end: index + 1,
+      })
+      index += 1
+      continue
+    }
+
+    if (char === ',') {
+      tokens.push({
+        kind: 'comma',
+        value: ',',
         start: index,
         end: index + 1,
       })
@@ -768,8 +844,31 @@ function validateAst(
 ): ConditionDslError[] {
   const errors: ConditionDslError[] = []
   const lookup = buildCatalogLookup(catalog)
-  walk(ast, (node) => {
-    if (node.type === 'variable') {
+  validateNode(ast, lookup, index, errors, [])
+  return errors
+}
+
+interface QuantifierScopeState {
+  alias: string
+  aliasRange: SourceRange | null
+  predicateRange: SourceRange | null
+  used: boolean
+}
+
+function validateNode(
+  node: ConditionExpressionNode,
+  lookup: Map<string, ConditionVariableDefinition>,
+  index: LineIndex,
+  errors: ConditionDslError[],
+  scopes: QuantifierScopeState[],
+): void {
+  switch (node.type) {
+    case 'literal':
+      return
+    case 'variable': {
+      if (markAliasUsage(node.path, scopes)) {
+        return
+      }
       const variable = lookup.get(node.path)
       if (!variable) {
         errors.push(
@@ -784,32 +883,109 @@ function validateAst(
           ),
         )
       }
+      return
     }
-    if (node.type === 'binary' && isComparisonOperator(node.operator)) {
-      const operatorRange = node.operatorRange ?? node.range
-      const variables = collectVariablesForNode(node)
-      for (const variable of variables) {
-        const definition = lookup.get(variable.path)
-        if (!definition) continue
-        if (!definition.allowedOperators.includes(node.operator)) {
+    case 'unary': {
+      validateNode(node.argument, lookup, index, errors, scopes)
+      return
+    }
+    case 'binary': {
+      validateNode(node.left, lookup, index, errors, scopes)
+      validateNode(node.right, lookup, index, errors, scopes)
+      if (isComparisonOperator(node.operator)) {
+        const operatorRange = node.operatorRange ?? node.range
+        const variables = collectVariablesForNode(node)
+        for (const variable of variables) {
+          if (markAliasUsage(variable.path, scopes)) {
+            continue
+          }
+          const definition = lookup.get(variable.path)
+          if (!definition) continue
+          if (!definition.allowedOperators.includes(node.operator)) {
+            errors.push(
+              createDiagnostic(
+                {
+                  code: 'operator_not_allowed',
+                  message: `Operator \`${node.operator}\` is not allowed for variable \`${definition.path}\`.`,
+                },
+                index,
+                operatorRange?.start ?? variable.range?.start ?? 0,
+                operatorRange?.end ?? variable.range?.end ?? 0,
+              ),
+            )
+          }
+        }
+        const typeErrors = validateComparisonOperandTypes(node, lookup, index)
+        errors.push(...typeErrors)
+      }
+      return
+    }
+    case 'quantifier': {
+      validateNode(node.collection, lookup, index, errors, scopes)
+      if (node.collection.type !== 'variable') {
+        errors.push(
+          createDiagnostic(
+            {
+              code: 'invalid_quantifier',
+              message: 'Quantifier collection must reference a variable.',
+            },
+            index,
+            node.collection.range?.start ?? node.range?.start ?? 0,
+            node.collection.range?.end ?? node.range?.end ?? 0,
+          ),
+        )
+      } else {
+        const definition = lookup.get(node.collection.path)
+        if (definition && definition.type !== 'array') {
           errors.push(
             createDiagnostic(
               {
-                code: 'operator_not_allowed',
-                message: `Operator \`${node.operator}\` is not allowed for variable \`${definition.path}\`.`,
+                code: 'invalid_quantifier',
+                message: `Quantifier \`${node.operator}\` expects collection \`${definition.path}\` to be an array.`,
               },
               index,
-              operatorRange?.start ?? variable.range?.start ?? 0,
-              operatorRange?.end ?? variable.range?.end ?? 0,
+              node.collection.range?.start ?? node.range?.start ?? 0,
+              node.collection.range?.end ?? node.range?.end ?? 0,
             ),
           )
         }
       }
-      const typeErrors = validateComparisonOperandTypes(node, lookup, index)
-      errors.push(...typeErrors)
+      const scopeEntry: QuantifierScopeState = {
+        alias: node.alias,
+        aliasRange: node.aliasRange,
+        predicateRange: node.predicateRange ?? node.range,
+        used: false,
+      }
+      validateNode(node.predicate, lookup, index, errors, [...scopes, scopeEntry])
+      if (!scopeEntry.used) {
+        errors.push(
+          createDiagnostic(
+            {
+              code: 'invalid_quantifier',
+              message: `Quantifier predicate must reference alias \`${node.alias}\`.`,
+            },
+            index,
+            scopeEntry.predicateRange?.start ?? node.range?.start ?? 0,
+            scopeEntry.predicateRange?.end ?? node.range?.end ?? 0,
+          ),
+        )
+      }
+      return
     }
-  })
-  return errors
+    default:
+      return
+  }
+}
+
+function markAliasUsage(path: string, scopes: QuantifierScopeState[]): boolean {
+  for (let i = scopes.length - 1; i >= 0; i -= 1) {
+    const scope = scopes[i]!
+    if (path === scope.alias || path.startsWith(`${scope.alias}.`)) {
+      scope.used = true
+      return true
+    }
+  }
+  return false
 }
 
 function expressionToJsonLogic(node: ConditionExpressionNode): JsonLogicExpression {
@@ -831,12 +1007,25 @@ function expressionToJsonLogic(node: ConditionExpressionNode): JsonLogicExpressi
       }
       return { [node.operator]: [left, right] }
     }
+    case 'quantifier': {
+      const collection = expressionToJsonLogic(node.collection)
+      const predicate = expressionToJsonLogic(node.predicate)
+      const operands: JsonLogicExpression[] = [collection, predicate]
+      if (node.aliasProvided || node.alias !== 'item') {
+        operands.push(node.alias)
+      }
+      return { [node.operator]: operands }
+    }
     default:
       return true
   }
 }
 
-function jsonLogicToExpression(value: JsonLogicExpression): ConditionExpressionNode {
+function jsonLogicToExpression(
+  value: JsonLogicExpression,
+  lookup: Map<string, ConditionVariableDefinition>,
+  aliasStack: readonly string[] = [],
+): ConditionExpressionNode {
   if (Array.isArray(value)) {
     throw new Error('Unexpected array at root level in JSON-Logic expression.')
   }
@@ -862,23 +1051,25 @@ function jsonLogicToExpression(value: JsonLogicExpression): ConditionExpressionN
         throw new Error(`Operator \`${operator}\` expects a non-empty array.`)
       }
       const op: ConditionBinaryOperator = operator === 'and' ? '&&' : '||'
-      return foldLogical(op, operand)
+      return foldLogical(op, operand, lookup, aliasStack)
     }
     case '!': {
       return {
         type: 'unary',
         operator: '!',
-        argument: jsonLogicToExpression(operand),
+        argument: jsonLogicToExpression(operand, lookup, aliasStack),
         range: null,
         operatorRange: null,
       }
     }
     case 'var': {
       if (typeof operand === 'string') {
-        return { type: 'variable', path: operand, range: null }
+        const path = normaliseVarFromJsonLogic(operand, lookup, aliasStack)
+        return { type: 'variable', path, range: null }
       }
       if (Array.isArray(operand) && typeof operand[0] === 'string') {
-        return { type: 'variable', path: operand[0], range: null }
+        const path = normaliseVarFromJsonLogic(operand[0], lookup, aliasStack)
+        return { type: 'variable', path, range: null }
       }
       throw new Error('`var` operator expects a string path.')
     }
@@ -895,10 +1086,38 @@ function jsonLogicToExpression(value: JsonLogicExpression): ConditionExpressionN
       return {
         type: 'binary',
         operator,
-        left: jsonLogicToExpression(leftOperand),
-        right: jsonLogicToExpression(rightOperand),
+        left: jsonLogicToExpression(leftOperand, lookup, aliasStack),
+        right: jsonLogicToExpression(rightOperand, lookup, aliasStack),
         range: null,
         operatorRange: null,
+      }
+    }
+    case 'some':
+    case 'all': {
+      if (!Array.isArray(operand) || operand.length < 2 || operand.length > 3) {
+        throw new Error(`Operator \`${operator}\` expects [collection, predicate, alias?] operands.`)
+      }
+      const [collectionOperand, predicateOperand, aliasOperand] = operand
+      const alias =
+        typeof aliasOperand === 'string' && aliasOperand.trim().length > 0
+          ? aliasOperand
+          : 'item'
+      const aliasProvided =
+        typeof aliasOperand === 'string' && aliasOperand.trim().length > 0 && alias !== 'item'
+      const collection = jsonLogicToExpression(collectionOperand, lookup, aliasStack)
+      const predicate = jsonLogicToExpression(predicateOperand, lookup, [...aliasStack, alias])
+      return {
+        type: 'quantifier',
+        operator: operator as ConditionQuantifierOperator,
+        collection,
+        predicate,
+        alias,
+        aliasProvided,
+        range: null,
+        operatorRange: null,
+        collectionRange: null,
+        aliasRange: null,
+        predicateRange: null,
       }
     }
     default:
@@ -909,13 +1128,15 @@ function jsonLogicToExpression(value: JsonLogicExpression): ConditionExpressionN
 function foldLogical(
   operator: ConditionBinaryOperator,
   operands: JsonLogicExpression[],
+  lookup: Map<string, ConditionVariableDefinition>,
+  aliasStack: readonly string[],
 ): ConditionExpressionNode {
   if (operands.length === 1) {
-    return jsonLogicToExpression(operands[0]!)
+    return jsonLogicToExpression(operands[0]!, lookup, aliasStack)
   }
-  let result = jsonLogicToExpression(operands[0]!)
+  let result = jsonLogicToExpression(operands[0]!, lookup, aliasStack)
   for (let i = 1; i < operands.length; i += 1) {
-    const right = jsonLogicToExpression(operands[i]!)
+    const right = jsonLogicToExpression(operands[i]!, lookup, aliasStack)
     result = {
       type: 'binary',
       operator,
@@ -926,6 +1147,30 @@ function foldLogical(
     }
   }
   return result
+}
+
+function normaliseVarFromJsonLogic(
+  path: string,
+  lookup: Map<string, ConditionVariableDefinition>,
+  aliasStack: readonly string[],
+): string {
+  if (lookup.has(path)) {
+    return path
+  }
+  for (let i = aliasStack.length - 1; i >= 0; i -= 1) {
+    const alias = aliasStack[i]!
+    if (path === alias || path.startsWith(`${alias}.`)) {
+      return path
+    }
+  }
+  if (aliasStack.length > 0) {
+    const activeAlias = aliasStack[aliasStack.length - 1]!
+    if (path === '') {
+      return activeAlias
+    }
+    return `${activeAlias}.${path}`
+  }
+  return path
 }
 
 function flattenLogical(
@@ -977,6 +1222,12 @@ function renderNode(node: ConditionExpressionNode, parentPrecedence: number): st
         needsParensForChild(node.right, precedence, true, node.operator) ? `(${rightRendered})` : rightRendered
       const expression = `${left} ${node.operator} ${right}`
       return expression
+    }
+    case 'quantifier': {
+      const collection = renderNode(node.collection, Number.POSITIVE_INFINITY)
+      const predicate = renderNode(node.predicate, 0)
+      const aliasSegment = node.aliasProvided ? ` as ${node.alias}` : ''
+      return `${node.operator}(${collection}${aliasSegment}, ${predicate})`
     }
     default:
       return 'true'
@@ -1266,6 +1517,9 @@ function walk(node: ConditionExpressionNode, visit: (node: ConditionExpressionNo
     walk(node.right, visit)
   } else if (node.type === 'unary') {
     walk(node.argument, visit)
+  } else if (node.type === 'quantifier') {
+    walk(node.collection, visit)
+    walk(node.predicate, visit)
   }
 }
 
@@ -1281,6 +1535,7 @@ function buildCatalogLookup(
 
 interface EvaluationScope {
   value: unknown
+  alias?: string
   parent?: EvaluationScope
 }
 
@@ -1382,13 +1637,17 @@ function evaluate(
     }
     case 'some':
     case 'all': {
-      if (!Array.isArray(operand) || operand.length !== 2) {
-        throw new Error(`Operator \`${operator}\` expects an array with [source, predicate] operands.`)
+      if (!Array.isArray(operand) || operand.length < 2 || operand.length > 3) {
+        throw new Error(`Operator \`${operator}\` expects [source, predicate, alias?] operands.`)
       }
-      const [sourceExpr, predicateExpr] = operand
+      const [sourceExpr, predicateExpr, aliasOperand] = operand
       if (predicateExpr === undefined) {
         throw new Error(`Operator \`${operator}\` requires a predicate expression.`)
       }
+      const alias =
+        typeof aliasOperand === 'string' && aliasOperand.trim().length > 0
+          ? aliasOperand
+          : 'item'
       const sourcePath = extractVarPath(sourceExpr)
       const sourceValue = evaluate(sourceExpr, payload, resolved, scope)
       const array = toArrayOperand(sourceValue, operator, sourcePath)
@@ -1401,7 +1660,7 @@ function evaluate(
             predicateExpr,
             payload,
             resolved,
-            createScope(item, scope),
+            createScope(item, scope, alias),
           )
           if (truthy(predicate)) {
             return true
@@ -1414,7 +1673,7 @@ function evaluate(
           predicateExpr,
           payload,
           resolved,
-          createScope(item, scope),
+          createScope(item, scope, alias),
         )
         if (!truthy(predicate)) {
           return false
@@ -1431,8 +1690,8 @@ function truthy(value: unknown): boolean {
   return Boolean(value)
 }
 
-function createScope(value: unknown, parent?: EvaluationScope): EvaluationScope {
-  return { value, parent }
+function createScope(value: unknown, parent?: EvaluationScope, alias?: string): EvaluationScope {
+  return { value, parent, alias }
 }
 
 function resolveScopedValue(path: string, scope?: EvaluationScope): { found: boolean; value: unknown } {
@@ -1441,6 +1700,18 @@ function resolveScopedValue(path: string, scope?: EvaluationScope): { found: boo
   }
   let current: EvaluationScope | undefined = scope
   while (current) {
+    if (current.alias) {
+      if (path === current.alias) {
+        return { found: true, value: current.value }
+      }
+      if (path.startsWith(`${current.alias}.`)) {
+        const trimmed = path.slice(current.alias.length + 1)
+        const scopedResult = readPathWithExistence(current.value, trimmed)
+        if (scopedResult.exists) {
+          return scopedResult
+        }
+      }
+    }
     const result = readPathWithExistence(current.value, path)
     if (result.exists) {
       return { found: true, value: result.value }

@@ -7,6 +7,8 @@ export type ConditionBinaryOperator =
   | ConditionComparisonOperator
   | ConditionLogicalOperator
 
+export type ConditionQuantifierOperator = 'some' | 'all'
+
 export type JsonLogicExpression =
   | null
   | boolean
@@ -81,6 +83,7 @@ export type ConditionDslErrorCode =
   | 'invalid_json_logic'
   | 'empty_expression'
   | 'type_mismatch'
+  | 'invalid_quantifier'
 
 export interface ConditionDslError {
   code: ConditionDslErrorCode
@@ -183,4 +186,17 @@ export type ConditionExpressionNode =
       right: ConditionExpressionNode
       range: SourceRange | null
       operatorRange: SourceRange | null
+    }
+  | {
+      type: 'quantifier'
+      operator: ConditionQuantifierOperator
+      collection: ConditionExpressionNode
+      predicate: ConditionExpressionNode
+      alias: string
+      aliasProvided: boolean
+      range: SourceRange | null
+      operatorRange: SourceRange | null
+      collectionRange: SourceRange | null
+      aliasRange: SourceRange | null
+      predicateRange: SourceRange | null
     }

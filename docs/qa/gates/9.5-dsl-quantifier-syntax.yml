@@ -1,0 +1,41 @@
+schema: 1
+story: '9.5'
+story_title: 'DSL Quantifier Syntax Support'
+gate: PASS
+status_reason: 'Quantifier grammar, validation, and UI guidance meet AC1-AC5; vitest suite passes locally.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-05T05:37:30Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2025-11-19T00:00:00Z'
+
+evidence:
+  tests_reviewed: 22
+  risks_identified: 1
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Grammar additions remain within the shared parser; no new I/O or privilege changes.'
+  performance:
+    status: PASS
+    notes: 'Quantifier parsing/evaluation reuse existing linear traversal patterns.'
+  reliability:
+    status: PASS
+    notes: 'Round-trip fixtures and evaluator specs cover positive, negative, and legacy alias paths.'
+  maintainability:
+    status: PASS
+    notes: 'New quantifier node integrates with existing AST utilities and validation helpers.'
+
+recommendations:
+  immediate: []
+  future:
+    - 'Add a dedicated `all(...)` round-trip fixture to mirror the `some` coverage.'
