@@ -1,5 +1,4 @@
-# 15. Supporting Human Agents (to be implemented)
-
+# 15. Supporting Human Agents
 ## 15.1 Concept Overview
 - Human agents perform tasks side-by-side ai agents, fulfilling work.
 - HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds. 
