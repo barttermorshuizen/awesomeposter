@@ -1,7 +1,7 @@
 {
   "some": [
-    { "var": "qaFindings.flagCodes" },
-    { "==": [ { "var": "code" }, "plagiarism" ] },
-    "code"
+    { "var": "metadata.runContextSnapshot.facets.recommendationSet.value" },
+    { "==": [ { "var": "rec.severity" }, "critical" ] },
+    "rec"
   ]
 }

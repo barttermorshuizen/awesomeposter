@@ -2,13 +2,13 @@
   "and": [
     {
       "<": [
-        { "var": "qaFindings.overallScore" },
+        { "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" },
         0.6
       ]
     },
     {
       ">": [
-        { "var": "qaFindings.flagsCount" },
+        { "var": "metadata.runContextSnapshot.facets.planKnobs.value.variantCount" },
         2
       ]
     }

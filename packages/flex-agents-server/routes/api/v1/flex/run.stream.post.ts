@@ -1,9 +1,10 @@
-import { TaskEnvelopeSchema } from '@awesomeposter/shared'
+import { TaskEnvelopeSchema, type JsonLogicExpression } from '@awesomeposter/shared'
 import { createSse } from '../../../../src/utils/sse'
 import { withSseConcurrency, sseSemaphore, isBacklogFull, backlogSnapshot } from '../../../../src/utils/concurrency'
 import { getHeader, setHeader, getMethod, sendNoContent, createError, readBody } from 'h3'
 import { FlexRunCoordinator } from '../../../../src/services/flex-run-coordinator'
 import { genCorrelationId, getLogger } from '../../../../src/services/logger'
+import { validateConditionInput } from '../../../../src/utils/condition-dsl'
 
 export default defineEventHandler(async (event) => {
   const method = getMethod(event)
@@ -44,6 +45,51 @@ export default defineEventHandler(async (event) => {
 
   const body = (event as any).context?.body ?? (await readBody(event))
   const envelope = TaskEnvelopeSchema.parse(body)
+
+  if (envelope.policies?.runtime) {
+    for (const policy of envelope.policies.runtime) {
+      const trigger = policy.trigger
+      if (!trigger) continue
+      if (trigger.kind !== 'onNodeComplete' && trigger.kind !== 'onValidationFail') continue
+
+      const rawCondition = (trigger as any).condition
+      if (rawCondition === undefined || rawCondition === null) continue
+
+      const hasDsl = typeof rawCondition === 'object' && rawCondition !== null && typeof rawCondition.dsl === 'string'
+      const trimmedDsl = hasDsl ? String(rawCondition.dsl).trim() : undefined
+      const jsonLogicCandidate: JsonLogicExpression | undefined = hasDsl
+        ? (rawCondition.jsonLogic as JsonLogicExpression | undefined)
+        : (rawCondition as JsonLogicExpression)
+
+      const validation = validateConditionInput({
+        dsl: trimmedDsl,
+        jsonLogic: jsonLogicCandidate,
+      })
+
+      const canonicalCondition: Record<string, unknown> = {
+        jsonLogic: validation.jsonLogic,
+      }
+
+      if (trimmedDsl) {
+        canonicalCondition.dsl = trimmedDsl
+        canonicalCondition.canonicalDsl = validation.canonicalDsl ?? trimmedDsl
+      } else if (validation.canonicalDsl) {
+        canonicalCondition.canonicalDsl = validation.canonicalDsl
+      }
+
+      if (validation.warnings.length > 0) {
+        canonicalCondition.warnings = validation.warnings
+      }
+      if (validation.variables.length > 0) {
+        canonicalCondition.variables = validation.variables
+      }
+
+      ;(policy as any).trigger = {
+        ...policy.trigger,
+        condition: canonicalCondition,
+      }
+    }
+  }
 
   const correlationId = getHeader(event, 'x-correlation-id') || genCorrelationId()
   setHeader(event, 'x-correlation-id', correlationId)

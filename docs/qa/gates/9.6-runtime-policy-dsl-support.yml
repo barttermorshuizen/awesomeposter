@@ -1,0 +1,41 @@
+schema: 1
+story: '9.6'
+story_title: 'Runtime Policy DSL Condition Support'
+gate: PASS
+status_reason: 'Runtime policy normalization, Nitro validation, and Flex Sandbox DSL authoring satisfy AC1-AC5 with regression coverage across parser, server route, and UI.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-06T00:00:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 96
+expires: '2025-11-20T00:00:00Z'
+
+evidence:
+  tests_reviewed: 28
+  risks_identified: 1
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'DSL inputs still route through the shared parser/catalog; no new external IO or privilege changes.'
+  performance:
+    status: PASS
+    notes: 'Normalization continues to rely on existing JSON-Logic evaluation; DSL parsing cost mirrors existing DSL entry points.'
+  reliability:
+    status: PASS
+    notes: 'Route rejection spec plus runtime evaluator specs assert success and failure paths for DSL-backed policies.'
+  maintainability:
+    status: CONCERNS
+    notes: 'Two copies of `validateConditionInput` exist (package + server); duplication risks drift without shared export.'
+
+recommendations:
+  immediate: []
+  future:
+    - 'Deduplicate `validateConditionInput` by exporting a single shared helper so server and package stay aligned.'

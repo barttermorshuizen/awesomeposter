@@ -1,9 +1,15 @@
 import {
+  conditionVariableCatalog,
   evaluateCondition as evaluateJsonLogicCondition,
+  parseDsl,
   parseTaskPolicies,
+  type ConditionDslError,
+  type ConditionDslWarning,
+  type ConditionVariableCatalog,
   type JsonLogicExpression,
   type PlannerPolicy,
   type RuntimePolicy,
+  type RuntimePolicyCondition,
   type TaskEnvelope,
   type TaskPolicies
 } from '@awesomeposter/shared'
@@ -13,7 +19,11 @@ import type { ReplanTrigger } from './flex-execution-engine'
 import { ZodError, type ZodIssue } from 'zod'
 
 export class PolicyValidationError extends Error {
-  constructor(message: string, public readonly issues: ZodIssue[]) {
+  constructor(
+    message: string,
+    public readonly issues: ZodIssue[] = [],
+    public readonly dslErrors: ConditionDslError[] = []
+  ) {
     super(message)
     this.name = 'PolicyValidationError'
   }
@@ -40,6 +50,7 @@ export type RuntimePolicyEffect =
   | { kind: 'action'; policy: RuntimePolicy }
 
 export class PolicyNormalizer {
+  constructor(private readonly conditionCatalog: ConditionVariableCatalog = conditionVariableCatalog) {}
   normalize(envelope: TaskEnvelope): NormalizedPolicies {
     const { base, extras } = this.extractCanonicalSections(envelope.policies)
 
@@ -77,11 +88,16 @@ export class PolicyNormalizer {
     }
 
     canonical = parseTaskPolicies(canonical)
+    const normalizedRuntime = canonical.runtime.map((policy) => this.normalizeRuntimePolicy(policy))
+    canonical = {
+      ...canonical,
+      runtime: normalizedRuntime
+    }
 
     return {
       canonical,
       planner: canonical.planner,
-      runtime: canonical.runtime,
+      runtime: normalizedRuntime,
       legacyNotes,
       legacyFields: Array.from(legacyFields)
     }
@@ -126,6 +142,132 @@ export class PolicyNormalizer {
       }
     }
     return null
+  }
+
+  private normalizeRuntimePolicy(policy: RuntimePolicy): RuntimePolicy {
+    const trigger = policy.trigger
+    if (trigger.kind !== 'onNodeComplete' && trigger.kind !== 'onValidationFail') {
+      return policy
+    }
+
+    const normalizedCondition = this.normalizeRuntimeCondition(
+      trigger.condition as RuntimePolicyCondition | undefined
+    )
+    if (normalizedCondition === trigger.condition) {
+      return policy
+    }
+
+    return {
+      ...policy,
+      trigger: {
+        ...trigger,
+        condition: normalizedCondition
+      }
+    }
+  }
+
+  private normalizeRuntimeCondition(
+    condition: RuntimePolicyCondition | undefined
+  ): RuntimePolicyCondition | undefined {
+    if (condition === undefined || condition === null) {
+      return undefined
+    }
+
+    const dslExpression = this.readDslString(condition)
+    if (dslExpression) {
+      const result = parseDsl(dslExpression, this.conditionCatalog)
+      if (!result.ok) {
+        throw new PolicyValidationError('Runtime policy DSL failed validation', [], [...result.errors])
+      }
+
+      const warnings = result.warnings.length
+        ? result.warnings.map((warning) => ({ ...warning }))
+        : undefined
+      const variables = result.variables.length ? result.variables.map((entry) => entry.path) : undefined
+
+      return {
+        jsonLogic: result.jsonLogic,
+        dsl: dslExpression,
+        canonicalDsl: result.canonical,
+        warnings,
+        variables
+      }
+    }
+
+    if (this.hasJsonLogicWrapper(condition)) {
+      const jsonLogic = (condition as { jsonLogic: JsonLogicExpression | undefined }).jsonLogic
+      if (jsonLogic === undefined) {
+        throw new PolicyValidationError('Runtime policy condition is missing jsonLogic payload')
+      }
+
+      const canonicalDsl = this.readCanonicalDsl(condition)
+      const warnings = this.readWarnings(condition)
+      const variables = this.readVariables(condition)
+      const existingDsl = this.readDslString(condition)
+
+      return {
+        jsonLogic,
+        ...(existingDsl ? { dsl: existingDsl } : {}),
+        ...(canonicalDsl ? { canonicalDsl } : {}),
+        ...(warnings.length ? { warnings } : {}),
+        ...(variables.length ? { variables } : {})
+      }
+    }
+
+    return condition as JsonLogicExpression
+  }
+
+  private extractJsonLogic(condition: RuntimePolicyCondition | undefined): JsonLogicExpression | null {
+    if (condition === undefined || condition === null) {
+      return null
+    }
+    if (this.hasJsonLogicWrapper(condition)) {
+      const wrapped = (condition as { jsonLogic: JsonLogicExpression | undefined }).jsonLogic
+      return wrapped === undefined ? null : wrapped
+    }
+    return condition as JsonLogicExpression
+  }
+
+  private hasJsonLogicWrapper(value: unknown): value is { jsonLogic: JsonLogicExpression | undefined } {
+    return this.isRecord(value) && Object.prototype.hasOwnProperty.call(value, 'jsonLogic')
+  }
+
+  private readDslString(value: unknown): string | undefined {
+    if (!this.isRecord(value) || typeof value.dsl !== 'string') {
+      return undefined
+    }
+    const trimmed = value.dsl.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+
+  private readCanonicalDsl(value: unknown): string | undefined {
+    if (!this.isRecord(value) || typeof value.canonicalDsl !== 'string') {
+      return undefined
+    }
+    const trimmed = value.canonicalDsl.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+
+  private readWarnings(value: unknown): ConditionDslWarning[] {
+    if (!this.isRecord(value) || !Array.isArray(value.warnings)) {
+      return []
+    }
+    return value.warnings
+      .filter((warning): warning is ConditionDslWarning => Boolean(warning))
+      .map((warning) => ({ ...warning }))
+  }
+
+  private readVariables(value: unknown): string[] {
+    if (!this.isRecord(value) || !Array.isArray(value.variables)) {
+      return []
+    }
+    return value.variables
+      .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+      .filter((entry) => entry.length > 0)
+  }
+
+  private isRecord(value: unknown): value is Record<string, any> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
 
   private matchesNodeSelector(selector: NodeCompleteTrigger['selector'], node: FlexPlanNode): boolean {
@@ -369,8 +511,9 @@ export class PolicyNormalizer {
     return [value]
   }
 
-  private evaluateCondition(condition: Record<string, unknown>, node: FlexPlanNode): boolean {
-    if (!condition || typeof condition !== 'object') return false
+  private evaluateCondition(condition: RuntimePolicyCondition | undefined, node: FlexPlanNode): boolean {
+    const jsonLogic = this.extractJsonLogic(condition)
+    if (jsonLogic == null) return false
     const metadata = node.metadata && typeof node.metadata === 'object' ? (node.metadata as Record<string, unknown>) : null
     const snapshot = metadata && typeof metadata.runContextSnapshot === 'object'
       ? (metadata.runContextSnapshot as Record<string, unknown> | undefined)
@@ -379,13 +522,15 @@ export class PolicyNormalizer {
       ? (snapshot.facets as unknown)
       : null
 
-    const evaluation = evaluateJsonLogicCondition(condition as JsonLogicExpression, node)
+    const evaluation = evaluateJsonLogicCondition(jsonLogic, node)
     if (!evaluation.ok) {
       try {
         getLogger().info('flex_runtime_policy_condition_error', {
           nodeId: node.id,
           capabilityId: node.capabilityId,
           error: evaluation.error,
+          conditionDsl: this.readDslString(condition),
+          conditionJsonLogic: jsonLogic,
           condition,
           runContextFacets: facets ?? null
         })
@@ -397,6 +542,8 @@ export class PolicyNormalizer {
         nodeId: node.id,
         capabilityId: node.capabilityId,
         result: evaluation.result,
+        conditionDsl: this.readDslString(condition),
+        conditionJsonLogic: jsonLogic,
         condition,
         runContextFacets: facets ?? null
       })

@@ -99,6 +99,28 @@ describe('TaskPolicies schema', () => {
     })
   })
 
+  it('accepts runtime policies with DSL condition metadata', () => {
+    const parsed = parseTaskPolicies({
+      runtime: [
+          {
+            id: 'dsl-policy',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                dsl: 'facets.planKnobs.hookIntensity < 0.7'
+              }
+            },
+            action: { type: 'fail', message: 'quality too low' }
+          }
+      ]
+    })
+
+    expect(parsed.runtime[0]?.trigger.kind).toBe('onNodeComplete')
+    expect((parsed.runtime[0]?.trigger as any).condition?.dsl).toBe(
+      'facets.planKnobs.hookIntensity < 0.7'
+    )
+  })
+
   it('rejects legacy action names with helpful error', () => {
     expect(() =>
       parseTaskPolicies({

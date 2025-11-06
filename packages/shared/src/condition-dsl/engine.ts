@@ -52,6 +52,162 @@ interface LineIndex {
   get(offset: number): { line: number; column: number }
 }
 
+type PathNormalizationOptions = {
+  preserveOriginal?: boolean
+}
+
+function cloneRange(range: SourceRange | null): SourceRange | null {
+  if (!range) return null
+  return { start: range.start, end: range.end }
+}
+
+function cloneExpressionNode(node: ConditionExpressionNode): ConditionExpressionNode {
+  switch (node.type) {
+    case 'literal':
+      return {
+        type: 'literal',
+        value: node.value,
+        range: cloneRange(node.range),
+      }
+    case 'variable': {
+      const clone: ConditionExpressionNode = {
+        type: 'variable',
+        path: node.path,
+        range: cloneRange(node.range),
+      }
+      const original = (node as any).originalPath
+      if (original !== undefined) {
+        ;(clone as any).originalPath = original
+      }
+      return clone
+    }
+    case 'unary':
+      return {
+        type: 'unary',
+        operator: node.operator,
+        argument: cloneExpressionNode(node.argument),
+        range: cloneRange(node.range),
+        operatorRange: cloneRange(node.operatorRange),
+      }
+    case 'binary':
+      return {
+        type: 'binary',
+        operator: node.operator,
+        left: cloneExpressionNode(node.left),
+        right: cloneExpressionNode(node.right),
+        range: cloneRange(node.range),
+        operatorRange: cloneRange(node.operatorRange),
+      }
+    case 'quantifier':
+      return {
+        type: 'quantifier',
+        operator: node.operator,
+        collection: cloneExpressionNode(node.collection),
+        predicate: cloneExpressionNode(node.predicate),
+        alias: node.alias,
+        aliasProvided: node.aliasProvided,
+        range: cloneRange(node.range),
+        operatorRange: cloneRange(node.operatorRange),
+        collectionRange: cloneRange(node.collectionRange),
+        aliasRange: cloneRange(node.aliasRange),
+        predicateRange: cloneRange(node.predicateRange),
+      }
+    default:
+      return node
+  }
+}
+
+function normalizeVariablePaths(
+  node: ConditionExpressionNode,
+  map: Map<string, string>,
+  options: PathNormalizationOptions = {},
+): void {
+  switch (node.type) {
+    case 'variable': {
+      const replacement = map.get(node.path)
+      if (replacement && replacement !== node.path) {
+        if (options.preserveOriginal && (node as any).originalPath === undefined) {
+          ;(node as any).originalPath = node.path
+        }
+        node.path = replacement
+      }
+      return
+    }
+    case 'unary': {
+      normalizeVariablePaths(node.argument, map, options)
+      return
+    }
+    case 'binary': {
+      normalizeVariablePaths(node.left, map, options)
+      normalizeVariablePaths(node.right, map, options)
+      return
+    }
+    case 'quantifier': {
+      normalizeVariablePaths(node.collection, map, options)
+      normalizeVariablePaths(node.predicate, map, options)
+      return
+    }
+    default:
+      return
+  }
+}
+
+function buildAliasMaps(
+  catalog: ConditionVariableCatalog,
+): {
+  aliasToCanonical: Map<string, string>
+  canonicalToAlias: Map<string, string>
+} {
+  const aliasToCanonical = new Map<string, string>()
+  const canonicalToAlias = new Map<string, string>()
+
+  function registerAlias(
+    alias: string | undefined,
+    canonical: string,
+  ): void {
+    if (!alias || alias === canonical) {
+      return
+    }
+    if (!aliasToCanonical.has(alias)) {
+      aliasToCanonical.set(alias, canonical)
+    }
+    const existing = canonicalToAlias.get(canonical)
+    if (!existing || alias.length < existing.length) {
+      canonicalToAlias.set(canonical, alias)
+    }
+  }
+
+  for (const variable of catalog.variables) {
+    registerAlias(variable.dslPath, variable.path)
+    if (Array.isArray(variable.aliases)) {
+      for (const alias of variable.aliases) {
+        registerAlias(alias, variable.path)
+      }
+    }
+  }
+
+  return { aliasToCanonical, canonicalToAlias }
+}
+
+function definitionDisplayPath(definition: ConditionVariableDefinition): string {
+  return definition.dslPath ?? definition.path
+}
+
+function getVariableDisplayPath(
+  node: Extract<ConditionExpressionNode, { type: 'variable' }>,
+  lookup: Map<string, ConditionVariableDefinition>,
+): string {
+  const original = (node as any).originalPath
+  if (typeof original === 'string' && original.length > 0) {
+    return original
+  }
+  const definition = lookup.get(node.path)
+  if (definition) {
+    return definitionDisplayPath(definition)
+  }
+  return node.path
+}
+
 export function parseDsl(
   expression: string,
   catalog: ConditionVariableCatalog,
@@ -89,15 +245,19 @@ export function parseDsl(
     input: expression,
   }
 
-  let ast: ConditionExpressionNode
+  let parsedAst: ConditionExpressionNode
   try {
-    ast = parseExpression(ctx)
+    parsedAst = parseExpression(ctx)
     ensureEnd(ctx)
   } catch (error) {
     return toFailure(normaliseError(error), index)
   }
 
-  const validationErrors = validateAst(ast, catalog, index)
+  const { aliasToCanonical, canonicalToAlias } = buildAliasMaps(catalog)
+  const canonicalAst = cloneExpressionNode(parsedAst)
+  normalizeVariablePaths(canonicalAst, aliasToCanonical, { preserveOriginal: true })
+
+  const validationErrors = validateAst(canonicalAst, catalog, index)
   if (validationErrors.length > 0) {
     return {
       ok: false,
@@ -105,9 +265,11 @@ export function parseDsl(
     }
   }
 
-  const jsonLogic = expressionToJsonLogic(ast)
-  const canonical = renderExpression(ast)
-  const variables = collectVariableDefinitions(ast, catalog)
+  const jsonLogic = expressionToJsonLogic(canonicalAst)
+  const displayAst = cloneExpressionNode(canonicalAst)
+  normalizeVariablePaths(displayAst, canonicalToAlias)
+  const canonical = renderExpression(displayAst)
+  const variables = collectVariableDefinitions(canonicalAst, catalog)
 
   const warnings: ConditionDslWarning[] = []
   if (canonical === 'true') {
@@ -116,7 +278,7 @@ export function parseDsl(
 
   const result: ConditionDslParseSuccess = {
     ok: true,
-    ast,
+    ast: canonicalAst,
     jsonLogic,
     canonical,
     variables,
@@ -132,15 +294,18 @@ export function toDsl(
   const index = createLineIndex('')
   try {
     const lookup = buildCatalogLookup(catalog)
-    const ast = jsonLogicToExpression(jsonLogic, lookup)
-    const validationErrors = validateAst(ast, catalog, index)
+    const canonicalAst = jsonLogicToExpression(jsonLogic, lookup)
+    const validationErrors = validateAst(canonicalAst, catalog, index)
     if (validationErrors.length > 0) {
       return {
         ok: false,
         errors: validationErrors,
       }
     }
-    const expression = renderExpression(ast)
+    const { canonicalToAlias } = buildAliasMaps(catalog)
+    const displayAst = cloneExpressionNode(canonicalAst)
+    normalizeVariablePaths(displayAst, canonicalToAlias)
+    const expression = renderExpression(displayAst)
     const result: ConditionDslRenderSuccess = {
       ok: true,
       expression,
@@ -871,11 +1036,12 @@ function validateNode(
       }
       const variable = lookup.get(node.path)
       if (!variable) {
+        const displayPath = getVariableDisplayPath(node, lookup)
         errors.push(
           createDiagnostic(
             {
               code: 'unknown_variable',
-              message: `Variable \`${node.path}\` is not registered.`,
+              message: `Variable \`${displayPath}\` is not registered.`,
             },
             index,
             node.range?.start ?? 0,
@@ -906,7 +1072,7 @@ function validateNode(
               createDiagnostic(
                 {
                   code: 'operator_not_allowed',
-                  message: `Operator \`${node.operator}\` is not allowed for variable \`${definition.path}\`.`,
+                  message: `Operator \`${node.operator}\` is not allowed for variable \`${definitionDisplayPath(definition)}\`.`,
                 },
                 index,
                 operatorRange?.start ?? variable.range?.start ?? 0,
@@ -941,7 +1107,7 @@ function validateNode(
             createDiagnostic(
               {
                 code: 'invalid_quantifier',
-                message: `Quantifier \`${node.operator}\` expects collection \`${definition.path}\` to be an array.`,
+                message: `Quantifier \`${node.operator}\` expects collection \`${definitionDisplayPath(definition)}\` to be an array.`,
               },
               index,
               node.collection.range?.start ?? node.range?.start ?? 0,
@@ -1379,11 +1545,12 @@ function validateComparisonOperandTypes(
   if (rightLiteral) {
     for (const definition of leftDefinitions) {
       if (!isLiteralTypeCompatible(definition.type, rightLiteral.kind)) {
+        const displayPath = definitionDisplayPath(definition)
         errors.push(
           createDiagnostic(
             {
               code: 'type_mismatch',
-              message: `Type mismatch: variable \`${definition.path}\` (${definition.type}) cannot be compared to ${rightLiteral.kind} literal.`,
+              message: `Type mismatch: variable \`${displayPath}\` (${definition.type}) cannot be compared to ${rightLiteral.kind} literal.`,
             },
             index,
             rightLiteral.startOffset ?? node.range?.start ?? 0,
@@ -1397,11 +1564,12 @@ function validateComparisonOperandTypes(
   if (leftLiteral) {
     for (const definition of rightDefinitions) {
       if (!isLiteralTypeCompatible(definition.type, leftLiteral.kind)) {
+        const displayPath = definitionDisplayPath(definition)
         errors.push(
           createDiagnostic(
             {
               code: 'type_mismatch',
-              message: `Type mismatch: variable \`${definition.path}\` (${definition.type}) cannot be compared to ${leftLiteral.kind} literal.`,
+              message: `Type mismatch: variable \`${displayPath}\` (${definition.type}) cannot be compared to ${leftLiteral.kind} literal.`,
             },
             index,
             leftLiteral.startOffset ?? node.range?.start ?? 0,
@@ -1420,11 +1588,13 @@ function validateComparisonOperandTypes(
           const key = `${leftDef.path}|${rightDef.path}|${node.operator}`
           if (seenPairs.has(key)) continue
           seenPairs.add(key)
+          const leftDisplay = definitionDisplayPath(leftDef)
+          const rightDisplay = definitionDisplayPath(rightDef)
           errors.push(
             createDiagnostic(
               {
                 code: 'type_mismatch',
-                message: `Type mismatch: variables \`${leftDef.path}\` (${leftDef.type}) and \`${rightDef.path}\` (${rightDef.type}) are incompatible with \`${node.operator}\`.`,
+                message: `Type mismatch: variables \`${leftDisplay}\` (${leftDef.type}) and \`${rightDisplay}\` (${rightDef.type}) are incompatible with \`${node.operator}\`.`,
               },
               index,
               node.operatorRange?.start ?? node.range?.start ?? 0,
@@ -1708,7 +1878,7 @@ function resolveScopedValue(path: string, scope?: EvaluationScope): { found: boo
         const trimmed = path.slice(current.alias.length + 1)
         const scopedResult = readPathWithExistence(current.value, trimmed)
         if (scopedResult.exists) {
-          return scopedResult
+          return { found: true, value: scopedResult.value }
         }
       }
     }

@@ -31,7 +31,7 @@ interface VariableOption {
 
 const variableOptions: readonly VariableOption[] = playgroundVariables.map((variable) => ({
   id: variable.id,
-  identifier: variable.path,
+  identifier: variable.dslPath ?? variable.path,
   label: variable.label,
   type: variable.type,
   group: variable.group ?? 'Ungrouped',
@@ -39,7 +39,9 @@ const variableOptions: readonly VariableOption[] = playgroundVariables.map((vari
   operators: variable.allowedOperators,
 }))
 
-const dslExpression = ref('qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2')
+const dslExpression = ref(
+  'facets.planKnobs.hookIntensity < 0.6 && facets.planKnobs.variantCount > 2',
+)
 const activeVariableId = ref<string | null>(null)
 const selectedSampleId = ref(playgroundSamples[0]?.id ?? '')
 const editorRef = ref<{ $el: HTMLElement } | null>(null)
@@ -151,8 +153,9 @@ function insertVariable(path: string): void {
 
 function handleInsertVariable(): void {
   if (!activeVariable.value) return
-  insertVariable(activeVariable.value.path)
-  showSnackbar(`Inserted ${activeVariable.value.path}`, 'info')
+  const alias = activeVariable.value.dslPath ?? activeVariable.value.path
+  insertVariable(alias)
+  showSnackbar(`Inserted ${alias}`, 'info')
 }
 
 function showSnackbar(message: string, color: 'success' | 'info' | 'warning' | 'error'): void {
@@ -263,7 +266,7 @@ function formatValue(value: unknown): string {
               auto-grow
               rounded="lg"
               variant="outlined"
-              placeholder="qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2"
+              placeholder="facets.planKnobs.hookIntensity < 0.6 && facets.planKnobs.variantCount > 2"
             />
 
             <v-divider class="my-4" />

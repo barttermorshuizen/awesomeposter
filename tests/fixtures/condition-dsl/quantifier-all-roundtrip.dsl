@@ -1,1 +1,1 @@
-all(qaFindings.flagCodes, item != "deprecated")
+all(facets.recommendationSet, item.severity != "critical")

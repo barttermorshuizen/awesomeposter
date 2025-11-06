@@ -37,7 +37,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 | `strategicRationale` | output | Strategy justification and high-level narrative reasoning. | Object with `northStar`, `whyItWorks`, optional `risks`. |
 | `copyVariants` | input/output | Structured set of draft variants for distribution downstream. | Array of `{ headline, body, callToAction }` objects. |
 | `qaRubric` | input | Policy and quality rubric settings QA should enforce. | Object with `checks[]` (enum), `thresholds` (object). |
-| `qaFindings` | output | QA results with scores and compliance flags. | Object with `scores`, `issues[]`, `overallStatus`. |
+| `metadata.runContextSnapshot.facets.qaFindings.value` | output | QA results with scores and compliance flags. | Object with `scores`, `issues[]`, `overallStatus`. |
 | `recommendationSet` | output | Normalised follow-up actions for editors or writers. | Array of `{ severity, recommendation, rationale }`. |
 | `clarificationRequest` | input | Outstanding questions and rationale requiring human strategist input. | Object with `pendingQuestions[]` containing `{ id, question, priority, required, context }`. |
 | `clarificationResponse` | output | Structured answers or declines supplied by human strategists. | Object with `responses[]` capturing `{ questionId, status, response, notes }` plus optional attachments. |

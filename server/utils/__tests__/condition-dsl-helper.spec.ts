@@ -7,21 +7,31 @@ import { validateConditionInput } from '../condition-dsl'
 
 describe('validateConditionInput', () => {
   it('parses DSL input and returns canonical data', () => {
-    const result = validateConditionInput({
-      dsl: 'qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2',
-    })
+    const dsl =
+      'facets.planKnobs.hookIntensity < 0.6 && facets.planKnobs.variantCount > 2'
+    const result = validateConditionInput({ dsl })
 
     expect(result.jsonLogic).toMatchObject({
       and: [
-        { '<': [{ var: 'qaFindings.overallScore' }, 0.6] },
-        { '>': [{ var: 'qaFindings.flagsCount' }, 2] },
+        {
+          '<': [
+            { var: 'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity' },
+            0.6,
+          ],
+        },
+        {
+          '>': [
+            { var: 'metadata.runContextSnapshot.facets.planKnobs.value.variantCount' },
+            2,
+          ],
+        },
       ],
     })
-    expect(result.canonicalDsl).toBe('qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2')
+    expect(result.canonicalDsl).toBe(dsl)
     expect(result.warnings).toHaveLength(0)
     expect(result.variables).toEqual([
-      'qaFindings.overallScore',
-      'qaFindings.flagsCount',
+      'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity',
+      'metadata.runContextSnapshot.facets.planKnobs.value.variantCount',
     ])
   })
 
@@ -43,7 +53,16 @@ describe('validateConditionInput', () => {
   })
 
   it('accepts JSON-Logic payloads unchanged', () => {
-    const jsonLogic = { and: [{ '<': [{ var: 'qaFindings.flagsCount' }, 5] }] }
+    const jsonLogic = {
+      and: [
+        {
+          '<': [
+            { var: 'metadata.runContextSnapshot.facets.planKnobs.value.variantCount' },
+            5,
+          ],
+        },
+      ],
+    }
     const result = validateConditionInput({ jsonLogic })
 
     expect(result.jsonLogic).toBe(jsonLogic)

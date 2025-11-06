@@ -40,6 +40,93 @@ describe('PolicyNormalizer', () => {
     expect(result.legacyNotes).toHaveLength(0)
   })
 
+  it('compiles DSL-backed runtime conditions into canonical metadata', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'dsl-condition',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'quality-threshold',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                dsl: 'facets.planKnobs.hookIntensity < 0.6'
+              }
+            },
+            action: { type: 'replan', rationale: 'Low QA score requires replanning' }
+          }
+        ]
+      }
+    }
+
+    const result = normalizer.normalize(envelope)
+    const policy = result.runtime[0]
+    expect(policy.trigger.kind).toBe('onNodeComplete')
+    const condition = (policy.trigger as any).condition
+    expect(condition?.dsl).toBe('facets.planKnobs.hookIntensity < 0.6')
+    expect(condition?.canonicalDsl).toBe('facets.planKnobs.hookIntensity < 0.6')
+    expect(condition?.jsonLogic).toEqual({
+      '<': [{ var: 'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity' }, 0.6]
+    })
+    expect(condition?.warnings ?? []).toEqual([])
+    expect(condition?.variables).toEqual([
+      'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity'
+    ])
+  })
+
+  it('evaluates DSL runtime conditions after normalization', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'dsl-evaluation',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'quality-threshold',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                dsl: 'facets.planKnobs.hookIntensity < 0.6'
+              }
+            },
+            action: { type: 'replan', rationale: 'Replan when QA score is low' }
+          }
+        ]
+      }
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const effect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-node', objective: 'dsl-evaluation', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.55
+              }
+            }
+          }
+        }
+      }
+    } as any)
+
+    expect(effect?.kind).toBe('replan')
+  })
+
   it('converts legacy directives into canonical runtime policies and planner topology', () => {
     const normalizer = new PolicyNormalizer()
     const envelope: TaskEnvelope = {
@@ -115,7 +202,7 @@ describe('PolicyNormalizer', () => {
               kind: 'onNodeComplete',
               condition: {
                 some: [
-                  { var: 'metadata.qaFindings.feedback' },
+                  { var: 'metadata.runContextSnapshot.facets.recommendationSet.value' },
                   { '==': [{ var: 'resolution' }, 'unresolved'] }
                 ]
               }
@@ -139,11 +226,15 @@ describe('PolicyNormalizer', () => {
       provenance: {},
       rationale: [],
       metadata: {
-        qaFindings: {
-          feedback: [
-            { id: 'fb-1', resolution: 'resolved' },
-            { id: 'fb-2', resolution: 'unresolved' }
-          ]
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', resolution: 'resolved' },
+                { id: 'rec-2', resolution: 'unresolved' }
+              ]
+            }
+          }
         }
       }
     } as any)
@@ -162,11 +253,15 @@ describe('PolicyNormalizer', () => {
       provenance: {},
       rationale: [],
       metadata: {
-        qaFindings: {
-          feedback: [
-            { id: 'fb-1', resolution: 'resolved' },
-            { id: 'fb-2', resolution: 'resolved' }
-          ]
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', resolution: 'resolved' },
+                { id: 'rec-2', resolution: 'resolved' }
+              ]
+            }
+          }
         }
       }
     } as any)
@@ -188,7 +283,7 @@ describe('PolicyNormalizer', () => {
               kind: 'onNodeComplete',
               condition: {
                 all: [
-                  { var: 'metadata.qaFindings.feedback' },
+                  { var: 'metadata.runContextSnapshot.facets.recommendationSet.value' },
                   { '==': [{ var: 'resolution' }, 'resolved'] }
                 ]
               }
@@ -212,11 +307,15 @@ describe('PolicyNormalizer', () => {
       provenance: {},
       rationale: [],
       metadata: {
-        qaFindings: {
-          feedback: [
-            { id: 'fb-1', resolution: 'resolved' },
-            { id: 'fb-2', resolution: 'resolved' }
-          ]
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', resolution: 'resolved' },
+                { id: 'rec-2', resolution: 'resolved' }
+              ]
+            }
+          }
         }
       }
     } as any)
@@ -235,11 +334,15 @@ describe('PolicyNormalizer', () => {
       provenance: {},
       rationale: [],
       metadata: {
-        qaFindings: {
-          feedback: [
-            { id: 'fb-1', resolution: 'resolved' },
-            { id: 'fb-2', resolution: 'unresolved' }
-          ]
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', resolution: 'resolved' },
+                { id: 'rec-2', resolution: 'unresolved' }
+              ]
+            }
+          }
         }
       }
     } as any)
@@ -258,8 +361,12 @@ describe('PolicyNormalizer', () => {
       provenance: {},
       rationale: [],
       metadata: {
-        qaFindings: {
-          feedback: []
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: []
+            }
+          }
         }
       }
     } as any)

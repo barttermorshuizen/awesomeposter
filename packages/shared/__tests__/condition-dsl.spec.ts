@@ -3,14 +3,32 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  ConditionDslValidationError,
   conditionVariableCatalog,
   evaluateCondition,
+  normalizeConditionInput,
   parseDsl,
   toDsl,
   type JsonLogicExpression,
 } from '../src/condition-dsl/index.js'
 
 const FIXTURES_DIR = path.resolve(process.cwd(), 'tests/fixtures/condition-dsl')
+
+const HOOK_INTENSITY_CANONICAL =
+  'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity'
+const HOOK_INTENSITY_ALIAS = 'facets.planKnobs.hookIntensity'
+const VARIANT_COUNT_CANONICAL =
+  'metadata.runContextSnapshot.facets.planKnobs.value.variantCount'
+const VARIANT_COUNT_ALIAS = 'facets.planKnobs.variantCount'
+const FORMAT_TYPE_CANONICAL =
+  'metadata.runContextSnapshot.facets.planKnobs.value.formatType'
+const FORMAT_TYPE_ALIAS = 'facets.planKnobs.formatType'
+const RECOMMENDATION_SET_CANONICAL =
+  'metadata.runContextSnapshot.facets.recommendationSet.value'
+const RECOMMENDATION_SET_ALIAS = 'facets.recommendationSet'
+const READY_FOR_PLANNER_CANONICAL =
+  'metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner'
+const READY_FOR_PLANNER_ALIAS = 'facets.clarificationResponse.readyForPlanner'
 
 function loadFixture(name: string): { dsl: string; json: JsonLogicExpression } {
   const dslPath = path.join(FIXTURES_DIR, `${name}.dsl`)
@@ -29,10 +47,11 @@ describe('parseDsl', () => {
     if (!result.ok) return
 
     expect(result.jsonLogic).toEqual(json)
-    expect(result.canonical).toBe('qaFindings.overallScore < 0.6 && qaFindings.flagsCount > 2')
+    const expectedCanonical = `${HOOK_INTENSITY_ALIAS} < 0.6 && ${VARIANT_COUNT_ALIAS} > 2`
+    expect(result.canonical).toBe(expectedCanonical)
     expect(result.variables.map((variable) => variable.path)).toEqual([
-      'qaFindings.overallScore',
-      'qaFindings.flagsCount',
+      HOOK_INTENSITY_CANONICAL,
+      VARIANT_COUNT_CANONICAL,
     ])
     expect(result.warnings).toHaveLength(0)
   })
@@ -47,12 +66,12 @@ describe('parseDsl', () => {
   })
 
   it('validates operators based on variable type', () => {
-    const result = parseDsl('qaFindings.containsCritical > 0', conditionVariableCatalog)
+    const result = parseDsl(`${READY_FOR_PLANNER_ALIAS} > 0`, conditionVariableCatalog)
     expect(result.ok).toBe(false)
     if (result.ok) return
 
     expect(result.errors[0]?.code).toBe('operator_not_allowed')
-    expect(result.errors[0]?.message).toContain('qaFindings.containsCritical')
+    expect(result.errors[0]?.message).toContain(READY_FOR_PLANNER_ALIAS)
   })
 
   it('returns warnings when expression is always true', () => {
@@ -66,7 +85,7 @@ describe('parseDsl', () => {
 
   it('preserves parentheses when mixing logical precedence', () => {
     const expression =
-      'qaFindings.overallScore < 0.6 && (qaFindings.flagsCount > 2 || qaFindings.containsCritical == true)'
+      `${HOOK_INTENSITY_ALIAS} < 0.6 && (${VARIANT_COUNT_ALIAS} > 2 || ${READY_FOR_PLANNER_ALIAS} == true)`
     const result = parseDsl(expression, conditionVariableCatalog)
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -75,7 +94,7 @@ describe('parseDsl', () => {
   })
 
   it('rejects literal type mismatches based on the catalog', () => {
-    const result = parseDsl('qaFindings.overallScore == "bad"', conditionVariableCatalog)
+    const result = parseDsl(`${HOOK_INTENSITY_ALIAS} == "bad"`, conditionVariableCatalog)
     expect(result.ok).toBe(false)
     if (result.ok) return
 
@@ -83,7 +102,10 @@ describe('parseDsl', () => {
   })
 
   it('rejects variable-to-variable type mismatches', () => {
-    const result = parseDsl('qaFindings.overallScore == qaFindings.containsCritical', conditionVariableCatalog)
+    const result = parseDsl(
+      `${HOOK_INTENSITY_ALIAS} == ${READY_FOR_PLANNER_ALIAS}`,
+      conditionVariableCatalog,
+    )
     expect(result.ok).toBe(false)
     if (result.ok) return
 
@@ -123,8 +145,16 @@ describe('parseDsl', () => {
     expect(result.canonical).toBe(dsl)
   })
 
+  it('accepts legacy aliases that include the value segment', () => {
+    const result = parseDsl('facets.planKnobs.value.hookIntensity < 0.6', conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.canonical).toBe(`${HOOK_INTENSITY_ALIAS} < 0.6`)
+  })
+
   it('rejects quantifiers applied to non-array variables', () => {
-    const result = parseDsl('some(qaFindings.overallScore, item > 0.5)', conditionVariableCatalog)
+    const result = parseDsl(`some(${HOOK_INTENSITY_ALIAS}, item > 0.5)`, conditionVariableCatalog)
     expect(result.ok).toBe(false)
     if (result.ok) return
 
@@ -132,7 +162,10 @@ describe('parseDsl', () => {
   })
 
   it('requires predicates to reference the current quantifier alias', () => {
-    const result = parseDsl('some(qaFindings.flagCodes, qaFindings.flagsCount > 1)', conditionVariableCatalog)
+    const result = parseDsl(
+      `some(${RECOMMENDATION_SET_ALIAS}, ${VARIANT_COUNT_ALIAS} > 1)`,
+      conditionVariableCatalog,
+    )
     expect(result.ok).toBe(false)
     if (result.ok) return
 
@@ -152,7 +185,10 @@ describe('toDsl', () => {
   })
 
   it('fails when JSON-Logic payload references unknown operators', () => {
-    const result = toDsl({ between: [{ var: 'qaFindings.overallScore' }, 0.2, 0.8] }, conditionVariableCatalog)
+    const result = toDsl(
+      { between: [{ var: HOOK_INTENSITY_CANONICAL }, 0.2, 0.8] },
+      conditionVariableCatalog,
+    )
     expect(result.ok).toBe(false)
     if (result.ok) return
 
@@ -161,7 +197,7 @@ describe('toDsl', () => {
 
   it('retains parentheses when rendering mixed-precedence logic', () => {
     const source =
-      'qaFindings.overallScore < 0.6 && (qaFindings.flagsCount > 2 || qaFindings.containsCritical == true)'
+      `${HOOK_INTENSITY_ALIAS} < 0.6 && (${VARIANT_COUNT_ALIAS} > 2 || ${READY_FOR_PLANNER_ALIAS} == true)`
     const parsed = parseDsl(source, conditionVariableCatalog)
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
@@ -206,8 +242,8 @@ describe('toDsl', () => {
   it('infers default alias usage when legacy payloads omit alias metadata', () => {
     const json: JsonLogicExpression = {
       some: [
-        { var: 'qaFindings.flagCodes' },
-        { '==': [{ var: 'resolution' }, 'open'] },
+        { var: RECOMMENDATION_SET_CANONICAL },
+        { '==': [{ var: 'status' }, 'open'] },
       ],
     }
 
@@ -215,7 +251,44 @@ describe('toDsl', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    expect(result.expression).toBe('some(qaFindings.flagCodes, item.resolution == "open")')
+    expect(result.expression).toBe(
+      `some(${RECOMMENDATION_SET_ALIAS}, item.status == "open")`,
+    )
+  })
+})
+
+describe('normalizeConditionInput', () => {
+  it('returns canonical data for DSL expressions', () => {
+    const result = normalizeConditionInput(
+      { dsl: `${HOOK_INTENSITY_ALIAS} < 0.6` },
+      { catalog: conditionVariableCatalog },
+    )
+
+    expect(result.jsonLogic).toEqual({
+      '<': [{ var: HOOK_INTENSITY_CANONICAL }, 0.6],
+    })
+    expect(result.canonicalDsl).toBe(`${HOOK_INTENSITY_ALIAS} < 0.6`)
+    expect(result.warnings).toHaveLength(0)
+    expect(result.variables).toEqual([HOOK_INTENSITY_CANONICAL])
+  })
+
+  it('passes JSON-Logic payloads through unchanged', () => {
+    const jsonLogic: JsonLogicExpression = {
+      and: [{ '<': [{ var: HOOK_INTENSITY_CANONICAL }, 0.4] }],
+    }
+
+    const result = normalizeConditionInput({ jsonLogic })
+
+    expect(result.jsonLogic).toBe(jsonLogic)
+    expect(result.canonicalDsl).toBeNull()
+    expect(result.warnings).toHaveLength(0)
+    expect(result.variables).toHaveLength(0)
+  })
+
+  it('throws when neither DSL nor JSON-Logic is provided', () => {
+    expect(() => normalizeConditionInput({})).toThrowError(
+      ConditionDslValidationError,
+    )
   })
 })
 
@@ -223,9 +296,18 @@ describe('evaluateCondition', () => {
   it('evaluates JSON-Logic output against payloads', () => {
     const { json } = loadFixture('basic-roundtrip')
     const payload = {
-      qaFindings: {
-        overallScore: 0.51,
-        flagsCount: 4,
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.51,
+                variantCount: 4,
+                formatType: 'text',
+              },
+            },
+          },
+        },
       },
     }
 
@@ -235,24 +317,30 @@ describe('evaluateCondition', () => {
 
     expect(result.result).toBe(true)
     expect(result.resolvedVariables).toMatchObject({
-      'qaFindings.overallScore': 0.51,
-      'qaFindings.flagsCount': 4,
+      [HOOK_INTENSITY_CANONICAL]: 0.51,
+      [VARIANT_COUNT_CANONICAL]: 4,
     })
   })
 
   it('supports `some` quantifier semantics with scoped predicate variables', () => {
     const expression: JsonLogicExpression = {
       some: [
-        { var: 'qaFindings.feedback' },
-        { '==': [{ var: 'resolution' }, 'unresolved'] },
+        { var: RECOMMENDATION_SET_CANONICAL },
+        { '==': [{ var: 'severity' }, 'critical'] },
       ],
     }
     const payload = {
-      qaFindings: {
-        feedback: [
-          { id: 'fb-1', resolution: 'resolved' },
-          { id: 'fb-2', resolution: 'unresolved' },
-        ],
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { severity: 'critical', recommendation: 'Review copy', status: 'open' },
+                { severity: 'minor', recommendation: 'Refresh CTA', status: 'closed' },
+              ],
+            },
+          },
+        },
       },
     }
 
@@ -262,24 +350,31 @@ describe('evaluateCondition', () => {
 
     expect(result.result).toBe(true)
     expect(result.resolvedVariables).toMatchObject({
-      'qaFindings.feedback': payload.qaFindings.feedback,
+      [RECOMMENDATION_SET_CANONICAL]:
+        payload.metadata.runContextSnapshot.facets.recommendationSet.value,
     })
-    expect(result.resolvedVariables).not.toHaveProperty('resolution')
+    expect(result.resolvedVariables).not.toHaveProperty('severity')
   })
 
   it('supports `all` quantifier semantics including empty arrays', () => {
     const expression: JsonLogicExpression = {
       all: [
-        { var: 'qaFindings.findings' },
+        { var: RECOMMENDATION_SET_CANONICAL },
         { '!=': [{ var: 'severity' }, 'critical'] },
       ],
     }
     const payload = {
-      qaFindings: {
-        findings: [
-          { severity: 'minor' },
-          { severity: 'moderate' },
-        ],
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { severity: 'minor', recommendation: 'Polish headline' },
+                { severity: 'moderate', recommendation: 'Tighten CTA' },
+              ],
+            },
+          },
+        },
       },
     }
 
@@ -289,11 +384,17 @@ describe('evaluateCondition', () => {
     expect(positive.result).toBe(true)
 
     const failing = evaluateCondition(expression, {
-      qaFindings: {
-        findings: [
-          { severity: 'critical' },
-          { severity: 'moderate' },
-        ],
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { severity: 'critical', recommendation: 'Escalate' },
+                { severity: 'moderate', recommendation: 'Adjust tone' },
+              ],
+            },
+          },
+        },
       },
     })
     expect(failing.ok).toBe(true)
@@ -301,7 +402,15 @@ describe('evaluateCondition', () => {
       expect(failing.result).toBe(false)
     }
 
-    const empty = evaluateCondition(expression, { qaFindings: { findings: [] } })
+    const empty = evaluateCondition(expression, {
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: { value: [] },
+          },
+        },
+      },
+    })
     expect(empty.ok).toBe(true)
     if (empty.ok) {
       expect(empty.result).toBe(false)
@@ -311,13 +420,21 @@ describe('evaluateCondition', () => {
   it('returns descriptive errors when quantifier source does not resolve to an array', () => {
     const expression: JsonLogicExpression = {
       some: [
-        { var: 'qaFindings.overallScore' },
+        { var: HOOK_INTENSITY_CANONICAL },
         { '==': [{ var: '' }, 0.6] },
       ],
     }
     const payload = {
-      qaFindings: {
-        overallScore: 0.42,
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.42,
+              },
+            },
+          },
+        },
       },
     }
 
@@ -325,30 +442,37 @@ describe('evaluateCondition', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
 
-    expect(result.error).toContain('Operator `some` expected path "qaFindings.overallScore" to resolve to an array')
+    expect(result.error).toContain(
+      `Operator \`some\` expected path "${HOOK_INTENSITY_CANONICAL}" to resolve to an array`,
+    )
   })
 
   it('evaluates nested predicate lookups within quantifiers', () => {
     const expression: JsonLogicExpression = {
       some: [
-        { var: 'qaFindings.feedback' },
+        { var: RECOMMENDATION_SET_CANONICAL },
         {
           'and': [
             { '>=': [{ var: 'item.score' }, 0.8] },
-            { '==': [{ var: 'resolution' }, 'unresolved'] }
-          ]
-        }
-      ]
+            { '==': [{ var: 'status' }, 'open'] },
+          ],
+        },
+      ],
     }
 
     const payload = {
-      qaFindings: {
-        feedback: [
-          { resolution: 'resolved', item: { score: 0.82 } },
-          { resolution: 'unresolved', item: { score: 0.81 } }
-        ],
-        threshold: 0.75
-      }
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { status: 'closed', item: { score: 0.82 } },
+                { status: 'open', item: { score: 0.81 } },
+              ],
+            },
+          },
+        },
+      },
     }
 
     const result = evaluateCondition(expression, payload)
@@ -358,12 +482,18 @@ describe('evaluateCondition', () => {
     expect(result.result).toBe(true)
 
     const noMatch = evaluateCondition(expression, {
-      qaFindings: {
-        feedback: [
-          { resolution: 'resolved', item: { score: 0.9 } },
-          { resolution: 'unresolved', item: { score: 0.7 } }
-        ]
-      }
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            recommendationSet: {
+              value: [
+                { status: 'closed', item: { score: 0.9 } },
+                { status: 'open', item: { score: 0.7 } },
+              ],
+            },
+          },
+        },
+      },
     })
 
     expect(noMatch.ok).toBe(true)

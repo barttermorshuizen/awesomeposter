@@ -2,12 +2,43 @@ import { ZodError, z, type ZodTypeAny } from 'zod'
 
 const LooseRecordSchema = z.record(z.unknown())
 
+const ConditionPositionSchema = z.object({
+  offset: z.number().int().nonnegative(),
+  line: z.number().int().min(1),
+  column: z.number().int().min(1)
+})
+
+const ConditionRangeSchema = z.object({
+  start: ConditionPositionSchema,
+  end: ConditionPositionSchema
+})
+
+const ConditionDslWarningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  range: ConditionRangeSchema.optional()
+})
+
+const RuntimeConditionDslSchema = z.object({
+  dsl: z.string().min(1),
+  jsonLogic: LooseRecordSchema.optional(),
+  canonicalDsl: z.string().min(1).optional(),
+  warnings: z.array(ConditionDslWarningSchema).optional(),
+  variables: z.array(z.string().min(1)).optional()
+})
+
+const RuntimeConditionSchema = z.union([LooseRecordSchema, RuntimeConditionDslSchema])
+
 export const NodeSelectorSchema = z.object({
   nodeId: z.string().min(1).optional(),
   kind: z.string().min(1).optional(),
   capabilityId: z.string().min(1).optional()
 })
 export type NodeSelector = z.infer<typeof NodeSelectorSchema>
+
+export type ConditionDslWarningOutput = z.infer<typeof ConditionDslWarningSchema>
+export type RuntimePolicyConditionDsl = z.infer<typeof RuntimeConditionDslSchema>
+export type RuntimePolicyCondition = z.infer<typeof RuntimeConditionSchema>
 
 export const PolicyTriggerSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -16,12 +47,12 @@ export const PolicyTriggerSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('onNodeComplete'),
     selector: NodeSelectorSchema.optional(),
-    condition: LooseRecordSchema.optional()
+    condition: RuntimeConditionSchema.optional()
   }),
   z.object({
     kind: z.literal('onValidationFail'),
     selector: NodeSelectorSchema.optional(),
-    condition: LooseRecordSchema.optional()
+    condition: RuntimeConditionSchema.optional()
   }),
   z.object({
     kind: z.literal('onTimeout'),

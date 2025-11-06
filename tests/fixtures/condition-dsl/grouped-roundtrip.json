@@ -2,7 +2,7 @@
   "or": [
     {
       "<": [
-        { "var": "qaFindings.overallScore" },
+        { "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" },
         0.5
       ]
     },
@@ -10,8 +10,8 @@
       "and": [
         {
           "==": [
-            { "var": "qaFindings.containsCritical" },
-            true
+            { "var": "metadata.runContextSnapshot.facets.planKnobs.value.formatType" },
+            "text"
           ]
         },
         {

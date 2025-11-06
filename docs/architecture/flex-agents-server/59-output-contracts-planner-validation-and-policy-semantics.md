@@ -136,7 +136,7 @@ All validator outputs use the normalized diagnostic buckets below so planner pro
     {
       "severity": "hard",
       "status": "unsatisfied",
-      "constraint": "qaFindings.overallScore >= 0.8",
+      "constraint": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity >= 0.8",
       "constraintId": "min_qa",
       "cause": "missing_producer",
       "nodeId": "publish-1",
@@ -178,7 +178,7 @@ All validator outputs use the normalized diagnostic buckets below so planner pro
 - **Rule of separation**
   - Constraints define what must be true at completion (design/compile time).
   - Policies govern runtime guardrails; they react to events and never reshape topology.
-- **Use the contract when** you assert properties of the final artifact (for example `exactly 2 variants`, `qaFindings.overallScore >= 0.8`, `CTA present`). Encode these in `outputContract.schema` and `constraints`.
+- **Use the contract when** you assert properties of the final artifact (for example `exactly 2 variants`, DSL shorthand `facets.planKnobs.hookIntensity >= 0.8` which persists as `metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity`, `CTA present`). Encode these in `outputContract.schema` and `constraints`.
 - **Use policies when** you control runtime behaviour (timeouts, retries, HITL gates, replans, brand-risk pauses). These live under `TaskEnvelope.policies.runtime`.
 
 Examples:
@@ -188,7 +188,7 @@ Examples:
 constraints: [
   {
     constraintId: 'min_qa',
-    expr: { '>=': [{ var: 'qaFindings.overallScore' }, 0.8] },
+    expr: { '>=': [{ var: 'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity' }, 0.8] },
     level: 'hard'
   }
 ]
@@ -198,10 +198,12 @@ constraints: [
 {
   "id": "qa_runtime_guardrail",
   "trigger": { "kind": "onNodeComplete", "nodeId": "publish-1" },
-  "condition": { "between": [{ "var": "qaFindings.overallScore" }, 0.6, 0.8] },
+  "condition": { "between": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6, 0.8] },
   "action": { "type": "hitl", "rationale": "Score between 0.6 and 0.8 requires human review" }
 }
 ```
+
+Authoring the same guard via the DSL looks like `facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.8`. Legacy expressions that include `.value` remain accepted, and the runtime normalises any alias back to the canonical run-context path when persisting JSON-Logic.
 
 **Conflict resolution**
 

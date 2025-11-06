@@ -1,1 +1,1 @@
-some(qaFindings.flagCodes, item == "plagiarism")
+some(facets.recommendationSet, item.severity == "critical")

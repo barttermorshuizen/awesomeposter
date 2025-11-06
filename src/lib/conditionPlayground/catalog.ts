@@ -18,20 +18,31 @@ export const playgroundVariables: readonly PlaygroundVariable[] =
 
 export const playgroundSamples: readonly PlaygroundSamplePayload[] = [
   {
-    id: 'qa-low-score',
-    label: 'Low QA Score, Critical Flag',
-    description: 'Represents a run with poor QA results triggering failover.',
+    id: 'plan-needs-review',
+    label: 'High hook intensity, awaiting planner review',
+    description: 'A run with aggressive hook intensity and open recommendations.',
     payload: {
-      qaFindings: {
-        overallScore: 0.42,
-        flagsCount: 4,
-        containsCritical: true,
-        flagCodes: ['plagiarism', 'brand_voice_violation'],
-      },
-      brief: {
-        id: 'brief_low_score',
-        language: 'en-US',
-        priority: 'urgent',
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.72,
+                variantCount: 3,
+                formatType: 'video',
+              },
+            },
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', severity: 'critical', recommendation: 'Escalate to QA', status: 'open' },
+                { id: 'rec-2', severity: 'minor', recommendation: 'Polish CTA', status: 'open' },
+              ],
+            },
+            clarificationResponse: {
+              value: { readyForPlanner: false, submittedAt: null },
+            },
+          },
+        },
       },
       run: {
         latencyMs: 1820,
@@ -41,20 +52,30 @@ export const playgroundSamples: readonly PlaygroundSamplePayload[] = [
     },
   },
   {
-    id: 'qa-healthy',
-    label: 'Healthy QA Result',
-    description: 'Successful run with high QA score and no flags.',
+    id: 'plan-healthy',
+    label: 'Balanced plan knobs, no outstanding actions',
+    description: 'Successful run with moderate hook intensity and cleared recommendations.',
     payload: {
-      qaFindings: {
-        overallScore: 0.91,
-        flagsCount: 0,
-        containsCritical: false,
-        flagCodes: [],
-      },
-      brief: {
-        id: 'brief_success',
-        language: 'en-US',
-        priority: 'standard',
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.38,
+                variantCount: 2,
+                formatType: 'text',
+              },
+            },
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', severity: 'minor', recommendation: 'Tighten intro', status: 'closed' },
+              ],
+            },
+            clarificationResponse: {
+              value: { readyForPlanner: true, submittedAt: '2025-02-11T09:35:00Z' },
+            },
+          },
+        },
       },
       run: {
         latencyMs: 960,
@@ -64,20 +85,31 @@ export const playgroundSamples: readonly PlaygroundSamplePayload[] = [
     },
   },
   {
-    id: 'hitl-waiting',
-    label: 'Awaiting HITL',
-    description: 'Run paused for operator input with moderate QA flags.',
+    id: 'plan-awaiting-hitl',
+    label: 'Awaiting HITL with open recommendations',
+    description: 'Run paused for operator input with mixed severities.',
     payload: {
-      qaFindings: {
-        overallScore: 0.63,
-        flagsCount: 2,
-        containsCritical: false,
-        flagCodes: ['tone_low_confidence'],
-      },
-      brief: {
-        id: 'brief_hitl_wait',
-        language: 'es-ES',
-        priority: 'pilot',
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            planKnobs: {
+              value: {
+                hookIntensity: 0.58,
+                variantCount: 2,
+                formatType: 'single_image',
+              },
+            },
+            recommendationSet: {
+              value: [
+                { id: 'rec-1', severity: 'major', recommendation: 'Rework visuals', status: 'open' },
+                { id: 'rec-2', severity: 'minor', recommendation: 'Adjust closing line', status: 'open' },
+              ],
+            },
+            clarificationResponse: {
+              value: { readyForPlanner: false },
+            },
+          },
+        },
       },
       run: {
         latencyMs: 2400,

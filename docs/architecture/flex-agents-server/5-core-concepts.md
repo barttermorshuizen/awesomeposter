@@ -99,8 +99,22 @@ Runtime policy validation now rejects unknown action names with migration hints 
 - Supported JSON-Logic operators: logical combinators (`and`, `or`, `!`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), variable references (`var`), and array quantifiers (`some`, `all`).
 - `some` returns `true` once any element in the target array satisfies the predicate; missing or empty arrays resolve to `false`.
 - `all` returns `true` only when every element satisfies the predicate; empty arrays resolve to `false`.
-- When referencing array payloads (for example `{"var": "metadata.qaFindings.feedback"}`) callers must ensure the path resolves to an array. Non-array values trigger `invalid_condition` errors with descriptive messaging so misconfigured policies surface quickly.
+- When referencing array payloads (for example `{"var": "metadata.runContextSnapshot.facets.recommendationSet.value"}`) callers must ensure the path resolves to an array. Non-array values trigger `invalid_condition` errors with descriptive messaging so misconfigured policies surface quickly.
 - Predicate expressions execute in the scope of each element, so `{"var": "resolution"}` and nested paths like `{"var": "item.score"}` refer to fields on the current element while still allowing access to the root payload.
+
+**Condition DSL metadata.** Task envelopes may now submit a DSL string instead of raw JSON-Logic under `trigger.condition`. The policy normalizer compiles the DSL with the shared catalog, stores the canonical JSON-Logic output, and preserves the original DSL (plus any parser warnings and referenced variable paths) so the UI can round-trip edits without lossy conversions. The normalized shape is:
+
+```ts
+{
+  jsonLogic: JsonLogicExpression
+  dsl?: string
+  canonicalDsl?: string
+  warnings?: ConditionDslWarning[]
+  variables?: string[]
+}
+```
+
+Legacy JSON-only policies continue to work unchanged—the runtime will treat any plain object as JSON-Logic and skip DSL metadata.
 
 Example payload:
 
@@ -122,7 +136,11 @@ Example payload:
         "trigger": {
           "kind": "onNodeComplete",
           "selector": { "kind": "validation" },
-          "condition": { "<": [{ "var": "qaFindings.overallScore" }, 0.6] }
+          "condition": {
+            "dsl": "facets.planKnobs.hookIntensity < 0.6",
+            "canonicalDsl": "facets.planKnobs.hookIntensity < 0.6",
+            "jsonLogic": { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] }
+          }
         },
         "action": { "type": "replan", "rationale": "Low QA score" }
       },
@@ -132,10 +150,14 @@ Example payload:
           "kind": "onNodeComplete",
           "selector": { "kind": "validation" },
           "condition": {
-            "and": [
-              { ">=": [{ "var": "qaFindings.overallScore" }, 0.6] },
-              { "<": [{ "var": "qaFindings.overallScore" }, 0.9] }
-            ]
+            "dsl": "facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.9",
+            "canonicalDsl": "facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.9",
+            "jsonLogic": {
+              "and": [
+                { ">=": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] },
+                { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.9] }
+              ]
+            }
           }
         },
         "action": { "type": "hitl", "rationale": "Medium quality requires review" }

@@ -8,6 +8,11 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 - The catalog is defined in `catalog.ts` and exported as `conditionVariableCatalog`.
 - Each entry includes `id`, `path`, `type`, optional `group/description/example`, and an explicit
   `allowedOperators` list (defaults are derived from the variable type).
+- Facet-backed entries expose `dslPath` aliases (for example `facets.planKnobs.hookIntensity`) that map
+  to the canonical JSON path (`metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity`).
+  Legacy aliases that include `.value` remain accepted. The parser accepts either form and normalises DSL
+  aliases back to canonical paths when producing
+  JSON-Logic.
 - Update this file when adding policy metrics; consumers read it at runtime so no extra wiring is
   required.
 
@@ -19,6 +24,10 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 | `toDsl(jsonLogic, catalog)` | Converts supported JSON-Logic payloads back into the canonical DSL string. |
 | `evaluateCondition(jsonLogic, payload)` | Lightweight evaluator used by the playground to preview results and resolved variable values. |
 | `conditionVariableCatalog` | Default registry shared by UI and server logic. |
+
+`parseDsl` accepts both canonical paths and aliases; `toDsl` always renders the shorter alias when one
+is available so human-authored expressions stay tidy while the runtime continues to persist the
+canonical run-context path.
 
 ## Quantifier Support
 
@@ -32,11 +41,18 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 ## Server helper
 
 - `server/utils/condition-dsl.ts` exposes `validateConditionInput({ dsl?, jsonLogic? })`.
-- When DSL is supplied it reuses `parseDsl`; failures throw an `H3Error` with `statusCode: 400`,
-  `statusMessage: "Invalid condition expression."`, and a `data` payload containing
-  `{ code: 'invalid_condition_dsl', errors }`.
+- `packages/flex-agents-server/src/utils/condition-dsl.ts` exposes the same helper for the Flex
+  runtime. `routes/api/v1/flex/run.stream.post.ts` calls it before orchestrating a run.
+- When DSL is supplied the helper reuses `parseDsl`; failures throw an `H3Error` with
+  `statusCode: 400`, `statusMessage: "Invalid condition expression."`, and a `data` payload
+  containing `{ code: 'invalid_condition_dsl', errors }`.
 - If only JSON-Logic is provided, the helper passes the payload through to preserve backwards
   compatibility.
+
+Both Nitro surfaces replace the incoming `trigger.condition` with a canonical object containing the
+compiled JSON-Logic, the submitted DSL string, the canonical rendering, any parser warnings, and the
+list of referenced variable paths. Admin tooling can therefore round-trip readable expressions while
+the orchestrator keeps executing deterministic JSON-Logic.
 
 ## Tests & fixtures
 

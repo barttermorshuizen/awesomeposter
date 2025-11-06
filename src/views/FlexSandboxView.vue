@@ -6,6 +6,11 @@ import {
   HitlOriginAgentEnum,
   HitlRequestPayloadSchema,
   HitlContractSummarySchema,
+  conditionVariableCatalog,
+  parseDsl,
+  toDsl,
+  type ConditionDslWarning,
+  type JsonLogicExpression,
   type TaskEnvelope,
   type CapabilityRecord,
   type FacetDirection,
@@ -22,7 +27,7 @@ import VueJsonPretty from 'vue-json-pretty'
 import 'vue-json-pretty/lib/styles.css'
 import type { FlexSandboxPlan, FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode } from '@/lib/flexSandboxTypes'
 import { appendHistoryEntry, extractPlanPayload } from '@/lib/flexSandboxPlan'
-import { isFlexSandboxEnabledClient } from '@/lib/featureFlags'
+import { isFlexDslPoliciesEnabledClient, isFlexSandboxEnabledClient } from '@/lib/featureFlags'
 import { useHitlStore } from '@/stores/hitl'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useFlexTasksStore } from '@/stores/flexTasks'
@@ -97,6 +102,20 @@ type FlexResumeSubmission = {
   note?: string | null
 }
 
+type RuntimePolicyDraft = {
+  index: number
+  id: string
+  triggerKind: string
+  selector: Record<string, unknown> | null
+  actionSummary: string
+  dsl: string
+  canonicalDsl: string | null
+  jsonLogic: JsonLogicExpression | null
+  warnings: ConditionDslWarning[]
+  variables: string[]
+  error: string | null
+}
+
 const FLEX_BASE_URL =
   import.meta.env.VITE_FLEX_AGENTS_BASE_URL ||
   import.meta.env.VITE_AGENTS_BASE_URL ||
@@ -106,6 +125,7 @@ const FLEX_AUTH =
   import.meta.env.VITE_AGENTS_AUTH_BEARER ||
   undefined
 const FLEX_SANDBOX_ENABLED = isFlexSandboxEnabledClient()
+const FLEX_DSL_POLICIES_ENABLED = isFlexDslPoliciesEnabledClient()
 
 const DEFAULT_ENVELOPE: TaskEnvelope = {
   objective: 'Draft objective goes here',
@@ -175,6 +195,10 @@ const rawEditorParseError = ref<string | null>(null)
 const rawEditorValidationErrors = ref<string[]>([])
 const builderInput = ref('')
 
+const runtimePolicies = ref<RuntimePolicyDraft[]>([])
+
+let suppressRuntimePolicySync = false
+
 const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRun.value.pendingRequestId))
 
 const conditionDslHelpSections = [
@@ -182,19 +206,20 @@ const conditionDslHelpSections = [
     title: 'Use quantifiers for arrays',
     description:
       'Apply `some` when at least one item should match and `all` when every item must satisfy the predicate.',
-    example: 'some(qaFindings.flagCodes, item == "plagiarism")',
+    example: 'some(facets.recommendationSet, item.severity == "critical")',
   },
   {
     title: 'Reference the current item with aliases',
     description:
       'Predicates run with the `item` alias by default. Override it with `as <alias>` when you need a clearer name.',
-    example: 'all(qaFindings.flagCodes as code, code != "deprecated")',
+    example: 'all(facets.recommendationSet as rec, rec.status != "declined")',
   },
   {
     title: 'Reach nested fields inside predicates',
     description:
       'Dot notation stays available inside quantifiers. Combine comparisons and logic just like top-level expressions.',
-    example: 'some(qaFindings.feedback as f, f.owner.email == "qa@awesomeposter.ai")',
+    example:
+      'some(facets.recommendationSet as rec, rec.recommendation == "Escalate policy")',
   },
 ] as const
 
@@ -223,7 +248,8 @@ const capabilityMap = computed(() => {
 })
 const facetSet = computed(() => {
   const set = new Set<string>()
-  metadata.value?.facets.forEach((facet) => set.add(facet.name))
+  const facets = metadata.value?.facets ?? []
+  facets.forEach((facet) => set.add(facet.name))
   return set
 })
 
@@ -552,6 +578,215 @@ function fallbackCopy(text: string) {
   document.body.removeChild(textarea)
 }
 
+function formatRuntimeAction(action: NonNullable<TaskEnvelope['policies']>['runtime'][number]['action']): string {
+  switch (action.type) {
+    case 'replan':
+      return 'Replan run'
+    case 'hitl':
+      return 'HITL gate'
+    case 'goto':
+      return `Goto ${action.next}`
+    case 'pause':
+      return 'Pause run'
+    case 'fail':
+      return 'Fail run'
+    case 'emit':
+      return `Emit ${action.event}`
+    default:
+      return action.type
+  }
+}
+
+function formatSelector(selector: Record<string, unknown> | null): string {
+  if (!selector) return 'Any node'
+  const entries = Object.entries(selector)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}: ${String(value)}`)
+  return entries.length ? entries.join(', ') : 'Any node'
+}
+
+function deriveConditionDraft(condition: unknown): {
+  dsl: string
+  canonicalDsl: string | null
+  jsonLogic: JsonLogicExpression | null
+  warnings: ConditionDslWarning[]
+  variables: string[]
+  error: string | null
+} {
+  if (typeof condition === 'object' && condition !== null && !Array.isArray(condition) && 'dsl' in (condition as Record<string, unknown>)) {
+    const record = condition as Record<string, unknown>
+    const dsl = typeof record.dsl === 'string' ? record.dsl : ''
+    const canonicalDsl = typeof record.canonicalDsl === 'string' ? record.canonicalDsl : dsl || null
+    const jsonLogic = (record.jsonLogic as JsonLogicExpression | undefined) ?? null
+    const warnings = Array.isArray(record.warnings) ? (record.warnings as ConditionDslWarning[]).slice() : []
+    const variables = Array.isArray(record.variables)
+      ? (record.variables as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+      : []
+    return { dsl, canonicalDsl, jsonLogic, warnings, variables, error: null }
+  }
+
+  if (typeof condition === 'object' && condition !== null && !Array.isArray(condition) && 'jsonLogic' in (condition as Record<string, unknown>)) {
+    const record = condition as Record<string, unknown>
+    const jsonLogic = (record.jsonLogic as JsonLogicExpression | undefined) ?? null
+    const canonicalDsl = typeof record.canonicalDsl === 'string' ? record.canonicalDsl : null
+    const dsl = typeof record.dsl === 'string' ? record.dsl : canonicalDsl ?? ''
+    const warnings = Array.isArray(record.warnings) ? (record.warnings as ConditionDslWarning[]).slice() : []
+    const variables = Array.isArray(record.variables)
+      ? (record.variables as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+      : []
+    return { dsl, canonicalDsl, jsonLogic, warnings, variables, error: null }
+  }
+
+  const jsonLogic = condition as JsonLogicExpression
+  const render = toDsl(jsonLogic, conditionVariableCatalog)
+  if (render.ok) {
+    return {
+      dsl: render.expression,
+      canonicalDsl: render.expression,
+      jsonLogic,
+      warnings: [],
+      variables: [],
+      error: null
+    }
+  }
+
+  return {
+    dsl: '',
+    canonicalDsl: null,
+    jsonLogic,
+    warnings: [],
+    variables: [],
+    error: render.errors.map((issue) => issue.message).join('; ') || 'Unable to convert JSON-Logic into DSL.'
+  }
+}
+
+function mapRuntimePolicyToDraft(policy: NonNullable<TaskEnvelope['policies']>['runtime'][number], index: number): RuntimePolicyDraft {
+  const trigger = policy.trigger as Record<string, unknown>
+  const selector = typeof trigger.selector === 'object' && trigger.selector !== null
+    ? JSON.parse(JSON.stringify(trigger.selector))
+    : null
+  const draft: RuntimePolicyDraft = {
+    index,
+    id: policy.id,
+    triggerKind: policy.trigger.kind,
+    selector,
+    actionSummary: formatRuntimeAction(policy.action),
+    dsl: '',
+    canonicalDsl: null,
+    jsonLogic: null,
+    warnings: [],
+    variables: [],
+    error: null
+  }
+
+  const condition = trigger.condition
+  if (condition === undefined || condition === null) {
+    return draft
+  }
+
+  const derived = deriveConditionDraft(condition)
+  draft.dsl = derived.dsl
+  draft.canonicalDsl = derived.canonicalDsl
+  draft.jsonLogic = derived.jsonLogic
+  draft.warnings = derived.warnings
+  draft.variables = derived.variables
+  draft.error = derived.error
+
+  if (!draft.jsonLogic && draft.dsl.trim().length > 0) {
+    recomputeRuntimePolicyDraft(draft)
+  }
+
+  return draft
+}
+
+function recomputeRuntimePolicyDraft(draft: RuntimePolicyDraft): void {
+  const expression = draft.dsl.trim()
+  if (!expression) {
+    draft.error = 'Expression is empty.'
+    draft.canonicalDsl = null
+    draft.jsonLogic = null
+    draft.warnings = []
+    draft.variables = []
+    return
+  }
+
+  const result = parseDsl(expression, conditionVariableCatalog)
+  if (!result.ok) {
+    draft.error = result.errors.map((issue) => issue.message).join('; ')
+    draft.canonicalDsl = null
+    draft.jsonLogic = null
+    draft.warnings = []
+    draft.variables = []
+    return
+  }
+
+  draft.error = null
+  draft.canonicalDsl = result.canonical
+  draft.jsonLogic = result.jsonLogic
+  draft.warnings = [...result.warnings]
+  draft.variables = result.variables.map((entry) => entry.path)
+}
+
+function syncRuntimePoliciesFromEnvelope(envelope: TaskEnvelope) {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const runtime = envelope.policies?.runtime ?? []
+  runtimePolicies.value = runtime.map((policy, index) => mapRuntimePolicyToDraft(policy, index))
+}
+
+function handleRuntimePolicyDslInput(index: number, value: string) {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const draft = runtimePolicies.value[index]
+  if (!draft) return
+  draft.dsl = value
+  recomputeRuntimePolicyDraft(draft)
+  if (!draft.error && draft.jsonLogic) {
+    applyRuntimePolicyDraftsToEnvelope()
+  }
+}
+
+function applyRuntimePolicyDraftsToEnvelope() {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const envelope = resolveCurrentEnvelope()
+  if (!envelope) return
+
+  const clone = JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
+  const runtime = clone.policies?.runtime
+  if (!runtime) return
+
+  runtime.forEach((policy, index) => {
+    const draft = runtimePolicies.value[index]
+    if (!draft || !draft.jsonLogic || draft.error) return
+    const trimmedDsl = draft.dsl.trim()
+    const canonical: Record<string, unknown> = {
+      jsonLogic: draft.jsonLogic
+    }
+    if (trimmedDsl.length > 0) {
+      canonical.dsl = trimmedDsl
+    }
+    const canonicalDsl = draft.canonicalDsl ?? (trimmedDsl.length > 0 ? trimmedDsl : null)
+    if (canonicalDsl) {
+      canonical.canonicalDsl = canonicalDsl
+    }
+    if (draft.warnings.length > 0) {
+      canonical.warnings = draft.warnings
+    }
+    if (draft.variables.length > 0) {
+      canonical.variables = draft.variables
+    }
+    policy.trigger = {
+      ...policy.trigger,
+      condition: canonical
+    } as typeof policy.trigger
+  })
+
+  suppressRuntimePolicySync = true
+  parsedEnvelope.value = clone
+  draftText.value = JSON.stringify(clone, null, 2)
+  nextTick(() => {
+    suppressRuntimePolicySync = false
+  })
+}
+
 function resolveCurrentEnvelope(): TaskEnvelope | null {
   if (parsedEnvelope.value) {
     return parsedEnvelope.value
@@ -660,10 +895,16 @@ function updateValidation() {
       const path = issue.path?.join('.') ?? ''
       return path ? `${path}: ${issue.message}` : issue.message
     })
+    if (FLEX_DSL_POLICIES_ENABLED && !suppressRuntimePolicySync) {
+      runtimePolicies.value = []
+    }
     return
   }
 
   parsedEnvelope.value = parsed.data
+  if (FLEX_DSL_POLICIES_ENABLED && !suppressRuntimePolicySync) {
+    syncRuntimePoliciesFromEnvelope(parsed.data)
+  }
   const results = runDomainValidation(parsed.data)
   validationIssues.value = results.errors
   validationWarnings.value = results.warnings
@@ -2052,6 +2293,84 @@ watch(
                     // Provide inputs via the conversational builder or raw JSON editor to render an envelope preview.
                   </div>
                 </div>
+                <div
+                  v-if="FLEX_DSL_POLICIES_ENABLED"
+                  class="runtime-policies mt-6"
+                >
+                  <div class="d-flex align-center ga-2 mb-2">
+                    <span class="text-subtitle-2">Runtime Policies</span>
+                    <v-chip size="x-small" color="primary" variant="tonal">
+                      {{ runtimePolicies.length }}
+                    </v-chip>
+                  </div>
+                  <div
+                    v-if="!runtimePolicies.length"
+                    class="text-body-2 text-medium-emphasis"
+                  >
+                    No runtime policies defined. Add entries via the raw JSON editor or conversational builder.
+                  </div>
+                  <div
+                    v-for="(policyDraft, index) in runtimePolicies"
+                    :key="policyDraft.id || `runtime-${index}`"
+                    class="runtime-policy-editor"
+                  >
+                    <div class="d-flex flex-column">
+                      <div class="text-body-2 font-weight-medium">
+                        {{ policyDraft.id || `Policy ${index + 1}` }} · {{ policyDraft.triggerKind }}
+                      </div>
+                      <div class="text-caption text-medium-emphasis">
+                        {{ policyDraft.actionSummary }}
+                      </div>
+                      <div v-if="policyDraft.selector" class="text-caption text-medium-emphasis mt-1">
+                        Selector: {{ formatSelector(policyDraft.selector) }}
+                      </div>
+                    </div>
+                    <v-textarea
+                      :model-value="policyDraft.dsl"
+                      class="font-mono mt-2"
+                      label="Condition DSL"
+                      rows="2"
+                      auto-grow
+                      variant="outlined"
+                      @update:model-value="(value) => handleRuntimePolicyDslInput(index, value)"
+                    />
+                    <v-alert
+                      v-if="policyDraft.error"
+                      type="error"
+                      variant="tonal"
+                      border="start"
+                      class="mt-2"
+                    >
+                      {{ policyDraft.error }}
+                    </v-alert>
+                    <v-alert
+                      v-for="warning in policyDraft.warnings"
+                      :key="`${policyDraft.id}-warning-${warning.code}-${warning.message}`"
+                      type="warning"
+                      variant="tonal"
+                      border="start"
+                      class="mt-2"
+                    >
+                      {{ warning.message }}
+                    </v-alert>
+                    <div v-if="policyDraft.variables.length" class="text-caption text-medium-emphasis mt-2">
+                      Variables: <code>{{ policyDraft.variables.join(', ') }}</code>
+                    </div>
+                    <div class="runtime-policy-json mt-3">
+                      <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
+                      <VueJsonPretty
+                        v-if="policyDraft.jsonLogic"
+                        :data="policyDraft.jsonLogic"
+                        :show-length="false"
+                        :deep="2"
+                        class="font-mono runtime-policy-json__tree"
+                      />
+                      <div v-else class="text-body-2 text-disabled">
+                        JSON preview appears once the DSL expression is valid.
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </v-card-text>
               <v-divider />
               <v-card-actions>
@@ -2341,6 +2660,28 @@ watch(
   padding: 24px;
   color: rgba(255, 255, 255, 0.7);
   font-size: 13px;
+}
+.runtime-policies {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 16px;
+}
+.runtime-policy-editor {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 12px;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+.runtime-policy-editor + .runtime-policy-editor {
+  margin-top: 16px;
+}
+.runtime-policy-json__tree {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+  max-height: 240px;
+  overflow: auto;
 }
 .conversation-card {
   display: flex;

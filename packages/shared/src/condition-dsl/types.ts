@@ -27,6 +27,14 @@ export interface ConditionVariableDefinition {
    */
   path: string
   /**
+   * Optional shorthand path supported in DSL expressions.
+   */
+  dslPath?: string
+  /**
+   * Alternative shorthand aliases accepted in DSL expressions.
+   */
+  aliases?: readonly string[]
+  /**
    * Human-readable label surfaced in UIs.
    */
   label: string

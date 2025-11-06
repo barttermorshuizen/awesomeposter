@@ -13,6 +13,20 @@ export function isFlexSandboxEnabledClient(): boolean {
   return readBooleanFlag(raw)
 }
 
+export function isFlexDslPoliciesEnabledClient(): boolean {
+  const envFlag =
+    import.meta.env.VITE_ENABLE_FLEX_DSL_POLICIES ??
+    import.meta.env.ENABLE_FLEX_DSL_POLICIES ??
+    import.meta.env.VITE_FLEX_DSL_POLICIES
+
+  const storedFlag =
+    typeof window !== 'undefined'
+      ? window.localStorage.getItem('feature:flex.dslPolicies')
+      : null
+
+  return readBooleanFlag(envFlag ?? storedFlag)
+}
+
 export function isConditionPlaygroundEnabledClient(): boolean {
   if (!import.meta.env.DEV) return false
 
