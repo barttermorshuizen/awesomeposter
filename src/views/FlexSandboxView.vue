@@ -116,6 +116,18 @@ type RuntimePolicyDraft = {
   error: string | null
 }
 
+type GoalConditionDraft = {
+  index: number
+  facet: string
+  path: string
+  dsl: string
+  canonicalDsl: string | null
+  jsonLogic: JsonLogicExpression | null
+  warnings: ConditionDslWarning[]
+  variables: string[]
+  error: string | null
+}
+
 const FLEX_BASE_URL =
   import.meta.env.VITE_FLEX_AGENTS_BASE_URL ||
   import.meta.env.VITE_AGENTS_BASE_URL ||
@@ -196,8 +208,10 @@ const rawEditorValidationErrors = ref<string[]>([])
 const builderInput = ref('')
 
 const runtimePolicies = ref<RuntimePolicyDraft[]>([])
+const goalConditionDrafts = ref<GoalConditionDraft[]>([])
 
 let suppressRuntimePolicySync = false
+let suppressGoalConditionSync = false
 
 const showHitlPanel = computed(() => hasActiveRequest.value || Boolean(pendingRun.value.pendingRequestId))
 
@@ -733,6 +747,179 @@ function syncRuntimePoliciesFromEnvelope(envelope: TaskEnvelope) {
   runtimePolicies.value = runtime.map((policy, index) => mapRuntimePolicyToDraft(policy, index))
 }
 
+function mapGoalConditionToDraft(entry: NonNullable<TaskEnvelope['goal_condition']>[number], index: number): GoalConditionDraft {
+  const draft: GoalConditionDraft = {
+    index,
+    facet: entry.facet ?? '',
+    path: entry.path ?? '/',
+    dsl: '',
+    canonicalDsl: null,
+    jsonLogic: null,
+    warnings: [],
+    variables: [],
+    error: null
+  }
+
+  const derived = deriveConditionDraft(entry.condition)
+  draft.dsl = derived.dsl
+  draft.canonicalDsl = derived.canonicalDsl
+  draft.jsonLogic = derived.jsonLogic
+  draft.warnings = derived.warnings
+  draft.variables = derived.variables
+  draft.error = derived.error
+
+  if (!draft.jsonLogic && draft.dsl.trim().length > 0) {
+    recomputeGoalConditionDraft(draft)
+  }
+
+  return draft
+}
+
+function recomputeGoalConditionDraft(draft: GoalConditionDraft): void {
+  const expression = draft.dsl.trim()
+  if (!expression) {
+    draft.error = 'Expression is empty.'
+    draft.canonicalDsl = null
+    draft.jsonLogic = null
+    draft.warnings = []
+    draft.variables = []
+    return
+  }
+
+  const result = parseDsl(expression, conditionVariableCatalog)
+  if (!result.ok) {
+    draft.error = result.errors.map((issue) => issue.message).join('; ')
+    draft.canonicalDsl = null
+    draft.jsonLogic = null
+    draft.warnings = []
+    draft.variables = []
+    return
+  }
+
+  draft.error = null
+  draft.canonicalDsl = result.canonical
+  draft.jsonLogic = result.jsonLogic
+  draft.warnings = [...result.warnings]
+  draft.variables = result.variables.map((entry) => entry.path)
+}
+
+function normalizeGoalConditionIndexes() {
+  goalConditionDrafts.value = goalConditionDrafts.value.map((draft, idx) => ({
+    ...draft,
+    index: idx
+  }))
+}
+
+function syncGoalConditionsFromEnvelope(envelope: TaskEnvelope) {
+  if (!FLEX_DSL_POLICIES_ENABLED || suppressGoalConditionSync) return
+  const goalConditions = envelope.goal_condition ?? []
+  goalConditionDrafts.value = goalConditions.map((condition, index) => mapGoalConditionToDraft(condition, index))
+  normalizeGoalConditionIndexes()
+}
+
+function handleGoalConditionDslInput(index: number, value: string) {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const draft = goalConditionDrafts.value[index]
+  if (!draft) return
+  draft.dsl = value
+  recomputeGoalConditionDraft(draft)
+  applyGoalConditionDraftsToEnvelope()
+}
+
+function handleGoalConditionFieldInput(index: number, field: 'facet' | 'path', value: string) {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const draft = goalConditionDrafts.value[index]
+  if (!draft) return
+  draft[field] = value
+  applyGoalConditionDraftsToEnvelope()
+}
+
+function serializeGoalConditionDraft(draft: GoalConditionDraft): NonNullable<TaskEnvelope['goal_condition']>[number] | null {
+  const facet = draft.facet.trim()
+  if (!facet) return null
+  const path = draft.path.trim().length > 0 ? draft.path.trim() : '/'
+
+  const trimmedDsl = draft.dsl.trim()
+  if (!trimmedDsl) return null
+
+  const conditionPayload: Record<string, unknown> = {
+    dsl: trimmedDsl
+  }
+
+  if (!draft.error && draft.jsonLogic) {
+    conditionPayload.jsonLogic = draft.jsonLogic
+  }
+  if (draft.canonicalDsl && draft.canonicalDsl !== trimmedDsl) {
+    conditionPayload.canonicalDsl = draft.canonicalDsl
+  }
+  if (draft.warnings.length > 0) {
+    conditionPayload.warnings = draft.warnings
+  }
+  if (draft.variables.length > 0) {
+    conditionPayload.variables = draft.variables
+  }
+
+  return {
+    facet,
+    path,
+    condition: conditionPayload as NonNullable<TaskEnvelope['goal_condition']>[number]['condition']
+  }
+}
+
+function applyGoalConditionDraftsToEnvelope() {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  const envelope = resolveCurrentEnvelope()
+  if (!envelope) return
+
+  const clone = JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
+  const serialized = goalConditionDrafts.value
+    .map((draft) => serializeGoalConditionDraft(draft))
+    .filter((entry): entry is NonNullable<TaskEnvelope['goal_condition']>[number] => entry !== null)
+
+  suppressGoalConditionSync = true
+  if (serialized.length > 0) {
+    clone.goal_condition = serialized
+    parsedEnvelope.value = {
+      ...clone,
+      goal_condition: serialized
+    }
+  } else {
+    const { goal_condition: _removed, ...rest } = clone as TaskEnvelope & { goal_condition?: typeof serialized }
+    parsedEnvelope.value = rest
+    delete clone.goal_condition
+  }
+  draftText.value = JSON.stringify(parsedEnvelope.value, null, 2)
+  nextTick(() => {
+    suppressGoalConditionSync = false
+  })
+}
+
+function addGoalConditionDraft() {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  goalConditionDrafts.value = [
+    ...goalConditionDrafts.value,
+    {
+      index: goalConditionDrafts.value.length,
+      facet: '',
+      path: '/',
+      dsl: '',
+      canonicalDsl: null,
+      jsonLogic: null,
+      warnings: [],
+      variables: [],
+      error: null
+    }
+  ]
+  normalizeGoalConditionIndexes()
+}
+
+function removeGoalConditionDraft(index: number) {
+  if (!FLEX_DSL_POLICIES_ENABLED) return
+  goalConditionDrafts.value.splice(index, 1)
+  normalizeGoalConditionIndexes()
+  applyGoalConditionDraftsToEnvelope()
+}
+
 function handleRuntimePolicyDslInput(index: number, value: string) {
   if (!FLEX_DSL_POLICIES_ENABLED) return
   const draft = runtimePolicies.value[index]
@@ -898,12 +1085,18 @@ function updateValidation() {
     if (FLEX_DSL_POLICIES_ENABLED && !suppressRuntimePolicySync) {
       runtimePolicies.value = []
     }
+    if (FLEX_DSL_POLICIES_ENABLED && !suppressGoalConditionSync) {
+      goalConditionDrafts.value = []
+    }
     return
   }
 
   parsedEnvelope.value = parsed.data
   if (FLEX_DSL_POLICIES_ENABLED && !suppressRuntimePolicySync) {
     syncRuntimePoliciesFromEnvelope(parsed.data)
+  }
+  if (FLEX_DSL_POLICIES_ENABLED) {
+    syncGoalConditionsFromEnvelope(parsed.data)
   }
   const results = runDomainValidation(parsed.data)
   validationIssues.value = results.errors
@@ -2356,26 +2549,135 @@ watch(
                     <div v-if="policyDraft.variables.length" class="text-caption text-medium-emphasis mt-2">
                       Variables: <code>{{ policyDraft.variables.join(', ') }}</code>
                     </div>
-                    <div class="runtime-policy-json mt-3">
-                      <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
-                      <VueJsonPretty
-                        v-if="policyDraft.jsonLogic"
-                        :data="policyDraft.jsonLogic"
-                        :show-length="false"
-                        :deep="2"
-                        class="font-mono runtime-policy-json__tree"
-                      />
-                      <div v-else class="text-body-2 text-disabled">
-                        JSON preview appears once the DSL expression is valid.
-                      </div>
-                    </div>
+                <div class="runtime-policy-json mt-3">
+                  <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
+                  <VueJsonPretty
+                    v-if="policyDraft.jsonLogic"
+                    :data="policyDraft.jsonLogic"
+                    :show-length="false"
+                    :deep="2"
+                    class="font-mono runtime-policy-json__tree"
+                  />
+                  <div v-else class="text-body-2 text-disabled">
+                    JSON preview appears once the DSL expression is valid.
                   </div>
                 </div>
-              </v-card-text>
-              <v-divider />
-              <v-card-actions>
-                <div class="text-caption text-medium-emphasis">
-                  Run controls now live in the template actions menu.
+              </div>
+            </div>
+            <div
+              v-if="FLEX_DSL_POLICIES_ENABLED"
+              class="goal-conditions mt-6"
+            >
+              <div class="d-flex align-center ga-2 mb-2">
+                <span class="text-subtitle-2">Goal Conditions</span>
+                <v-chip size="x-small" color="primary" variant="tonal">
+                  {{ goalConditionDrafts.length }}
+                </v-chip>
+                <v-spacer />
+                <v-btn
+                  size="small"
+                  variant="text"
+                  prepend-icon="mdi-plus"
+                  @click="addGoalConditionDraft"
+                >
+                  Add condition
+                </v-btn>
+              </div>
+              <div
+                v-if="!goalConditionDrafts.length"
+                class="text-body-2 text-medium-emphasis"
+              >
+                No goal conditions defined. Add entries to gate completion on facet predicates.
+              </div>
+              <div
+                v-for="(conditionDraft, index) in goalConditionDrafts"
+                :key="`goal-condition-${conditionDraft.index}`"
+                class="goal-condition-editor"
+              >
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="text-subtitle-2">Condition {{ index + 1 }}</span>
+                  <v-btn
+                    icon="mdi-delete"
+                    variant="text"
+                    size="small"
+                    @click="removeGoalConditionDraft(index)"
+                  >
+                    <v-icon icon="mdi-delete" />
+                  </v-btn>
+                </div>
+                <v-row class="ga-2">
+                  <v-col cols="12" md="6">
+                    <v-text-field
+                      :model-value="conditionDraft.facet"
+                      label="Facet"
+                      variant="outlined"
+                      density="comfortable"
+                      @update:model-value="(value) => handleGoalConditionFieldInput(index, 'facet', value)"
+                    />
+                  </v-col>
+                  <v-col cols="12" md="6">
+                    <v-text-field
+                      :model-value="conditionDraft.path"
+                      label="Path"
+                      variant="outlined"
+                      density="comfortable"
+                      hint="JSON Pointer or dotted path inside the facet value."
+                      persistent-hint
+                      @update:model-value="(value) => handleGoalConditionFieldInput(index, 'path', value)"
+                    />
+                  </v-col>
+                </v-row>
+                <v-textarea
+                  class="font-mono mt-2"
+                  :model-value="conditionDraft.dsl"
+                  label="Condition DSL"
+                  rows="2"
+                  auto-grow
+                  variant="outlined"
+                  @update:model-value="(value) => handleGoalConditionDslInput(index, value)"
+                />
+                <v-alert
+                  v-if="conditionDraft.error"
+                  type="error"
+                  variant="tonal"
+                  border="start"
+                  class="mt-2"
+                >
+                  {{ conditionDraft.error }}
+                </v-alert>
+                <v-alert
+                  v-for="warning in conditionDraft.warnings"
+                  :key="`goal-warning-${conditionDraft.index}-${warning.code}-${warning.message}`"
+                  type="warning"
+                  variant="tonal"
+                  border="start"
+                  class="mt-2"
+                >
+                  {{ warning.message }}
+                </v-alert>
+                <div v-if="conditionDraft.variables.length" class="text-caption text-medium-emphasis mt-2">
+                  Variables: <code>{{ conditionDraft.variables.join(', ') }}</code>
+                </div>
+                <div class="goal-condition-json mt-3">
+                  <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
+                  <VueJsonPretty
+                    v-if="conditionDraft.jsonLogic"
+                    :data="conditionDraft.jsonLogic"
+                    :show-length="false"
+                    :deep="2"
+                    class="font-mono goal-condition-json__tree"
+                  />
+                  <div v-else class="text-body-2 text-disabled">
+                    JSON preview appears once the DSL expression is valid.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </v-card-text>
+          <v-divider />
+          <v-card-actions>
+            <div class="text-caption text-medium-emphasis">
+              Run controls now live in the template actions menu.
                 </div>
                 <v-spacer />
                 <v-btn variant="text" @click="closeEnvelopeEditor">Close</v-btn>
@@ -2676,6 +2978,28 @@ watch(
   margin-top: 16px;
 }
 .runtime-policy-json__tree {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+  max-height: 240px;
+  overflow: auto;
+}
+.goal-conditions {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 16px;
+}
+.goal-condition-editor {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 12px;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+.goal-condition-editor + .goal-condition-editor {
+  margin-top: 16px;
+}
+.goal-condition-json__tree {
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 12px;

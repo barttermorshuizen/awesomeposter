@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import vuetify from '@/plugins/vuetify'
 import { useFlexEnvelopeBuilderStore } from '@/stores/flexEnvelopeBuilder'
+import type { TaskEnvelope } from '@awesomeposter/shared'
 
 async function mountSandboxView(options: { dslEnabled?: boolean } = {}) {
   vi.resetModules()
@@ -126,6 +127,59 @@ describe('FlexSandboxView', () => {
     expect(condition.dsl).toBe('facets.planKnobs.hookIntensity < 0.5')
     expect(condition.jsonLogic).toEqual({
       '<': [{ var: 'metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity' }, 0.5]
+    })
+  })
+
+  it('updates goal_condition entries when DSL editor is enabled', async () => {
+    const { wrapper } = await mountSandboxView({ dslEnabled: true })
+    const vm = wrapper.vm as unknown as {
+      draftText: string
+      updateValidation: () => void
+      handleGoalConditionDslInput: (index: number, value: string) => void
+    }
+
+    vm.draftText = JSON.stringify(
+      {
+        objective: 'Goal condition test',
+        inputs: { planKnobs: { formatType: 'text', variantCount: 1 } },
+        goal_condition: [
+          {
+            facet: 'post_copy',
+            path: '/',
+            condition: {
+              dsl: 'facets.post_copy != ""'
+            }
+          }
+        ],
+        policies: {
+          planner: { directives: { disallowStages: [] } },
+          runtime: []
+        },
+        specialInstructions: [],
+        outputContract: { mode: 'json_schema', schema: { type: 'object', additionalProperties: true } }
+      },
+      null,
+      2
+    )
+
+    vm.updateValidation()
+    await flushPromises()
+    await nextTick()
+
+    expect((wrapper.vm as any).goalConditionDrafts).toHaveLength(1)
+
+    vm.handleGoalConditionDslInput(0, 'facets.post_copy == "ready"')
+    await flushPromises()
+    await nextTick()
+    vm.updateValidation()
+    await flushPromises()
+    await nextTick()
+
+    const parsedEnvelope = (wrapper.vm as any).parsedEnvelope as TaskEnvelope
+    expect(parsedEnvelope.goal_condition).toBeDefined()
+    expect(parsedEnvelope.goal_condition?.[0]?.condition.dsl).toBe('facets.post_copy == "ready"')
+    expect(parsedEnvelope.goal_condition?.[0]?.condition.jsonLogic).toEqual({
+      '==': [{ var: 'metadata.runContextSnapshot.facets.post_copy.value' }, 'ready']
     })
   })
 })

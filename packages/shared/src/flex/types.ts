@@ -1,5 +1,7 @@
 import { z } from 'zod'
-import { TaskPoliciesSchema } from './policies.js'
+import { RuntimeConditionDslSchema, TaskPoliciesSchema } from './policies.js'
+
+import type { RuntimePolicyConditionDsl } from './policies.js'
 
 /**
  * Canonical flex Orchestrator contracts shared between the planner,
@@ -236,6 +238,29 @@ export const TaskMetadataSchema = z.object({
 export type TaskMetadata = z.infer<typeof TaskMetadataSchema>
 
 /**
+ * Declarative predicate describing the desired state of a specific facet.
+ *
+ * Each entry targets a facet by name, drills into its payload via `path`,
+ * and wraps a Condition DSL payload that downstream services will evaluate.
+ * Arrays of these conditions combine with AND semantics: every condition must
+ * pass for the goal to be considered satisfied.
+ */
+export const FacetConditionSchema = z
+  .object({
+    facet: z.string().min(1),
+    path: z.string().min(1),
+    condition: RuntimeConditionDslSchema
+  })
+  .strict()
+export type FacetCondition = z.infer<typeof FacetConditionSchema>
+
+/**
+ * Helper type for consumers who only require direct access to the DSL payload.
+ * Exposed to avoid re-importing the policies module in downstream packages.
+ */
+export type FacetConditionDsl = RuntimePolicyConditionDsl
+
+/**
  * Canonical wrapper for planner requests including objectives and policies.
  */
 export const TaskEnvelopeSchema = z.object({
@@ -245,6 +270,11 @@ export const TaskEnvelopeSchema = z.object({
   policies: TaskPoliciesSchema.optional(),
   specialInstructions: z.array(z.string()).optional(),
   metadata: TaskMetadataSchema.optional(),
+  /**
+   * Optional list of facet-specific predicates that must all evaluate truthy
+   * before the orchestrator marks the task objective complete.
+   */
+  goal_condition: z.array(FacetConditionSchema).min(1).optional(),
   outputContract: OutputContractSchema
 })
 export type TaskEnvelope = z.infer<typeof TaskEnvelopeSchema>

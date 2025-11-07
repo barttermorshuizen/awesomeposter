@@ -27,6 +27,8 @@ Each frame carries `runId` (and `nodeId` for node-scoped events) at the top leve
 
 **Resume after HITL/Flex Task Submission:** Once the operator submits via `/api/v1/flex/run.resume`, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`. Declines go through `/api/v1/flex/tasks/:taskId/decline`, triggering policy-defined fail paths without attempting resume.
 
+**Facet goal predicates.** Envelopes may include an optional `goal_condition` array. Each entry names the facet being inspected, points to a path within that facet payload, and supplies the shared Condition DSL envelope. The runtime ANDs the entries together—callers can require multiple facets to satisfy their predicates before the run is marked complete while still keeping the planner contracts immutable.
+
 Example `curl` invocation:
 
 ```bash
@@ -62,6 +64,34 @@ Sample envelope payload (`envelope.json`):
     "brandVoice": "inspiring",
     "requiresHitlApproval": false
   },
+  "goal_condition": [
+    {
+      "facet": "post_copy",
+      "path": "/variants[0]",
+      "condition": {
+        "dsl": "quality_score >= 0.8",
+        "jsonLogic": {
+          ">=": [
+            { "var": "quality_score" },
+            0.8
+          ]
+        }
+      }
+    },
+    {
+      "facet": "post_visual",
+      "path": "/asset/status",
+      "condition": {
+        "dsl": "status == \"approved\"",
+        "jsonLogic": {
+          "==": [
+            { "var": "status" },
+            "approved"
+          ]
+        }
+      }
+    }
+  ],
   "specialInstructions": [
     "Variant A should highlight team culture.",
     "Variant B should highlight career growth opportunities."
@@ -162,6 +192,21 @@ Use this endpoint during incident response to validate operator guidance, inspec
     "variantCount": 2,
     "hitlRequiredFor": ["final_publish"]
   },
+  "goal_condition": [
+    {
+      "facet": "handoff_summary",
+      "path": "/status",
+      "condition": {
+        "dsl": "status == \"ready\"",
+        "jsonLogic": {
+          "==": [
+            { "var": "status" },
+            "ready"
+          ]
+        }
+      }
+    }
+  ],
   "specialInstructions": [
     "Highlight the new real-time audit trail feature.",
     "Avoid claims about replacing human reviewers."

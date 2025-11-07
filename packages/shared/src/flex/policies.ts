@@ -19,7 +19,7 @@ const ConditionDslWarningSchema = z.object({
   range: ConditionRangeSchema.optional()
 })
 
-const RuntimeConditionDslSchema = z.object({
+export const RuntimeConditionDslSchema = z.object({
   dsl: z.string().min(1),
   jsonLogic: LooseRecordSchema.optional(),
   canonicalDsl: z.string().min(1).optional(),

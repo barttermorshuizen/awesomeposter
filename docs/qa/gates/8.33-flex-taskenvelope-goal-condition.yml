@@ -1,0 +1,40 @@
+schema: 1
+story: '8.33'
+story_title: 'Flex TaskEnvelope Facet Condition Schema'
+gate: PASS
+status_reason: 'Schema, docs, UI builder, and Vitest coverage align; no blocking issues detected.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-07T06:08:34Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 100
+expires: '2025-11-21T00:00:00Z'
+
+evidence:
+  tests_reviewed: 2
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Pure schema/doc additions; no new execution paths.'
+  performance:
+    status: PASS
+    notes: 'Validation remains local to shared module; no additional runtime loops.'
+  reliability:
+    status: PASS
+    notes: 'Strict Zod schema + Vitest cases catch malformed goal_condition payloads.'
+  maintainability:
+    status: PASS
+    notes: 'Shared FacetCondition export keeps planner/runtime/UI contracts in sync.'
+
+recommendations:
+  immediate: []
+  future: []

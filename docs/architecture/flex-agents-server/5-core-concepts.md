@@ -3,6 +3,10 @@ All canonical types and Zod validators for the concepts below are exported from 
 ## 5.1 TaskEnvelope
 Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, `goal_condition` and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
 
+**Facet goal predicates.** `goal_condition` is an optional array of `FacetCondition` objects exported from `@awesomeposter/shared/flex`. Each condition targets a facet (for example `post_copy`), drills into its payload via a JSON-pointer-style `path`, and wraps a Condition DSL envelope (`{ dsl, canonicalDsl?, jsonLogic?, warnings?, variables? }`). The planner and runtime treat the array with AND semantics: every listed facet predicate must evaluate truthy before the run is considered complete. This keeps completion logic explicit, reusable for capability pre/post guards, and aligned with the shared Condition DSL tooling described in [Condition DSL Parser & Validation](../condition-dsl.md#condition-dsl-parser--validation).
+
+**Facet state references.** Callers should reference paths that resolve within the facet snapshot published by the capability (for example `/value[0].status`). The orchestrator forwards the condition payloads unchanged so downstream services can evaluate them beside facet catalogs and capability provenance.
+
 ## 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
 

@@ -1,6 +1,123 @@
 # Flex Agents Server — Architecture Specification
 
-_Last updated: 2025-03-02_
+_Last updated: 2025-11-06_
+
+
+## Table of Contents
+
+- [1. Scope & Goals](#1-scope-goals)
+- [2. Non-Goals](#2-non-goals)
+- [3. Key Architectural Decisions (Proposed)](#3-key-architectural-decisions-proposed)
+- [4. High-Level Architecture](#4-high-level-architecture)
+  - [Planner Lifecycle Events](#planner-lifecycle-events)
+- [5. Core Concepts](#5-core-concepts)
+  - [5.1 TaskEnvelope](#51-taskenvelope)
+  - [5.2 OutputContract](#52-outputcontract)
+  - [5.3 TaskPolicies](#53-taskpolicies)
+    - [PlannerPolicy](#plannerpolicy)
+    - [RuntimePolicy](#runtimepolicy)
+      - [Runtime Condition Evaluation](#runtime-condition-evaluation)
+  - [5.4 PlanGraph](#54-plangraph)
+  - [5.5 ContextBundle](#55-contextbundle)
+  - [5.6 AgentCapability](#56-agentcapability)
+    - [Facet Definition](#facet-definition)
+    - [Facet-Aligned Capabilities](#facet-aligned-capabilities)
+  - [5.6.1 Capability Registration](#561-capability-registration)
+  - [5.6.2 Registration Payload](#562-registration-payload)
+  - [5.7 Facet-Based Plan Assembly](#57-facet-based-plan-assembly)
+    - [Planning Steps](#planning-steps)
+    - [Planner Prompt Blueprint (v2)](#planner-prompt-blueprint-v2)
+    - [Story 8.8 Dynamic Assembly Details](#story-88-dynamic-assembly-details)
+    - [Execution Runtime](#execution-runtime)
+  - [5.8 Planner vs Orchestrator: Hybrid Collaboration](#58-planner-vs-orchestrator-hybrid-collaboration)
+    - [Roles & Responsibilities](#roles-responsibilities)
+    - [Interaction Sequence](#interaction-sequence)
+    - [Collaboration Patterns](#collaboration-patterns)
+    - [Derived Capability Handling](#derived-capability-handling)
+    - [Failure Modes & Recovery](#failure-modes-recovery)
+    - [Why the Hybrid Model Matters](#why-the-hybrid-model-matters)
+    - [Planner ↔ Orchestrator Sequence (Mermaid)](#planner-orchestrator-sequence-mermaid)
+- [5.9 Output Contracts, Planner Validation, and Policy Semantics](#59-output-contracts-planner-validation-and-policy-semantics)
+  - [5.9.1 OutputContract Specification](#591-outputcontract-specification)
+  - [5.9.2 Planner Validation and Feedback Loop](#592-planner-validation-and-feedback-loop)
+  - [5.9.3 Validator Orchestration, Diagnostics, and Scoring](#593-validator-orchestration-diagnostics-and-scoring)
+  - [5.9.4 Feedback Payloads and Telemetry](#594-feedback-payloads-and-telemetry)
+  - [5.9.5 Constraints vs. Policies Separation](#595-constraints-vs-policies-separation)
+  - [5.9.6 Role Separation and Collaboration](#596-role-separation-and-collaboration)
+  - [5.9.7 Policies as Orthogonal Guardrails](#597-policies-as-orthogonal-guardrails)
+  - [5.9.8 Conceptual Flow Summary](#598-conceptual-flow-summary)
+- [5.10 Policy Simplification (Remove Flow-Control Actions)](#510-policy-simplification-remove-flow-control-actions)
+  - [Background](#background)
+  - [Deprecated Elements](#deprecated-elements)
+  - [Updated RuntimePolicy Action Union](#updated-runtimepolicy-action-union)
+  - [Policy Purpose (Post-cleanup)](#policy-purpose-post-cleanup)
+  - [Execution Engine Behavior Change](#execution-engine-behavior-change)
+  - [Rationale](#rationale)
+- [5.11 Reference capability registry](#511-reference-capability-registry)
+- [5.12 Reference facet catalog](#512-reference-facet-catalog)
+  - [Facet post_context](#facet-post_context)
+  - [Facet creative_brief](#facet-creative_brief)
+  - [Facet strategic_rationale](#facet-strategic_rationale)
+  - [Facet handoff_summary](#facet-handoff_summary)
+  - [Facet company_information](#facet-company_information)
+  - [Facet feedback](#facet-feedback)
+  - [Facet post_copy](#facet-post_copy)
+  - [Facet post_visual](#facet-post_visual)
+  - [Facet post](#facet-post)
+  - [Facet positioning_context](#facet-positioning_context)
+  - [Facet positioning_recommendation](#facet-positioning_recommendation)
+  - [Facet messaging_stack](#facet-messaging_stack)
+  - [Facet: positioning](#facet-positioning)
+  - [Facet value_canvas](#facet-value_canvas)
+  - [Facet positioning_opportunities](#facet-positioning_opportunities)
+- [6. Component Responsibilities](#6-component-responsibilities)
+  - [Telemetry & Metrics Parity](#telemetry-metrics-parity)
+- [7. Execution Flow](#7-execution-flow)
+- [8. HITL and Rehydration Strategy](#8-hitl-and-rehydration-strategy)
+- [9. Data Model & Persistence](#9-data-model-persistence)
+- [9.1 Capability Registration Flow](#91-capability-registration-flow)
+- [10. API Surface (Initial)](#10-api-surface-initial)
+  - [10.0.1 Flex Run Streaming Contract](#1001-flex-run-streaming-contract)
+  - [10.1 Flex Run Debugging](#101-flex-run-debugging)
+  - [10.1 Sample TaskEnvelope](#101-sample-taskenvelope)
+- [11. Capability Registry & Agent Contracts](#11-capability-registry-agent-contracts)
+  - [Marketing Catalog Rollout & Rollback](#marketing-catalog-rollout-rollback)
+  - [Facet Catalog](#facet-catalog)
+  - [Current Inventory](#current-inventory)
+    - [Contract Compiler & Validation Helpers](#contract-compiler-validation-helpers)
+  - [Supporting Utilities](#supporting-utilities)
+  - [Developer Sandbox](#developer-sandbox)
+  - [Maintenance Checklist](#maintenance-checklist)
+- [12. UI & Client Integration](#12-ui-client-integration)
+- [13. Migration & Rollout Strategy](#13-migration-rollout-strategy)
+- [13. Verification](#13-verification)
+- [14. Risks & Open Questions](#14-risks-open-questions)
+- [15. Supporting Human Agents](#15-supporting-human-agents)
+  - [15.1 Concept Overview](#151-concept-overview)
+  - [15.x HITL Clarify Extension](#15x-hitl-clarify-extension)
+  - [15.2 Design Principles](#152-design-principles)
+  - [15.3 Implementation Alignment](#153-implementation-alignment)
+  - [15.4 Facet-Driven Task Surfaces](#154-facet-driven-task-surfaces)
+    - [15.4.1 Facet Widget Namespace Convention](#1541-facet-widget-namespace-convention)
+  - [15.5 Notification and Assignment Model](#155-notification-and-assignment-model)
+  - [15.6 Planner Behavior](#156-planner-behavior)
+  - [15.7 Benefits and Alignment](#157-benefits-and-alignment)
+  - [15.8 Example](#158-example)
+  - [15.9 Offline and Notification Semantics](#159-offline-and-notification-semantics)
+  - [15.10 Registration & Governance Notes](#1510-registration-governance-notes)
+- [15.11 Post Visual R2 Endpoint Patterns](#1511-post-visual-r2-endpoint-patterns)
+  - [Summary](#summary)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+  - [Existing Pattern: Brief Uploads](#existing-pattern-brief-uploads)
+  - [Flex Post Visual Flow](#flex-post-visual-flow)
+    - [Storage Key & Metadata](#storage-key-metadata)
+    - [Endpoint Contracts](#endpoint-contracts)
+    - [Sequence](#sequence)
+  - [Implementation Notes](#implementation-notes)
+  - [Error Handling & Observability](#error-handling-observability)
+  - [Open Questions](#open-questions)
+- [16. Retrieval Knowledge Stores](#16-retrieval-knowledge-stores)
 
 ## 1. Scope & Goals
 - Deliver a runtime-adaptable orchestration service where clients submit natural-language objectives and exact JSON output contracts.
@@ -28,7 +145,7 @@ The flex server keeps the familiar Nitro deployment but swaps the orchestration 
 
 ```
 
-#### Planner Lifecycle Events
+### Planner Lifecycle Events
 
 1. **`plan_requested`** – After policies are normalized the controller emits this frame, capturing the active capability snapshot, normalized policy keys, and the planner attempt number so clients can render a pending state.
 2. **`plan_rejected`** – `PlannerValidationService` validates facet coverage, capability availability, and schema compilation. Failures surface as diagnostics inside `plan_rejected`; the controller immediately requests a revised draft while the run remains paused.
@@ -48,7 +165,11 @@ The flex server keeps the familiar Nitro deployment but swaps the orchestration 
 ## 5. Core Concepts
 All canonical types and Zod validators for the concepts below are exported from `@awesomeposter/shared/flex` (source: `packages/shared/src/flex/types.ts`). Planner, agents, and UI code should import from that module to stay in sync.
 ### 5.1 TaskEnvelope
-Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
+Canonical request payload containing `objective`, `inputs`, `constraints`, `outputContract`, `policies`, `goal_condition` and caller metadata. The orchestrator never assumes fields beyond what the envelope expresses.
+
+**Facet goal predicates.** `goal_condition` is an optional array of `FacetCondition` objects exported from `@awesomeposter/shared/flex`. Each condition targets a facet (for example `post_copy`), drills into its payload via a JSON-pointer-style `path`, and wraps a Condition DSL envelope (`{ dsl, canonicalDsl?, jsonLogic?, warnings?, variables? }`). The planner and runtime treat the array with AND semantics: every listed facet predicate must evaluate truthy before the run is considered complete. This keeps completion logic explicit, reusable for capability pre/post guards, and aligned with the shared Condition DSL tooling described in [Condition DSL Parser & Validation](../condition-dsl.md#condition-dsl-parser--validation).
+
+**Facet state references.** Callers should reference paths that resolve within the facet snapshot published by the capability (for example `/value[0].status`). The orchestrator forwards the condition payloads unchanged so downstream services can evaluate them beside facet catalogs and capability provenance.
 
 ### 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
@@ -141,6 +262,28 @@ export interface NodeSelector {
 
 Runtime policy validation now rejects unknown action names with migration hints (for example `hitl_pause → hitl`) so callers only reference the canonical union above. `goto` handlers track per-policy attempt counts and stop retrying once `maxAttempts` (default `1`) is exhausted. `hitl` directives can chain follow-up `Action`s that execute once the operator approves or rejects a request; approval defaults to “resume” when no nested action is supplied while rejection falls back to a terminal `fail`. `pause` actions persist the full execution snapshot – including policy state – so resumptions continue deterministically without re-planning.
 
+##### Runtime Condition Evaluation
+
+- Supported JSON-Logic operators: logical combinators (`and`, `or`, `!`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), variable references (`var`), and array quantifiers (`some`, `all`).
+- `some` returns `true` once any element in the target array satisfies the predicate; missing or empty arrays resolve to `false`.
+- `all` returns `true` only when every element satisfies the predicate; empty arrays resolve to `false`.
+- When referencing array payloads (for example `{"var": "metadata.runContextSnapshot.facets.recommendationSet.value"}`) callers must ensure the path resolves to an array. Non-array values trigger `invalid_condition` errors with descriptive messaging so misconfigured policies surface quickly.
+- Predicate expressions execute in the scope of each element, so `{"var": "resolution"}` and nested paths like `{"var": "item.score"}` refer to fields on the current element while still allowing access to the root payload.
+
+**Condition DSL metadata.** Task envelopes may now submit a DSL string instead of raw JSON-Logic under `trigger.condition`. The policy normalizer compiles the DSL with the shared catalog, stores the canonical JSON-Logic output, and preserves the original DSL (plus any parser warnings and referenced variable paths) so the UI can round-trip edits without lossy conversions. The normalized shape is:
+
+```ts
+{
+  jsonLogic: JsonLogicExpression
+  dsl?: string
+  canonicalDsl?: string
+  warnings?: ConditionDslWarning[]
+  variables?: string[]
+}
+```
+
+Legacy JSON-only policies continue to work unchanged—the runtime will treat any plain object as JSON-Logic and skip DSL metadata.
+
 Example payload:
 
 ```json
@@ -161,7 +304,11 @@ Example payload:
         "trigger": {
           "kind": "onNodeComplete",
           "selector": { "kind": "validation" },
-          "condition": { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] }
+          "condition": {
+            "dsl": "facets.planKnobs.hookIntensity < 0.6",
+            "canonicalDsl": "facets.planKnobs.hookIntensity < 0.6",
+            "jsonLogic": { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] }
+          }
         },
         "action": { "type": "replan", "rationale": "Low QA score" }
       },
@@ -171,10 +318,14 @@ Example payload:
           "kind": "onNodeComplete",
           "selector": { "kind": "validation" },
           "condition": {
-            "and": [
-              { ">=": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] },
-              { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.9] }
-            ]
+            "dsl": "facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.9",
+            "canonicalDsl": "facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.9",
+            "jsonLogic": {
+              "and": [
+                { ">=": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.6] },
+                { "<": [{ "var": "metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity" }, 0.9] }
+              ]
+            }
           }
         },
         "action": { "type": "hitl", "rationale": "Medium quality requires review" }
@@ -185,8 +336,6 @@ Example payload:
 ```
 
 > **Note:** Action verb names (`hitl`, `fail`, `emit`, etc.) reflect the canonical shared enum. Execution stories (8.23, 8.24) will align dispatcher terminology so runtime wiring matches these identifiers.
-
-Runtime policy authors typically express the same guards via the DSL shorthand – for example `facets.planKnobs.hookIntensity < 0.6`. Legacy expressions that include `.value` remain valid, and the compiler normalises any alias back to the canonical run-context path (`metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity`) when persisting JSON-Logic.
 
 > **Adapter Today:** The orchestrator emits canonical `Action.type` values in telemetry and attaches the policy ID that triggered a replan. Internal handlers still translate to legacy dispatcher verbs (`hitl_pause`, `fail_run`, ...) until Stories 8.23/8.24 land.
 
@@ -294,6 +443,14 @@ Facet-driven contracts let the planner assemble dynamic graphs without hard-codi
    - Example: “Use toneOfVoice to adjust diction; apply writerBrief context; emit copyVariants output.”
 5. **Annotate the plan node.**
    - Store `agentId`, `capabilityId` (or `derivedFrom`), the selected facet arrays, resolved schemas, merged system instruction, retry/fallback policy, and a rationale blob for debugging.
+
+#### Planner Prompt Blueprint (v2)
+- **System message framing:** The PlannerService system prompt is partitioned into clearly labeled sections—`SYSTEM`, `SCHEMA DEFINITION`, `CONTEXT`, `FACET CATALOG SUMMARY`, `CAPABILITY REGISTRY SUMMARY`, `PLANNER RULES`, `INTERNAL CHECKLIST`, `EXAMPLE REASONING`, and `OUTPUT INSTRUCTIONS`. The schema block mirrors the PlanGraph contract verbatim so downstream validation stays in sync while the facet/capability sections direct the model to the tables rendered in the user prompt.
+- **System prompt data tables:** The generated system message injects facet (`Facet`, `Direction`, `Description`) and capability (`Capability ID`, `Display Name`, `Kind`, `Input Facets`, `Output Facets`, `Summary`) tables built from the live catalog/registry snapshot. Rows are trimmed to context-relevant entries while preserving catalog ordering so the LLM operates on authoritative metadata without bloating the user prompt.
+- **User prompt focus:** The user message now concentrates on the task envelope, planner hints, policies, special instructions, and current graph context, reducing duplication while keeping the planner grounded in run-specific details.
+- **Context walkthrough:** Envelope objective, planner directives, policies, inputs, output contract, and any existing graph context are summarized in compact sections ahead of the tables. Special instructions and legacy policy markers surface inline so the planner can reason about constraints before composing nodes.
+- **Checklist + diagnostics guardrails:** The internal checklist from the Prompt Blueprint now lives in both the system instructions and the user message reminder to reinforce facet coverage, capability validity, and rationale requirements. Guidance about diagnostics vs. invented nodes is word-for-word with the blueprint to maintain orchestration parity.
+- **Prompt telemetry:** PlannerService records system/user character counts and rendered row counts through `flex.planner.prompt.*` histograms. This enables the orchestrator telemetry feed to track prompt efficiency regressions and correlate token budgets to plan quality.
 
 #### Story 8.8 Dynamic Assembly Details
 - **Live registry hydration:** During planning the orchestrator hydrates the latest capability snapshot (strategy, generation, QA, transformation helpers) and facet catalog definitions. Capability selections record coverage gaps so derived nodes are transparent.
@@ -604,7 +761,7 @@ All validator outputs use the normalized diagnostic buckets below so planner pro
 - **Rule of separation**
   - Constraints define what must be true at completion (design/compile time).
   - Policies govern runtime guardrails; they react to events and never reshape topology.
-- **Use the contract when** you assert properties of the final artifact (for example `exactly 2 variants`, DSL shorthand `facets.planKnobs.hookIntensity >= 0.8` which normalises to `metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity`, `CTA present`). Encode these in `outputContract.schema` and `constraints`.
+- **Use the contract when** you assert properties of the final artifact (for example `exactly 2 variants`, DSL shorthand `facets.planKnobs.hookIntensity >= 0.8` which persists as `metadata.runContextSnapshot.facets.planKnobs.value.hookIntensity`, `CTA present`). Encode these in `outputContract.schema` and `constraints`.
 - **Use policies when** you control runtime behaviour (timeouts, retries, HITL gates, replans, brand-risk pauses). These live under `TaskEnvelope.policies.runtime`.
 
 Examples:
@@ -628,6 +785,8 @@ constraints: [
   "action": { "type": "hitl", "rationale": "Score between 0.6 and 0.8 requires human review" }
 }
 ```
+
+Authoring the same guard via the DSL looks like `facets.planKnobs.hookIntensity >= 0.6 && facets.planKnobs.hookIntensity < 0.8`. Legacy expressions that include `.value` remain accepted, and the runtime normalises any alias back to the canonical run-context path when persisting JSON-Logic.
 
 **Conflict resolution**
 
@@ -778,19 +937,23 @@ If control-flow correction is needed, the policy requests a **replan**, promptin
 **Design Principle**
 
 *Policies guard the run; planners shape the path.*  
-Once validated, the plan graph is the single source of truth for control flow.  
+Once validated, the plan graph is the single source of truth for control flow.
 
 ## 5.11 Reference capability registry
 
 | capabilityId | AgentType | summary | inputTraits | inputContract | outputContract |
 | :---- | :---- | :---- | :---- | :---- | :---- |
-| strategist.SocialPosting | AI | Generates a strategic rationale and creative brief for social posts (e.g., new case, new employee). | Reasoning, Planning, Context extraction | post\_context, feedback | creative\_brief, strategic\_rationale, handoff\_summary |
+| strategist.SocialPosting | AI | Generates a strategic rationale and creative brief for social posts (e.g., new case, new employee). | Reasoning, Planning, Context extraction | post\_context, company\_information | creative\_brief, strategic\_rationale, handoff\_summary |
 | strategist.Positioning | AI | Analyzes a competitive positioning and produces a clear value proposition with reasoning. | Analysis, Synthesis, Market Reasoning | positioning\_context, feedback | value\_canvas, positioning\_opportunities, positioning\_recommendation |
-| copywriter.SocialpostDrafting | AI | Drafts social post copy using strategist’s creative brief. | Writing, Tone adaptation, Channel adaptation, | creative\_brief,handoff\_summary, feedback | post\_copy,handoff\_summary |
+| copywriter.SocialpostDrafting | AI | Drafts social post copy using strategist’s creative brief. | Writing, Tone adaptation, Channel adaptation, | creative\_brief,handoff\_summary, feedback | post\_copy,handoff\_summary |
 | copywriter.Messaging | AI | Takes positioning and creates a messaging stack. | Copy Editing, Style Adaptation | positioning\_context, positioning\_recommendation, feedback | messaging\_stack, handoff\_summary |
-| designer.VisualDesign | Human | Creates visual assets for a post using strategists’ creative brief. | Visual design, Brand alignment | creative\_brief, handoff\_summary, feedback | post\_visual,handoff\_summary |
+| designer.VisualDesign | Human | Creates visual assets for a post using strategists’ creative brief. | Visual design, Brand alignment | creative\_brief, handoff\_summary, feedback | post\_visual,handoff\_summary |
 | director.SocialPostingReview | Human | Approves final post (copy \+ visuals), or provides feedback on rationale,visuals or copy. | Evaluation, Brand Consistency | post\_context, strategic\_rationale, post\_copy, post\_visual | post, feedback |
 | director.PositioningReview | Human | Approves positioning recommendation and messaging stack, or provides feedback on positioning or messaging stack | Evaluation, Brand strategy | positioning\_context, value\_canvas, positioning\_opportunities, positioning\_recommendation, messaging\_stack | positioning, feedback |
+
+**Marketing sandbox tagging**
+- Every capability above publishes `metadata.catalogTags = ["marketing-agency", "sandbox"]` and `metadata.collection = "flex.marketing"` in its registration payload.
+- Registry and sandbox clients can continue to consume the full payload; the Vue sandbox filters to the curated set by checking these tags without changing the transport contract.
 
 ## 5.12 Reference facet catalog 
 
@@ -825,7 +988,7 @@ Type-specific context for a social post (currently supports new\_case and new\_e
           "description": "Free-text narrative describing the core message."
         },
         "assets": {
-          "type": "array",
+alig          "type": "array",
           "description": "R2 asset URLs (images, PDFs, etc.).",
           "items": { "type": "string", "format": "uri" }
         },
@@ -894,6 +1057,7 @@ Type-specific context for a social post (currently supports new\_case and new\_e
 * version: 1.0.0  
 * direction: input  
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 Here’s the facet definition for **creative\_brief**, formatted in the same markdown \+ schema structure you’re using.
 
@@ -991,6 +1155,7 @@ Structured summary of how a social post or campaign should be executed — the s
 * version: 1.0.0  
 * direction: bidirectional  
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 Got it — you want strategic\_rationale to serve as a simple, human- and model-readable text field that explains *why* a plan was made, without structure or nested fields.
 
@@ -1031,9 +1196,10 @@ It captures context and intent so that reviewers understand *why* specific choic
 * Provides understanding for human review and audit and can  be supplied to customer alongside the post.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional  
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 Here’s the facet definition for **handoff\_summary**, following your simplified metadata convention.
 
@@ -1080,18 +1246,97 @@ A running textual log of decisions, notes, or key observations that each agent a
 * Human and AI agents can both write to it.
 
 **metadata**
-
-* direction: bidirectional
-
+* version: 1.0.0 
+* direction: input
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-Agreed — requires\_replan leaks orchestration logic into a domain facet that should stay agnostic.
 
-The **planner** should infer what to do from declarative data, not read an imperative flag.
+### Facet company_information
 
-Here’s the cleaned-up and final version of the feedback facet, without domain leakage and with slightly clearer semantics for planner use.
+**name**: company_information
 
----
+**title**: Company Information
+
+**description**
+
+Canonical profile of a company, capturing core identity details, audience guidance, and brand assets that downstream agents reference for consistent positioning and execution.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["name", "brand_assets"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Official company name."
+    },
+    "website": {
+      "type": "string",
+      "format": "uri",
+      "description": "Primary website URL."
+    },
+    "industry": {
+      "type": "string",
+      "description": "Industry or sector the company operates in."
+    },
+    "tone_of_voice": {
+      "type": "string",
+      "description": "Preferred tone or voice guidelines."
+    },
+    "special_instructions": {
+      "type": "string",
+      "description": "Additional guidance or caveats for representing the company."
+    },
+    "audience_segments": {
+      "type": "string",
+      "description": "Target audience segments or personas."
+    },
+    "preferred_channels": {
+      "type": "string",
+      "description": "Preferred distribution or communication channels."
+    },
+    "brand_assets": {
+      "type": "array",
+      "description": "Canonical brand asset URLs (logos, templates, etc.).",
+      "items": { "type": "string", "format": "uri" }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "name": "Acme Analytics",
+      "website": "https://acmeanalytics.io",
+      "industry": "Industrial IoT",
+      "tone_of_voice": "Authoritative but friendly",
+      "special_instructions": "Always include certified partner badge.",
+      "audience_segments": "Operations leaders in mid-market manufacturing",
+      "preferred_channels": "LinkedIn, industry newsletters",
+      "brand_assets": [
+        "https://assets.acmeanalytics.io/logos/wordmark.svg",
+        "https://assets.acmeanalytics.io/templates/presentation-template.pdf"
+      ]
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Provides brand guardrails and references required by strategist, copywriter, designer, and reviewer agents.
+
+* Ensures tone, audience, and asset usage remain consistent across content variants.
+
+* brand_assets values are resolvable URIs; downstream systems handle retrieval and caching.
+
+**metadata**
+* version: 1.0.0 
+* direction: bidirectional
+* requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
+
 
 ### Facet feedback
 
@@ -1190,10 +1435,10 @@ Each entry references the facet affected so the planner can map feedback to prod
 * Serves both as conversational context and as a change log for future learning loops.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 Understood — keeping post\_copy as a single, minimal text field makes it clean and consistent with how you simplified strategic\_rationale.
 
@@ -1228,14 +1473,11 @@ The written text of a social post. This is the composed copy.
 * Overwrites previous versions rather than appending.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-Next in line is **post\_visual** — the Designer’s output facet containing visual assets (R2 URLs).
-
----
 
 ### Facet post\_visual
 
@@ -1280,16 +1522,11 @@ Produced by the Designer agent and consumed by reviewers and publishers.
 * Each execution replaces the array with an updated list of current visual assets (so no versioning)
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-Makes sense — approval and workflow state belong to the runtime layer, not the content facet.
-
-Here’s the cleaned-up and final version of the post facet, focused only on the deliverable content itself.
-
----
 
 ### Facet post
 
@@ -1341,14 +1578,11 @@ Represents the final creative deliverable produced by the review stage.
 * Downstream systems attach runtime policy data (approval state, versioning, audit trail) separately within the task envelope.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-Here’s the cleaned-up and final version of the **positioning\_context** facet reflecting your adjustments — no differentiators or resources, focused on market, geography, audience, and competitive dynamics.
-
----
 
 ### Facet positioning\_context
 
@@ -1430,18 +1664,11 @@ Provides the grounding context for agents evaluating or refining company positio
 * competitors provides reference entities for market analysis; data retrieval or scoring is handled dynamically from public information.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-That makes sense — you’re defining **positioning as a quantifiable configuration of competing factors**, not just a narrative statement.
-
-This lets you tie together analytic scoring (objective comparison across factors) and LLM-based qualitative reasoning (fit, differentiation, and plausibility).
-
-Here’s the updated and precise facet definition for that approach.
-
----
 
 ### Facet positioning\_recommendation
 
@@ -1557,10 +1784,10 @@ Includes accompanying rationale that explains why this configuration is optimal 
 * Enables data-driven positioning recommendations while preserving interpretability for human review.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 ### Facet messaging\_stack
 
@@ -1654,14 +1881,11 @@ Each entry defines one message pillar, an associated proof point, and the sugges
 * Encourages clear alignment between strategic factors and creative execution.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: bidirectional
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
-The next logical facet in the positioning workflow is **positioning** — the final, reviewed, and approved positioning output that integrates all preceding reasoning and messaging.
-
----
 
 ### Facet: positioning
 
@@ -1787,10 +2011,251 @@ It consolidates the quantitative factor-based recommendation and the qualitative
 * Downstream systems or agents (e.g., campaign planners, content generators) can consume this facet to ensure consistency.
 
 **metadata**
-
+* version: 1.0.0 
 * direction: output
-
 * requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
+
+### Facet value\_canvas
+
+**name**: value\_canvas
+
+**title**: Value Canvas
+
+**description**
+
+A comparative dataset showing competing factor scores across the focal company and its competitors.
+
+Used to analyze relative strengths, weaknesses, and opportunities in the market.
+
+Serves as the analytical input for the strategist when generating the positioning recommendation.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["companies", "factors", "scores"],
+  "properties": {
+    "companies": {
+      "type": "array",
+      "description": "List of companies included in the comparison (including the focal company).",
+      "items": { "type": "string" }
+    },
+    "factors": {
+      "type": "array",
+      "description": "List of competing factors being evaluated.",
+      "items": { "type": "string" }
+    },
+    "scores": {
+      "type": "array",
+      "description": "Matrix of scores for each company and competing factor.",
+      "items": {
+        "type": "object",
+        "required": ["company", "factor", "score"],
+        "properties": {
+          "company": {
+            "type": "string",
+            "description": "Company name corresponding to the entry in `companies`."
+          },
+          "factor": {
+            "type": "string",
+            "description": "Name of the competing factor being scored."
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Normalized score for this company on this factor (0–10 scale)."
+          },
+          "trend_alignment": {
+            "type": "string",
+            "enum": ["positive", "neutral", "negative"],
+            "description": "Optional indicator of how the factor aligns with current market trends for this company."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "source": {
+      "type": "string",
+      "description": "Brief description or URL of the data source or benchmark used to derive scores (e.g., public data, analyst report)."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "companies": [
+        "Acme Analytics",
+        "Contoso Industrial",
+        "FactoryInsights"
+      ],
+      "factors": [
+        "ease of integration",
+        "local consulting partners",
+        "reliability",
+        "AI-driven insights"
+      ],
+      "scores": [
+        { "company": "Acme Analytics", "factor": "ease of integration", "score": 8.2 },
+        { "company": "Acme Analytics", "factor": "local consulting partners", "score": 6.5 },
+        { "company": "Acme Analytics", "factor": "reliability", "score": 9.0 },
+        { "company": "Acme Analytics", "factor": "AI-driven insights", "score": 7.8 },
+        { "company": "Contoso Industrial", "factor": "ease of integration", "score": 7.0 },
+        { "company": "Contoso Industrial", "factor": "local consulting partners", "score": 8.0 },
+        { "company": "FactoryInsights", "factor": "reliability", "score": 7.5 },
+        { "company": "FactoryInsights", "factor": "AI-driven insights", "score": 8.4 }
+      ],
+      "source": "Derived from public product data and analyst reports."
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by strategist.Positioning or an analytical sub-agent.
+
+* Consumed by the same agent (for iterative reasoning) and by director.PositioningReview for transparency.
+
+* Provides a structured **competitive benchmark** that feeds directly into the positioning\_recommendation.
+
+* Each (company, factor) pair represents one datapoint; together, the facet forms a normalized scoring matrix.
+
+**metadata**
+* version: 1.0.0 
+* direction: bidirectional
+* requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
+
+
+### Facet positioning\_opportunities
+
+**name**: positioning\_opportunities
+
+**title**: Positioning Opportunities
+
+**description**
+
+Represents potential opportunity areas derived from the **value\_canvas** analysis.
+
+Each opportunity highlights an under-served or emerging factor where the focal company can credibly differentiate, improve, or reposition.
+
+It’s a structured map of *where to move next* based on current performance, competitor gaps, and market trends.
+
+**schema** (JSON Schema fragment)
+
+```
+{
+  "type": "object",
+  "required": ["opportunities"],
+  "properties": {
+    "opportunities": {
+      "type": "array",
+      "description": "List of identified positioning opportunities.",
+      "items": {
+        "type": "object",
+        "required": ["factor", "opportunity_type", "description"],
+        "properties": {
+          "factor": {
+            "type": "string",
+            "description": "The competing factor this opportunity relates to (e.g., 'local consulting partners')."
+          },
+          "opportunity_type": {
+            "type": "string",
+            "enum": ["improve_own_score", "fill_market_gap", "exploit_trend", "defend_position"],
+            "description": "Type of opportunity detected."
+          },
+          "description": {
+            "type": "string",
+            "description": "Free-text description explaining the nature of the opportunity."
+          },
+          "current_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Current company score for this factor from the value_canvas."
+          },
+          "average_competitor_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Average competitor score for the same factor."
+          },
+          "trend_alignment": {
+            "type": "string",
+            "enum": ["positive", "neutral", "negative"],
+            "description": "How this factor aligns with market trends."
+          },
+          "potential_gain": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Estimated potential improvement if the company addresses this opportunity (0–10 scale)."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Relative confidence score for this opportunity assessment (0–1)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Narrative summary describing overall opportunity landscape and key recommended focus areas."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "opportunities": [
+        {
+          "factor": "local consulting partners",
+          "opportunity_type": "improve_own_score",
+          "description": "Acme’s partner network lags behind competitors; expanding coverage can strengthen trust and customer proximity.",
+          "current_score": 6.5,
+          "average_competitor_score": 8.0,
+          "trend_alignment": "neutral",
+          "potential_gain": 2.0,
+          "confidence": 0.85
+        },
+        {
+          "factor": "AI-driven insights",
+          "opportunity_type": "exploit_trend",
+          "description": "High market momentum for explainable AI in industrial data — potential to emphasize transparency and control.",
+          "current_score": 8.0,
+          "average_competitor_score": 7.4,
+          "trend_alignment": "positive",
+          "potential_gain": 1.0,
+          "confidence": 0.9
+        }
+      ],
+      "summary": "Acme has clear differentiation potential in AI transparency and local expertise expansion. Focus investment on partnership ecosystem and narrative consistency."
+    }
+  ]
+}
+```
+
+**semantics**
+
+* Produced by strategist.Positioning; consumed by director.PositioningReview.
+
+* Derived from value\_canvas using a mix of statistical comparison and LLM reasoning.
+
+* Each opportunity quantifies a potential move — improving weak factors, defending strong ones, or exploiting trend shifts.
+
+* The summary gives a human-readable synthesis for presentation or rationale generation.
+
+* Feeds directly into positioning\_recommendation creation as the strategic input.
+
+**metadata**
+* version: 1.0.0 
+* direction: bidirectional
+* requiredByDefault: true
+* catalogTags: ["marketing-agency", "sandbox"]
 
 ## 6. Component Responsibilities
 - `FlexRunController`: validates envelopes, seeds correlation IDs, and emits initial SSE frames.
@@ -1829,6 +2294,7 @@ It consolidates the quantitative factor-based recommendation and the qualitative
 - When a HITL request fires, the execution engine writes a transactional snapshot pairing the paused node’s bundle, compiled input/output schemas, and provenance metadata with the current facet state so operators have full context.
 - Rehydration reconstructs the `PlanGraph` from the latest `flex_plan_snapshots` row plus persisted outputs. Pending node IDs and stored facet provenance restore execution deterministically before policy refresh and resume.
 - HITL request rows now persist `pending_node_id`, `contract_summary_json`, and `operator_prompt`, allowing the coordinator to replay the exact node contract (facets + schema expectations) and the orchestrator-authored guidance string without recomputing metadata during resume.
+- Persisted plan checkpoints capture each node’s runtime `status` (`pending`, `running`, `completed`, `awaiting_hitl`, `awaiting_human`, `error`) alongside the incremented `plan_version`. Resume requests stream the snapshot verbatim so completed nodes remain locked and replans only touch pending work.
 
 ## 9. Data Model & Persistence
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`) plus persisted run context (`hitlClarifications` storing the structured clarify question/answer history).
@@ -1874,6 +2340,8 @@ Each frame carries `runId` (and `nodeId` for node-scoped events) at the top leve
 
 **Resume after HITL/Flex Task Submission:** Once the operator submits via `/api/v1/flex/run.resume`, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`. Declines go through `/api/v1/flex/tasks/:taskId/decline`, triggering policy-defined fail paths without attempting resume.
 
+**Facet goal predicates.** Envelopes may include an optional `goal_condition` array. Each entry names the facet being inspected, points to a path within that facet payload, and supplies the shared Condition DSL envelope. The runtime ANDs the entries together—callers can require multiple facets to satisfy their predicates before the run is marked complete while still keeping the planner contracts immutable.
+
 Example `curl` invocation:
 
 ```bash
@@ -1909,6 +2377,34 @@ Sample envelope payload (`envelope.json`):
     "brandVoice": "inspiring",
     "requiresHitlApproval": false
   },
+  "goal_condition": [
+    {
+      "facet": "post_copy",
+      "path": "/variants[0]",
+      "condition": {
+        "dsl": "quality_score >= 0.8",
+        "jsonLogic": {
+          ">=": [
+            { "var": "quality_score" },
+            0.8
+          ]
+        }
+      }
+    },
+    {
+      "facet": "post_visual",
+      "path": "/asset/status",
+      "condition": {
+        "dsl": "status == \"approved\"",
+        "jsonLogic": {
+          "==": [
+            { "var": "status" },
+            "approved"
+          ]
+        }
+      }
+    }
+  ],
   "specialInstructions": [
     "Variant A should highlight team culture.",
     "Variant B should highlight career growth opportunities."
@@ -2009,6 +2505,21 @@ Use this endpoint during incident response to validate operator guidance, inspec
     "variantCount": 2,
     "hitlRequiredFor": ["final_publish"]
   },
+  "goal_condition": [
+    {
+      "facet": "handoff_summary",
+      "path": "/status",
+      "condition": {
+        "dsl": "status == \"ready\"",
+        "jsonLogic": {
+          "==": [
+            { "var": "status" },
+            "ready"
+          ]
+        }
+      }
+    }
+  ],
   "specialInstructions": [
     "Highlight the new real-time audit trail feature.",
     "Avoid claims about replacing human reviewers."
@@ -2038,7 +2549,7 @@ Use this endpoint during incident response to validate operator guidance, inspec
 ```
 
 ## 11. Capability Registry & Agent Contracts
-- Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/strategy-manager.ts`); the module exports the capability payload with facet-based `inputContract` / `outputContract` arrays alongside prompt assets.
+- Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts`); the module exports the capability payload with facet-based `inputContract` / `outputContract` arrays alongside prompt assets.
 - A Nitro startup plugin consumes these exports and POSTs them to `/api/v1/flex/capabilities/register`, exercising the same validation/logging path as external registrants, and re-registers on an interval (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active.
 - `PlannerService` uses the registry to resolve capabilities by matching facet coverage alongside envelope-driven channel/format hints surfaced from TaskEnvelope inputs and planner policies.
 - `ContextBuilder` translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
@@ -2050,6 +2561,16 @@ Use this endpoint during incident response to validate operator guidance, inspec
 - Each agent module schedules a self-registration with the capability registry during bootstrap so the flex server advertises its capabilities without relying on a separate startup plugin.
 - Planner consumers should retrieve capabilities via the registry service (`listActive`, `getCapabilityById`) to honour cache/heartbeat semantics instead of querying the database directly.
 - SSE telemetry for `plan_generated` events now echoes per-node contract modes and facet coverage so downstream consumers can observe the facet-derived contract model in real time.
+
+### Marketing Catalog Rollout & Rollback
+
+- The curated marketing capability library lives in `packages/shared/src/flex/marketing-catalog.ts`. It exposes the marketing-aligned entries (`strategist.SocialPosting`, `strategist.Positioning`, `copywriter.SocialpostDrafting`, `copywriter.Messaging`, `designer.VisualDesign`, `director.SocialPostingReview`, `director.PositioningReview`) and the sandbox metadata route now responds with this set by default. All of these capabilities now declare the shared `company_information` facet as part of their `inputContract` to enforce consistent brand guardrails.
+- Facets tagged with `["marketing-agency", "sandbox"]` – including `company_information` – are served through the same route by filtering the shared `FacetCatalog`. UI surfaces only render those tagged facets, keeping the legacy definitions available for regression fixtures while automatically advertising the new facet to downstream consumers.
+- Deployment checklist:
+  1. Run `npm run test:unit -- packages/flex-agents-server/__tests__/flex-sandbox-metadata.spec.ts` to verify the metadata response (the payload should now list the `company_information` facet alongside the curated marketing set).
+  2. Spot-check the flex sandbox UI to confirm capability cards reflect the marketing taxonomy and that templates still load.
+- Rollback plan:
+  - Revert the marketing catalog deployment (reinstate the legacy capability modules and registry wiring) if regression fixtures must become the active catalog again—there is no runtime flag for toggling between catalogs.
 
 ### Facet Catalog
 
@@ -2075,10 +2596,10 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 | Capability ID | Display Name | Responsibilities | Input Facets | Output Facets | Source |
 | --- | --- | --- | --- | --- | --- |
-| `strategist.SocialPosting` | Strategist – Social Posting | Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs. | `company_information`, `post_context`, `feedback` | `creative_brief`, `strategic_rationale`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts` |
-| `strategist.Positioning` | Strategist – Positioning | Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation. | `company_information`, `positioning_context`, `feedback` | `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-positioning.ts` |
-| `copywriter.SocialpostDrafting` | Copywriter – Social Drafting | Generates or revises campaign copy using strategist output and reviewer feedback. | `company_information`, `creative_brief`, `handoff_summary`, `feedback` | `post_copy`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-socialpost-drafting.ts` |
-| `copywriter.Messaging` | Copywriter – Messaging Stack | Converts positioning recommendations into a structured messaging hierarchy. | `company_information`, `positioning_context`, `positioning_recommendation`, `feedback` | `messaging_stack`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-messaging.ts` |
+| `strategist.SocialPosting` | Strategist – Social Posting | Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs. | `company_information`, `post_context` | `creative_brief`, `strategic_rationale`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts` |
+| `strategist.Positioning` | Strategist – Positioning | Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation. | `company_information`, `positioning_context` | `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-positioning.ts` |
+| `copywriter.SocialpostDrafting` | Copywriter – Social Drafting | Generates or revises campaign copy using strategist output and reviewer feedback. | `company_information`, `creative_brief`, `handoff_summary` | `post_copy`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-socialpost-drafting.ts` |
+| `copywriter.Messaging` | Copywriter – Messaging Stack | Converts positioning recommendations into a structured messaging hierarchy. | `company_information`, `positioning_context`, `positioning_recommendation` | `messaging_stack`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-messaging.ts` |
 | `designer.VisualDesign` | Designer – Visual Design | Creates or sources campaign visuals aligned with strategist guidance and reviewer feedback. | `company_information`, `creative_brief`, `handoff_summary`, `feedback` | `post_visual`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/designer-visual-design.ts` |
 | `director.SocialPostingReview` | Director – Social Review | Reviews campaign deliverables, approves final social posts, or records structured feedback. | `company_information`, `post_context`, `strategic_rationale`, `post_copy`, `post_visual` | `post`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-social-review.ts` |
 | `director.PositioningReview` | Director – Positioning Review | Approves positioning recommendations and messaging stacks or records actionable feedback. | `company_information`, `positioning_context`, `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `messaging_stack` | `positioning`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-positioning-review.ts` |
@@ -2095,11 +2616,12 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 ### Supporting Utilities
 
-- HITL adapters (`packages/flex-agents-server/src/tools/hitl.ts`) bridge agent escalations into the shared HITL service.
+- Marketing specialists rely on the shared HITL adapters (`packages/flex-agents-server/src/tools/hitl.ts`) for escalation; legacy strategy/content/qa tool bundles have been retired with the capability catalog rip-and-replace.
 
 ### Developer Sandbox
 
 - Enable the flex planner sandbox by setting `USE_FLEX_DEV_SANDBOX=true` on the agents server and `VITE_USE_FLEX_DEV_SANDBOX=true` in the SPA build (both names are accepted by the server so scripts can export a single value). With the flag disabled the `/flex/sandbox` route, metadata API, and navigation entry stay hidden from production users.
+- The curated marketing experience is driven by registry metadata: each Story 11.1 capability now registers with `metadata.catalogTags = ["marketing-agency", "sandbox"]` and the corresponding facets advertise `catalogTags` in the shared catalog. The sandbox metadata response already includes these fields, so the Vue client filters to the seven marketing capabilities (and their tagged facets) without changing transport contracts.
 - The SPA fetches registry data from `GET /api/v1/flex/sandbox/metadata`, which returns facet catalog entries, capability snapshots (`active` + `all`), capability catalog prompts, and any `tmp/flex-*.json` TaskEnvelope templates. Override the template source via `FLEX_SANDBOX_TEMPLATE_DIR` when running custom experiments.
 - The guided conversational builder is gated by the same sandbox flag. The UI calls `POST /api/v1/flex/sandbox/envelope/conversation/start` followed by `POST /api/v1/flex/sandbox/envelope/conversation/{id}/respond`, both of which run only when `USE_FLEX_DEV_SANDBOX` is truthy and never persist envelope drafts server-side.
 - Assistant responses contain compact JSON Patch operations (`[{ op, path, value }]`) that the server applies to the current envelope before re-validating with `TaskEnvelopeSchema`. Empty patches leave the draft untouched while still surfacing missing-field guidance.
@@ -2122,6 +2644,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - SSE frames preserve the current envelope signature (`type`, `id`, `timestamp`, `payload`), so the existing `useHitlStore` wiring continues to parse events; only the event `type` values expand to cover new planner states (`FlexEvent` namespace).
 - Upon HITL prompts, the UI redirects operators to the same approval modal, now carrying the node artifact contract so reviewers see exactly what is pending.
 - The approval modal surfaces the orchestrator-authored operator guidance string and the serialized contract summary (capability label, plan version, facet provenance). Operators can review the pending node contract without additional lookups before approving or rejecting the run.
+- The sandbox plan inspector validates streamed plan snapshots; payloads missing `status` or `version` now raise a blocking banner instructing operators to retry the resume. This guards against silent downgrades when upstream services regress resume contracts.
 
 ## 13. Migration & Rollout Strategy
 - Phase 0: clone repository package, share utilities via `packages/shared`, and stub the new endpoint returning mocked events for UI integration.
@@ -2139,8 +2662,7 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 - Validation cost: Ajv on large schemas may slow runs; consider caching compiled schemas and streaming partial validation errors.
 - Capability drift: registry metadata must stay synchronized with actual agent prompts to avoid mismatched expectations.
 
-## 15. Supporting Human Agents (to be implemented)
-
+## 15. Supporting Human Agents
 ### 15.1 Concept Overview
 - Human agents perform tasks side-by-side ai agents, fulfilling work.
 - HITL remains a policy-triggered governance layer. Runtime policies still issue `Action.type === "hitl"` events for approvals, rejections, and compliance checkpoints that pause the run until an operator responds. 
@@ -2191,20 +2713,22 @@ interface ClarificationEntry {
 ### 15.4 Facet-Driven Task Surfaces
 - Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
 - A facet widget registry (for example `PostVisualWidget`, `CompanyInformationWidget`) maps facet names to reusable UI components that assemble into the task surface.
-- Registry keys follow the `<facet>.<direction>` namespace (for example `post_visual.output`, `company_information.input`) so input and output facets can ship dedicated widgets without collisions.
-- The reviewer gallery registers under `post_visual.input`, delivering read-only thumbnails, featured labels, and download links while preserving the editable `post_visual.output` widget for designers.
-- The `post` facet renders a combined copy + thumbnail preview, stitching together `post_copy` text with related `post_visual` assets. When no images are available the widget renders an explicit “No visuals provided” state while still showing copy for context.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
+
+#### 15.4.1 Facet Widget Namespace Convention
+- Facets that need different UX on the read-only (input) side versus the authoring (output) side register widgets under namespaced keys: `facetName.input` for the contextual surface humans consume, and `facetName.output` for any authoring surface that writes back to the node payload.
+- Namespaced entries allow the registry to coexist with legacy single-surface widgets; if no suffix is provided the base `facetName` key continues to resolve to the existing widget until it is migrated.
+- The `company_information` facet is the first adopter: the registry now resolves `company_information.input` to `CompanyInformationWidget`, which renders the contextual brief for Story 10.7 while leaving any future output experience isolated under `company_information.output`.
+- `flexTasks` store helpers must pass the facet identifier with the namespace suffix so that Pinia state, analytics, and toast telemetry can differentiate input versus output flows without additional branching.
+- Upcoming output-focussed stories will migrate write surfaces to the `.output` namespace; until then, default fallbacks remain under their original facet keys.
 - Example facet/widget mappings:
 
 | Facet | Example Widget | User Role |
 | --- | --- | --- |
-| `post_visual.output` | Post visual asset manager | Designer |
-| `post_visual.input` | Post visual gallery (read-only thumbnails & downloads) | Marketing reviewer |
+| `post_visual` | Post visual asset manager | Designer |
 | `company_information.input` | Company Information widget (name, tone, assets) | Marketing operators |
-| `post` | Social Post Preview (copy plus stacked image thumbnails) | Marketing director |
 
 ### 15.5 Notification and Assignment Model
 - `node_start` events for human-executed nodes include capability metadata (`capabilityId`, `kind`, `inputFacets`, `outputFacets`, `rationale`) plus optional `dueAt` hints so downstream tooling can route work using information already present in the plan graph.
@@ -2251,3 +2775,117 @@ graph LR
 - Response SLAs derive from the `FLEX_HUMAN_ASSIGNMENT_TIMEOUT_SECONDS` environment variable (default 15 minutes). Missed SLAs fail the active run with a recorded rationale.
 - Each assignment sends a single notification (`maxNotifications: 1`). Operators are expected to complete all clarifications in one submission.
 - Declining any clarification item triggers `onDecline: "fail_run"`, causing the orchestrator to terminate the run and surface the decline reason for follow-up triage.
+
+## 15.11 Post Visual R2 Endpoint Patterns
+
+### Summary
+- Establishes how the post visual widget (Story 10.6) uploads and manages assets in Cloudflare R2 using a flex-specific pipeline that avoids legacy client coupling.  
+- Flex uploads use `/api/flex/assets/upload` and persist records in the new `flex_assets` table, while the legacy `/api/assets` endpoints continue to power brief/client asset flows.  
+- Documents storage key conventions, request payloads, and Pinia store hooks so development can begin without revisiting higher-level architecture decisions.  
+
+> References: `docs/architecture/flex-agents-server.md#facet-post_visual`, `docs/architecture/flex-agents-server/512-reference-facet-catalog.md`, `server/api/assets/upload.post.ts`
+
+### Goals
+- Describe client ↔ server ↔ R2 interactions for post visual assets.  
+- Define the additional metadata needed to associate uploads with a flex run node + facet.  
+- Provide implementation notes for wiring uploads, deletions, and ordered persistence into `flexTasks` and `/api/v1/flex/run.resume`.  
+
+### Non-Goals
+- Redesigning asset persistence tables (reuses `assets` with flex metadata in `metaJson`).  
+- Introducing presigned PUTs direct from the browser (continues to stream via Nitro).  
+- Defining thumbnail rendering or UI composition details (covered by Story 10.6 component tasks).  
+
+### Existing Pattern: Brief Uploads
+| Step | Component | Notes |
+|------|-----------|-------|
+| 1 | `BriefsNewView.vue` | Collects assets via `<input type="file">`, posts `FormData` with `clientId` to `/api/assets/upload`. |
+| 2 | `server/api/assets/upload.post.ts` | Validates R2 env, stores file under `clients/{clientId}/…`, records row in `assets`. |
+| 3 | `server/api/assets/[id]/index.patch.ts` | Associates upload to an entity (`briefId`) after main form submission. |
+| 4 | `server/utils/storage.ts` | Normalizes endpoint + bucket, streams to R2, returns public HTTPS URL. |
+
+Flex uploads intentionally diverge from this flow: they never provide a `clientId`, rely on assignment + facet identifiers, and persist into `flex_assets`.
+
+### Flex Post Visual Flow
+#### Storage Key & Metadata
+- When `clientId` is provided (e.g., legacy brief uploads), keep the existing layout `clients/<clientId>/<uuid>.<ext>`.
+- Flex widgets can omit `clientId`; in that case the handler prefixes keys with `flex/<assignmentId>/<facet>/<uuid>.<ext>` so every assignment owns an isolated namespace. Use the `assignmentId` surfaced by `/api/v1/flex/tasks`.  
+- Persist association inside `assets.metaJson` (existing JSON column) instead of adding new columns.
+
+```json
+{
+  "scope": "flex.post_visual",
+  "clientId": null,
+  "flexRunId": "run_123",
+  "nodeId": "node_designer_1",
+  "facet": "post_visual",
+  "assignmentId": "task_789", // unique task identifier surfaced to the widget
+  "uploadedBy": "<userId>",
+  "ordering": 0
+}
+```
+
+> `ordering` reflects the drag-and-drop index when the widget persists state; update on reorder.
+
+#### Endpoint Contracts
+| Endpoint | Method | Payload | Response | Notes |
+|----------|--------|---------|----------|-------|
+| `/api/flex/assets/upload` | `POST` (multipart) | `file`, `assignmentId`, `facet`, optional `flexRunId`, `nodeId`, `uploadedBy` | `{ ok, asset }` | Stores objects under `flex/<assignment>/<facet>/…`, writes to `flex_assets`, and returns public URL + metadata. |
+| `/api/flex/assets/:id` | `PATCH` (JSON) | `{ ordering?, metaOverrides? }` | `{ ok }` | Updates ordering or metadata for the flex asset (used by drag-and-drop reordering). |
+| `/api/flex/assets/:id` | `DELETE` | — | `{ ok }` | Removes database record and purges the corresponding R2 object. |
+| `/api/v1/flex/run.resume` | `POST` | Existing payload + `post_visual` facet array using stored HTTPS URLs | `{ ok }` | Widget submits ordered URLs from local Pinia state (synced with `metaJson.ordering`). |
+
+#### Sequence
+```mermaid
+sequenceDiagram
+  participant Widget as PostVisualWidget.vue
+  participant Store as flexTasks store
+  participant AssetAPI as /api/flex/assets/upload
+  participant R2 as Cloudflare R2
+  participant Planner as /api/v1/flex/run.resume
+
+  Widget->>Store: select files / drag+n drop
+  Store->>AssetAPI: POST /api/flex/assets/upload (FormData)
+  AssetAPI->>R2: PutObject (flex/<assignment>/<facet>/<uuid>)
+  R2-->>AssetAPI: 200 + object metadata
+  AssetAPI-->>Store: { asset }
+  Store->>Store: append asset, set ordering
+  Widget->>Store: reorder/remove updates ordering
+  Store->>AssetAPI: PATCH /api/flex/assets/:id (ordering/meta)
+  Widget->>Planner: POST /api/v1/flex/run.resume (post_visual URLs)
+  Planner-->>Widget: node_complete / SSE refresh
+```
+
+### Implementation Notes
+- **Flex Upload Handler (`server/api/flex/assets/upload.post.ts`)**  
+  - Requires `assignmentId` + `facet`; optionally records run/node metadata and uploader identifier.  
+  - Generates keys under `flex/<assignmentId>/<facet>/…` and stores rows in `flex_assets` with facet-scoped metadata.  
+  - Returns the public HTTPS URL (already produced by `putAssetObject`) together with the persisted asset payload so Pinia state can stay in sync.
+- **Legacy Upload Handler (`server/api/assets/upload.post.ts`)**  
+  - Continues to back brief/client workflows with `clientId` + `assets` table persistence.
+- **Pinia Store (`src/stores/flexTasks.ts`)**  
+  - Mirror `uploadedAssets` array pattern from `BriefsNewView`, but store `{ assetId, url, ordering, meta }`.  
+  - Persist ordering updates via PATCH. On deletes, issue `DELETE /api/assets/:id` before pruning local state.  
+  - Keep state source of truth for the widget; SSE refresh merges on `assetId`.
+- **Resume Submission**  
+  - During `/api/v1/flex/run.resume`, derive the outbound `post_visual` array by sorting assets by `ordering` and mapping to HTTPS URLs.  
+  - Include `assetId` list in `metaJson` within the resume payload to facilitate auditing or later asset reconciliation.
+- **Retention**  
+  - Assets remain in R2 after completion; cleanup will be handled in a future story.
+
+### Error Handling & Observability
+- Upload failures should bubble `Asset storage is not configured` or validation messages already produced by the shared handler.  
+- Widget surfaces toast notifications; Store logs errors to `debugLog` using existing Toast utilities.  
+- Server logs include key prefixes and outcome (`putAssetObject` already logs) so operations can trace R2 issues.  
+- On delete failures, follow the brief pattern: log server-side, keep client optimistic removal but surface warning toast.
+
+### Open Questions
+- **Bandwidth:** if uploads become large, consider presigned direct PUTs; out of scope for Story 10.6 but noted here.
+
+## 16. Retrieval Knowledge Stores
+
+- **Strategist corpus source**: Snippets are persisted in Postgres (`flex_capability_snippets`) via pgvector, defined in `packages/db/src/schema.ts`. Each record stores the chunk text, metadata, and a 1,536‑dimension embedding generated with the `text-embedding-3-small` model.
+- **Refresh cadence**: Marketing operations rebuilds the corpus monthly. Updated embeddings are imported through the ingestion tooling that upserts into the pgvector table—no application restart is required beyond a standard deploy.
+- **Runtime wiring**: `FlexPlanner.buildContextBundle` delegates to `StrategistRetrievalService`, which embeds the current envelope objective/context and queries pgvector for nearest snippets. The retrieved snippets populate `ContextBundle.knowledge` so downstream orchestration consumes a consistent contract.
+- **Fallback expectations**: If embeddings cannot be generated or the repository returns no matches, the bundle is marked `status="fallback"` and includes the shared fallback snippet. When the embedding client cannot initialise (for example, missing OpenAI credentials), the bundle reports `status="unavailable"`. Capability metadata advertises the associated health signals so registry snapshots surface degraded behaviour.
+- **Observability**: Retrieval errors emit `strategist_retrieval_*` warnings through the shared logger. SSE telemetry carries the `ContextBundle.knowledge.status` value, letting dashboards track ready/fallback/unavailable rates alongside strategist throughput.
+- **Seeding the corpus**: Convert Markdown guidance into snippets with `node scripts/seed-strategist-corpus.mjs <file.md>`. Set both `OPENAI_API_KEY` (or `FLEX_OPENAI_API_KEY`) *and* `DATABASE_URL` in the environment before running so the script can call OpenAI for embeddings and connect to Postgres. Update the script inputs whenever the curated strategist corpus changes.

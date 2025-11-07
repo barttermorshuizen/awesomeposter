@@ -50,6 +50,7 @@ const DEFAULT_HITL_STATE: HitlRunState = { requests: [], responses: [], pendingR
 
 type LegacyOrchestratorBridge = typeof globalThis & {
   __awesomeposter_setOrchestratorPersistence?: (instance: unknown) => void
+  __awesomeposter_orchestratorPersistenceInstance?: unknown
 }
 
 const legacyBridge = globalThis as LegacyOrchestratorBridge
@@ -421,6 +422,9 @@ export function getOrchestratorPersistence() {
 
 export function setOrchestratorPersistence(instance: PersistenceImpl) {
   singleton = instance
+  try {
+    legacyBridge.__awesomeposter_orchestratorPersistenceInstance = instance
+  } catch {}
   try {
     legacyBridge.__awesomeposter_setOrchestratorPersistence?.(instance)
   } catch {}

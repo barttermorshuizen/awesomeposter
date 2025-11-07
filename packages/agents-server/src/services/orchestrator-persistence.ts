@@ -33,7 +33,10 @@ const DEFAULT_HITL_STATE: HitlRunState = { requests: [], responses: [], pendingR
 
 type LegacyBridge = typeof globalThis & {
   __awesomeposter_setOrchestratorPersistence?: (instance: unknown) => void
+  __awesomeposter_orchestratorPersistenceInstance?: unknown
 }
+
+const legacyBridge = globalThis as LegacyBridge
 
 function clone<T>(value: T): T {
   if (value == null) return value
@@ -285,6 +288,11 @@ let singleton: PersistenceImpl | null = null
 
 export function getOrchestratorPersistence() {
   if (!singleton) {
+    const sharedInstance = legacyBridge.__awesomeposter_orchestratorPersistenceInstance
+    if (sharedInstance) {
+      singleton = sharedInstance as PersistenceImpl
+      return singleton
+    }
     if (process.env.ORCHESTRATOR_PERSISTENCE === 'memory' || process.env.NODE_ENV === 'test') {
       singleton = new InMemoryOrchestratorPersistence()
     } else {
@@ -296,9 +304,11 @@ export function getOrchestratorPersistence() {
 
 export function setOrchestratorPersistence(instance: PersistenceImpl) {
   singleton = instance
+  try {
+    legacyBridge.__awesomeposter_orchestratorPersistenceInstance = instance
+  } catch {}
 }
 
-const legacyBridge = globalThis as LegacyBridge
 if (typeof legacyBridge.__awesomeposter_setOrchestratorPersistence !== 'function') {
   legacyBridge.__awesomeposter_setOrchestratorPersistence = (instance: unknown) => {
     try {
