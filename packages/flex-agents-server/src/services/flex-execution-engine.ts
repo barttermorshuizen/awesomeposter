@@ -37,6 +37,7 @@ import {
   mergeFacetValuesIntoStructure,
   stripPlannerFields
 } from './run-context-utils'
+import { evaluateGoalConditions } from './goal-condition-evaluator'
 
 type StructuredRuntime = Pick<AgentRuntime, 'runStructured'>
 type AjvInstance = ReturnType<typeof Ajv>
@@ -1271,6 +1272,10 @@ export class FlexExecutionEngine {
     )
 
     const facetsSnapshot = runContext.snapshot()
+    const goalConditionResults =
+      envelope.goal_condition && envelope.goal_condition.length
+        ? evaluateGoalConditions(envelope.goal_condition, { runContextSnapshot: facetsSnapshot })
+        : []
     const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
     const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
     await this.persistence.recordResult(runId, finalOutput, {
@@ -1279,6 +1284,7 @@ export class FlexExecutionEngine {
       schemaHash: opts.schemaHash ?? null,
       facets: facetsSnapshot,
       provenance,
+       goalConditionResults: goalConditionResults.length ? goalConditionResults : null,
       snapshot: {
         planVersion: plan.version,
         nodes: snapshotNodes,
@@ -1293,10 +1299,14 @@ export class FlexExecutionEngine {
         }
       }
     })
+    const completePayload: Record<string, unknown> = { output: finalOutput }
+    if (goalConditionResults.length) {
+      completePayload.goal_condition_results = goalConditionResults
+    }
     await opts.onEvent(
       this.buildEvent(
         'complete',
-        { output: finalOutput },
+        completePayload,
         {
           runId,
           planVersion: plan.version,
@@ -3427,6 +3437,10 @@ export class FlexExecutionEngine {
     )
 
     const facetsSnapshot = activeRunContext.snapshot()
+    const goalConditionResults =
+      envelope.goal_condition && envelope.goal_condition.length
+        ? evaluateGoalConditions(envelope.goal_condition, { runContextSnapshot: facetsSnapshot })
+        : []
     const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
     const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
     await this.persistence.recordResult(runId, finalOutput, {
@@ -3435,6 +3449,7 @@ export class FlexExecutionEngine {
       schemaHash: opts.schemaHash ?? null,
       facets: facetsSnapshot,
       provenance,
+      goalConditionResults: goalConditionResults.length ? goalConditionResults : null,
       snapshot: {
         planVersion: plan.version,
         nodes: snapshotNodes,
@@ -3449,10 +3464,14 @@ export class FlexExecutionEngine {
         }
       }
     })
+    const completePayload: Record<string, unknown> = { output: finalOutput }
+    if (goalConditionResults.length) {
+      completePayload.goal_condition_results = goalConditionResults
+    }
     await opts.onEvent(
       this.buildEvent(
         'complete',
-        { output: finalOutput },
+        completePayload,
         {
           runId,
           planVersion: plan.version,

@@ -4,7 +4,18 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('@awesomeposter/db', () => {
   const column = (name: string) => ({ name })
   return {
-    flexRunOutputs: { runId: column('run_id'), planVersion: column('plan_version'), schemaHash: column('schema_hash'), status: column('status'), outputJson: column('output_json'), facetSnapshotJson: column('facet_snapshot_json'), provenanceJson: column('provenance_json'), recordedAt: column('recorded_at'), updatedAt: column('updated_at') },
+    flexRunOutputs: {
+      runId: column('run_id'),
+      planVersion: column('plan_version'),
+      schemaHash: column('schema_hash'),
+      status: column('status'),
+      outputJson: column('output_json'),
+      facetSnapshotJson: column('facet_snapshot_json'),
+      provenanceJson: column('provenance_json'),
+      goalConditionResultsJson: column('goal_condition_results_json'),
+      recordedAt: column('recorded_at'),
+      updatedAt: column('updated_at')
+    },
     flexPlanSnapshots: {
       runId: column('run_id'),
       planVersion: column('plan_version'),
@@ -29,6 +40,24 @@ vi.mock('@awesomeposter/db', () => {
 })
 
 import { FlexRunPersistence } from '../src/services/orchestrator-persistence'
+
+function createExecutorStub() {
+  const executor: any = {}
+  executor.update = vi.fn(() => executor)
+  executor.set = vi.fn(() => executor)
+  executor.where = vi.fn(() => executor)
+  executor.delete = vi.fn(() => executor)
+  executor.insert = vi.fn((table: unknown) => {
+    executor.__lastInsertTarget = table
+    return executor
+  })
+  executor.values = vi.fn(() => executor)
+  executor.onConflictDoUpdate = vi.fn(() => executor)
+  executor.transaction = vi.fn(async (cb: (tx: any) => Promise<void>) => {
+    await cb(executor)
+  })
+  return executor
+}
 
 function createSelectStub(rows: any[]) {
   const chain: any = {}
@@ -55,6 +84,9 @@ describe('FlexRunPersistence read helpers', () => {
         }
       },
       provenanceJson: { copyVariants: [{ nodeId: 'content_1' }] },
+      goalConditionResultsJson: [
+        { facet: 'post_copy', path: '/', expression: 'status == "ready"', satisfied: true }
+      ],
       recordedAt: new Date('2025-04-01T12:05:00.000Z'),
       updatedAt: new Date('2025-04-01T12:05:01.000Z')
     }
@@ -74,6 +106,7 @@ describe('FlexRunPersistence read helpers', () => {
       output: { result: true },
       facets: row.facetSnapshotJson,
       provenance: row.provenanceJson,
+      goalConditionResults: row.goalConditionResultsJson,
       recordedAt: row.recordedAt,
       updatedAt: row.updatedAt
     })
@@ -110,5 +143,49 @@ describe('FlexRunPersistence read helpers', () => {
       updatedAt: snapshotRow.updatedAt
     })
     expect(fakeDb.select).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('FlexRunPersistence save helpers', () => {
+  it('persists conditional node metadata inside plan snapshots', async () => {
+    const executor = createExecutorStub()
+    const fakeOrchestrator = { ensure: vi.fn(), save: vi.fn(), touch: vi.fn() }
+    const persistence = new FlexRunPersistence(executor as any, fakeOrchestrator as any)
+
+    await persistence.savePlanSnapshot(
+      'run-conditional',
+      1,
+      [
+        {
+          nodeId: 'conditional_1',
+          status: 'pending',
+          conditional: {
+            branches: [
+              {
+                predicate: {
+                  dsl: 'facets.objectiveBrief != null',
+                  jsonLogic: { '!!': [{ var: 'facets.objectiveBrief' }] }
+                },
+                next: 'writer_node'
+              }
+            ],
+            fallback: {
+              kind: 'action',
+              action: { type: 'exit', reason: 'resume planner' }
+            }
+          }
+        } as any
+      ]
+    )
+
+    const valuesCalls = ((executor as any).values.mock.calls ?? []) as Array<[any]>
+    const snapshotPayload =
+      valuesCalls.length > 0 ? valuesCalls[valuesCalls.length - 1][0] : undefined
+    expect(snapshotPayload?.snapshotJson).toBeTruthy()
+    const node = snapshotPayload?.snapshotJson.nodes[0]
+    expect(node?.nodeId).toBe('conditional_1')
+    expect(node?.status).toBe('pending')
+    expect(snapshotPayload?.pendingNodeIds).toContain('conditional_1')
+
   })
 })

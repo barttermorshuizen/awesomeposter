@@ -100,4 +100,37 @@ describe('TelemetryService', () => {
 
     expect(captured.map((evt) => evt.type)).toEqual(['plan_requested', 'plan_rejected'])
   })
+
+  it('records goal condition metrics for complete events', async () => {
+    const telemetry = getTelemetryService()
+    const emit = telemetry.createRunEmitter(
+      { runId: 'flex_goal_run', correlationId: 'cid-goal' },
+      async () => {}
+    )
+
+    await emit({
+      type: 'complete',
+      timestamp: nowIso(),
+      payload: {
+        status: 'completed',
+        goal_condition_results: [
+          { facet: 'post_copy', path: '/', expression: 'status == "ready"', satisfied: true },
+          { facet: 'post_visual', path: '/', expression: 'status == "approved"', satisfied: false },
+          {
+            facet: 'feedback',
+            path: '/',
+            expression: 'remaining == 0',
+            satisfied: false,
+            error: 'Path "/value" missing'
+          }
+        ]
+      }
+    })
+
+    const metrics = telemetry.getMetricsSnapshot()
+    expect(metrics.histograms['flex.goal_condition.total|status=completed']?.sum).toBe(3)
+    expect(metrics.histograms['flex.goal_condition.satisfied|status=completed']?.sum).toBe(1)
+    expect(metrics.histograms['flex.goal_condition.failed|status=completed']?.sum).toBe(1)
+    expect(metrics.histograms['flex.goal_condition.errors|status=completed']?.sum).toBe(1)
+  })
 })

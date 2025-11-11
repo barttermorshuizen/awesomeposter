@@ -7,6 +7,8 @@ Canonical request payload containing `objective`, `inputs`, `constraints`, `outp
 
 **Facet state references.** Callers should reference paths that resolve within the facet snapshot published by the capability (for example `/value[0].status`). The orchestrator forwards the condition payloads unchanged so downstream services can evaluate them beside facet catalogs and capability provenance.
 
+**Runtime evaluation + telemetry.** When the execution engine finishes a run it evaluates each `goal_condition` entry against the resolved facet snapshot and streams the per-condition results in `payload.goal_condition_results` on the final `complete` SSE frame. Each entry captures the facet name, the pointer used, the canonical expression, whether it was satisfied, and any runtime evaluation error. The same array is persisted to `flex_run_outputs.goal_condition_results_json`, enabling follow-up replans or operator tooling to see which predicates failed without replaying the run. Telemetry surfaces aggregate counts (passed/failed/errored) via the `flex_goal_condition_evaluated` log and the `flex.goal_condition.*` histograms.
+
 ## 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
 

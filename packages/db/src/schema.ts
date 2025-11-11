@@ -466,6 +466,9 @@ export const flexRunOutputs = pgTable('flex_run_outputs', {
   outputJson: jsonb('output_json').$type<Record<string, unknown>>().notNull(),
   facetSnapshotJson: jsonb('facet_snapshot_json').$type<Record<string, unknown> | null>().default(null),
   provenanceJson: jsonb('provenance_json').$type<Record<string, unknown> | null>().default(null),
+  goalConditionResultsJson: jsonb('goal_condition_results_json')
+    .$type<Array<Record<string, unknown>> | null>()
+    .default(null),
   recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow()
 })

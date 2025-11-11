@@ -5,7 +5,8 @@ import type {
   TaskEnvelope,
   ContextBundle,
   FlexFacetProvenanceMap,
-  ConditionalRoutingNode
+  ConditionalRoutingNode,
+  GoalConditionResult
 } from '@awesomeposter/shared'
 import {
   ensureFacetPlaceholders,
@@ -500,6 +501,7 @@ type RecordResultOptions = {
   schemaHash?: string | null
   facets?: RunContextSnapshot | null
   provenance?: Record<string, unknown> | null
+  goalConditionResults?: GoalConditionResult[] | null
   snapshot?: {
     nodes: FlexPlanNodeSnapshot[]
     planVersion: number
@@ -517,6 +519,7 @@ export type FlexRunOutputRow = {
   output: Record<string, unknown>
   facets: RunContextSnapshot | null
   provenance: Record<string, unknown> | null
+  goalConditionResults: GoalConditionResult[] | null
   recordedAt: Date | null
   updatedAt: Date | null
 }
@@ -822,6 +825,7 @@ export class FlexRunPersistence {
           outputJson: clone(result),
           facetSnapshotJson: options.facets ? clone(options.facets) : null,
           provenanceJson: options.provenance ? clone(options.provenance) : null,
+          goalConditionResultsJson: options.goalConditionResults ? clone(options.goalConditionResults) : null,
           recordedAt: now,
           updatedAt: now
         })
@@ -834,6 +838,7 @@ export class FlexRunPersistence {
             outputJson: sql`excluded.output_json`,
             facetSnapshotJson: sql`excluded.facet_snapshot_json`,
             provenanceJson: sql`excluded.provenance_json`,
+            goalConditionResultsJson: sql`excluded.goal_condition_results_json`,
             updatedAt: now
           }
         })
@@ -874,6 +879,7 @@ export class FlexRunPersistence {
       output: (row.outputJson as Record<string, unknown>) ?? {},
       facets: (row.facetSnapshotJson as RunContextSnapshot | null) ?? null,
       provenance: (row.provenanceJson as Record<string, unknown> | null) ?? null,
+      goalConditionResults: (row.goalConditionResultsJson as GoalConditionResult[] | null) ?? null,
       recordedAt: row.recordedAt ?? null,
       updatedAt: row.updatedAt ?? null
     }
@@ -1336,6 +1342,7 @@ export class FlexRunPersistence {
             output: clone(record.run.result),
             facets: record.run.contextSnapshot ?? null,
             provenance: null,
+            goalConditionResults: null,
             recordedAt: record.run.updatedAt ?? null,
             updatedAt: record.run.updatedAt ?? null
           }

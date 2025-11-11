@@ -20,7 +20,7 @@ The `/api/v1/flex/run.stream` controller validates the incoming envelope, persis
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
 -  `hitl_request` payloads include `pendingNodeId`, `contractSummary` (compiled facets + contracts), and `operatorPrompt` so clients can render enriched approval context. Resume streams emit the same structure until the request resolves.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
-- `complete`: final frame containing `payload.output` that satisfies the caller schema.
+- `complete`: final frame containing `payload.output` that satisfies the caller schema. When envelopes supplied `goal_condition` entries, `payload.goal_condition_results` lists the evaluated predicates (facet, path, expression, satisfied flag, error message if evaluation failed) so clients can see which ones passed without re-inspecting facet snapshots.
 - `log`: informational/debug messages.
 
 Each frame carries `runId` (and `nodeId` for node-scoped events) at the top level, allowing consumers to correlate updates without re-parsing payloads.

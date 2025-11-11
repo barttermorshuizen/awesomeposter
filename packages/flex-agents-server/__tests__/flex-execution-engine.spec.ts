@@ -112,19 +112,21 @@ function buildEnvelope(): TaskEnvelope {
   }
 }
 
-function buildPersistenceStub(): FlexRunPersistence {
-  return {
+function buildPersistenceStub(): { persistence: FlexRunPersistence; recordResult: ReturnType<typeof vi.fn> } {
+  const recordResult = vi.fn().mockResolvedValue(undefined)
+  const persistence = {
     savePlanSnapshot: vi.fn().mockResolvedValue(undefined),
     markNode: vi.fn().mockResolvedValue(undefined),
     updateStatus: vi.fn().mockResolvedValue(undefined),
-    recordResult: vi.fn().mockResolvedValue(undefined),
+    recordResult,
     recordPendingResult: vi.fn().mockResolvedValue(undefined),
     saveRunContext: vi.fn().mockResolvedValue(undefined)
   } as unknown as FlexRunPersistence
+  return { persistence, recordResult }
 }
 
 function buildEngine() {
-  const persistence = buildPersistenceStub()
+  const { persistence, recordResult } = buildPersistenceStub()
   const capabilityRegistry = {
     getCapabilityById: vi.fn().mockResolvedValue(null)
   } as unknown as FlexCapabilityRegistryService
@@ -135,7 +137,7 @@ function buildEngine() {
     capabilityRegistry,
     runtime
   })
-  return { engine, persistence }
+  return { engine, persistence, recordResult }
 }
 
 function collectEvents() {
@@ -220,6 +222,55 @@ describe('FlexExecutionEngine routing nodes', () => {
     const routingComplete = events.find((evt) => evt.type === 'node_complete' && evt.nodeId === 'route')
     expect(routingComplete?.payload && (routingComplete.payload as Record<string, unknown>).routingResult).toMatchObject({
       resolution: 'replan'
+    })
+  })
+})
+
+describe('FlexExecutionEngine goal condition evaluation', () => {
+  it('emits goal_condition_results and persists evaluation output', async () => {
+    const { engine, recordResult } = buildEngine()
+    const { events, onEvent } = collectEvents()
+    const runContext = new RunContext()
+    runContext.updateFacet('post_copy', { status: 'ready' }, { nodeId: 'seed', capabilityId: 'writer.v1', rationale: 'seed' })
+    runContext.updateFacet('routeTarget', 'success', { nodeId: 'seed', capabilityId: null, rationale: 'seed' })
+
+    const envelope: TaskEnvelope = {
+      ...buildEnvelope(),
+      goal_condition: [
+        {
+          facet: 'post_copy',
+          path: '/',
+          condition: {
+            dsl: 'status == "ready"',
+            canonicalDsl: 'status == "ready"',
+            jsonLogic: {
+              '==': [{ var: 'status' }, 'ready']
+            }
+          }
+        }
+      ]
+    }
+
+    await engine.execute('run-goals', envelope, buildPlan({ includeSuccessNode: true, includeElseNode: false, withElse: false }), {
+      onEvent,
+      runContext
+    })
+
+    const completeEvent = events.find((evt) => evt.type === 'complete')
+    expect(completeEvent).toBeTruthy()
+    const goalResults = (completeEvent?.payload as Record<string, unknown> | undefined)?.goal_condition_results
+    expect(Array.isArray(goalResults)).toBe(true)
+    expect(goalResults?.[0]).toMatchObject({
+      facet: 'post_copy',
+      path: '/',
+      satisfied: true
+    })
+
+    const recordCall = recordResult.mock.calls.at(-1)
+    expect(recordCall?.[2]?.goalConditionResults).toHaveLength(1)
+    expect(recordCall?.[2]?.goalConditionResults?.[0]).toMatchObject({
+      facet: 'post_copy',
+      satisfied: true
     })
   })
 })

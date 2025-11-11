@@ -261,6 +261,20 @@ export type FacetCondition = z.infer<typeof FacetConditionSchema>
 export type FacetConditionDsl = RuntimePolicyConditionDsl
 
 /**
+ * Result payload emitted after evaluating a single goal condition.
+ */
+export const GoalConditionResultSchema = z
+  .object({
+    facet: z.string().min(1),
+    path: z.string().min(1),
+    expression: z.string().min(1),
+    satisfied: z.boolean(),
+    error: z.string().min(1).optional()
+  })
+  .strict()
+export type GoalConditionResult = z.infer<typeof GoalConditionResultSchema>
+
+/**
  * Canonical wrapper for planner requests including objectives and policies.
  */
 export const TaskEnvelopeSchema = z.object({
@@ -377,6 +391,23 @@ export const FlexEventSchema = z.object({
   facetProvenance: FlexFacetProvenanceMapSchema
 })
 export type FlexEvent = z.infer<typeof FlexEventSchema>
+
+/**
+ * Helper describing the payload emitted on `complete` frames.
+ */
+export type FlexCompleteEventPayload = {
+  status?: string
+  output?: Record<string, unknown>
+  error?: unknown
+  policyId?: string
+  action?: Record<string, unknown> | null
+  goal_condition_results?: GoalConditionResult[]
+}
+
+export type FlexCompleteEvent = Omit<FlexEvent, 'type' | 'payload'> & {
+  type: 'complete'
+  payload?: FlexCompleteEventPayload
+}
 
 const InputTraitsSchema = z
   .object({

@@ -171,6 +171,8 @@ Canonical request payload containing `objective`, `inputs`, `constraints`, `outp
 
 **Facet state references.** Callers should reference paths that resolve within the facet snapshot published by the capability (for example `/value[0].status`). The orchestrator forwards the condition payloads unchanged so downstream services can evaluate them beside facet catalogs and capability provenance.
 
+**Runtime evaluation + telemetry.** The execution engine evaluates every `goal_condition` entry once terminal nodes succeed and exposes the results as `payload.goal_condition_results` on the final `complete` SSE frame. Each result includes the facet name, JSON-pointer path, canonical expression, satisfaction flag, and any runtime error message. The same array is stored in `flex_run_outputs.goal_condition_results_json` so replans and operator tools can see which predicates failed without replaying the run. Telemetry publishes aggregate counts via the `flex_goal_condition_evaluated` log and the `flex.goal_condition.*` histograms.
+
 ### 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
 
@@ -2300,7 +2302,7 @@ It’s a structured map of *where to move next* based on current performance, co
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`) plus persisted run context (`hitlClarifications` storing the structured clarify question/answer history).
 - `flex_plan_nodes`: stores node-level state, selected capability IDs, context hashes, and validation status for auditing and resumption.
 - `flex_plan_snapshots`: versioned checkpoints serializing plan graphs (node facets, compiled contracts, provenance, pending node IDs) and the facet snapshot used for resume/HITL flows.
-- `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, completion status, and timestamps so downstream systems can audit or resume runs.
+- `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, goal-condition evaluation results, completion status, and timestamps so downstream systems can audit or resume runs.
 - `flex_capabilities`: stores registered agent metadata, heartbeat timestamps, availability state, and facet coverage hints.
 - Reuse `agent_messages` and `hitl_requests` tables, adding `flex_run_id` foreign keys for joint reporting.
 

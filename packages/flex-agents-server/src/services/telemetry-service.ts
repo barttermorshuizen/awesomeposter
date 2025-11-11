@@ -355,6 +355,18 @@ class TelemetryService {
           logPayload.error = summarizeValue((payloadRecord as any).error)
         }
         logger.info('flex_run_complete', logPayload)
+        {
+          const stats = this.computeGoalConditionStats(payloadRecord)
+          if (stats) {
+            logger.info('flex_goal_condition_evaluated', {
+              ...base,
+              totalConditions: stats.total,
+              satisfied: stats.satisfied,
+              failed: stats.failed,
+              errors: stats.errors
+            })
+          }
+        }
         break
       }
       default: {
@@ -434,10 +446,49 @@ class TelemetryService {
             planVersion: event.planVersion
           })
         }
+        {
+          const stats = this.computeGoalConditionStats(payloadRecord)
+          if (stats) {
+            this.recordHistogram('flex.goal_condition.total', stats.total, { status }, event)
+            this.recordHistogram('flex.goal_condition.satisfied', stats.satisfied, { status }, event)
+            this.recordHistogram('flex.goal_condition.failed', stats.failed, { status }, event)
+            this.recordHistogram('flex.goal_condition.errors', stats.errors, { status }, event)
+          }
+        }
         break
       }
       default:
         break
+    }
+  }
+
+  private computeGoalConditionStats(payload: Record<string, unknown>): { total: number; satisfied: number; failed: number; errors: number } | null {
+    const results = payload.goal_condition_results
+    if (!Array.isArray(results) || results.length === 0) {
+      return null
+    }
+    let satisfied = 0
+    let failed = 0
+    let errors = 0
+    for (const entry of results) {
+      if (!entry || typeof entry !== 'object') continue
+      const hasError = typeof (entry as any).error === 'string' && (entry as any).error.length > 0
+      if (hasError) {
+        errors += 1
+        continue
+      }
+      const isSatisfied = Boolean((entry as any).satisfied)
+      if (isSatisfied) {
+        satisfied += 1
+      } else {
+        failed += 1
+      }
+    }
+    return {
+      total: results.length,
+      satisfied,
+      failed,
+      errors
     }
   }
 
