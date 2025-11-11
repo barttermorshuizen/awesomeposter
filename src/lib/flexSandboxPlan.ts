@@ -1,10 +1,12 @@
-import type { FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode } from '@/lib/flexSandboxTypes'
+import type { ConditionalRoutingNode, RoutingEvaluationResult } from '@awesomeposter/shared'
+import type { FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode, FlexSandboxPlanEdge } from '@/lib/flexSandboxTypes'
 
 type ExtractedPlan = {
   runId?: string | null
   version?: number
   metadata?: Record<string, unknown> | null
   nodes: FlexSandboxPlanNode[]
+  edges: FlexSandboxPlanEdge[]
 }
 
 const ALLOWED_NODE_STATUSES = new Set<FlexSandboxPlanNode['status']>([
@@ -92,10 +94,36 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
         metadata:
           metadataValue && typeof metadataValue === 'object'
             ? (metadataValue as Record<string, unknown>)
+            : null,
+        routing:
+          node.routing && typeof node.routing === 'object'
+            ? (node.routing as ConditionalRoutingNode)
+            : null,
+        routingResult:
+          node.routingResult && typeof node.routingResult === 'object'
+            ? (node.routingResult as RoutingEvaluationResult)
             : null
       }
     })
     .filter((node) => node.id.length > 0)
+
+  const edgesRaw = Array.isArray((planRecord as Record<string, unknown>).edges)
+    ? ((planRecord as Record<string, unknown>).edges as unknown[])
+    : []
+  const edges: FlexSandboxPlanEdge[] = edgesRaw
+    .filter((edge): edge is { from: unknown; to: unknown; reason?: unknown } => !!edge && typeof edge === 'object')
+    .map((edge) => {
+      const record = edge as { from?: unknown; to?: unknown; reason?: unknown }
+      const from = typeof record.from === 'string' ? record.from : ''
+      const to = typeof record.to === 'string' ? record.to : ''
+      if (!from || !to) return null
+      return {
+        from,
+        to,
+        reason: typeof record.reason === 'string' ? record.reason : undefined
+      }
+    })
+    .filter((edge): edge is FlexSandboxPlanEdge => Boolean(edge))
 
   return {
     runId: typeof planRecord.runId === 'string' ? planRecord.runId : null,
@@ -104,7 +132,8 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
       planRecord.metadata && typeof planRecord.metadata === 'object'
         ? (planRecord.metadata as Record<string, unknown>)
         : null,
-    nodes
+    nodes,
+    edges
   }
 }
 

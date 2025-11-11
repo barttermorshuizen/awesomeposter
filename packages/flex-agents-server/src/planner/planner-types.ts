@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { RoutingConditionSchema } from '@awesomeposter/shared'
 
 const StringOrArraySchema = z
   .union([z.array(z.string().min(1)), z.string().min(1)])
@@ -25,6 +26,37 @@ const FacetListSchema = z
     return Object.keys(value)
   })
 
+const PlannerRoutingConditionInputSchema = z.union([z.string().min(1), RoutingConditionSchema]).or(
+  z.object({
+    dsl: z.string().min(1),
+    jsonLogic: z.any().optional()
+  })
+)
+
+const PlannerRoutingEdgeSchema = z
+  .object({
+    to: z.string().min(1),
+    condition: PlannerRoutingConditionInputSchema.optional(),
+    if: PlannerRoutingConditionInputSchema.optional(),
+    label: z.string().optional(),
+    metadata: z.record(z.unknown()).optional()
+  })
+  .superRefine((value, ctx) => {
+    if (!value.condition && !value.if) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Routing edge requires `condition` or `if`.',
+        path: ['condition']
+      })
+    }
+  })
+
+const PlannerRoutingSchema = z.object({
+  routes: z.array(PlannerRoutingEdgeSchema).nonempty(),
+  elseTo: z.string().min(1).optional(),
+  metadata: z.record(z.unknown()).optional()
+})
+
 export const PlannerDraftNodeSchema = z.object({
   label: z.string().min(1).optional(),
   stage: z.string().min(1),
@@ -32,12 +64,13 @@ export const PlannerDraftNodeSchema = z.object({
   derived: z.boolean().optional(),
   status: PlannerDraftNodeStatusSchema,
   kind: z
-    .enum(['structuring', 'execution', 'transformation', 'validation', 'fallback'])
+    .enum(['structuring', 'execution', 'transformation', 'validation', 'fallback', 'routing'])
     .optional(),
   inputFacets: FacetListSchema.optional(),
   outputFacets: FacetListSchema.optional(),
   rationale: StringOrArraySchema.optional(),
-  instructions: StringOrArraySchema.optional()
+  instructions: StringOrArraySchema.optional(),
+  routing: PlannerRoutingSchema.optional()
 })
 
 export const PlannerDraftMetadataSchema = z.object({

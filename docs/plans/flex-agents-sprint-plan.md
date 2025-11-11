@@ -99,7 +99,7 @@
 - **HITL Operator Payloads**: 8.21 Flex HITL Operator Prompt Payloads — delivers contract/prompt enrichment for HITL requests.
 - **HITL Multi-Turn Clarifications**: 8.28 Flex HITL Multi-Turn Clarification Support — new story ensuring operator responses rehydrate paused nodes.
 - **Policy runtime follow-ups**: 8.23 Flex Policy Action Execution & 8.25 Flex Planner Envelope-Driven Context — schedule once 8.5/8.6/8.21/8.28 complete.
-- **Optional stretch** (time permitting): 8.24 Flex Conditional Action Node and 8.27 Flex Runtime Node Selector Extension, contingent on earlier policy groundwork.
+- **Optional stretch** (time permitting): 8.24 Flex Conditional Routing Node and 8.27 Flex Runtime Node Selector Extension, contingent on earlier policy groundwork.
 
 ### Dependencies & Considerations
 - Carry over any incomplete Sprint 2 items (notably 8.4 persistence hardening) before commencing 8.5/8.21/8.28; those stories assume plan snapshots and HITL state storage are production-ready.

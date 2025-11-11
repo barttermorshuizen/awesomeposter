@@ -1219,6 +1219,7 @@ function updatePlanFromGenerated(payload: unknown, timestamp: string) {
       ...node,
       lastUpdatedAt: timestamp
     })),
+    edges: record.edges ?? [],
     history
   }
 }
@@ -1229,7 +1230,8 @@ function updatePlanFromUpdate(payload: unknown, timestamp: string) {
     version: undefined,
     metadata: null,
     nodes: [],
-    history: []
+    history: [],
+    edges: []
   }
   const triggerInfo =
     payload && typeof payload === 'object' ? (payload as Record<string, unknown>).trigger : undefined
@@ -1273,6 +1275,7 @@ function updatePlanFromUpdate(payload: unknown, timestamp: string) {
     version: record.version ?? current.version,
     metadata: record.metadata ?? current.metadata,
     nodes: mergedNodes,
+    edges: record.edges && record.edges.length ? record.edges : current.edges ?? [],
     history: appendHistoryEntry(current.history ?? [], {
       version: record.version ?? current.version ?? 1,
       timestamp,
@@ -1282,7 +1285,12 @@ function updatePlanFromUpdate(payload: unknown, timestamp: string) {
   plan.value = updatedPlan
 }
 
-function updateNodeStatus(nodeId: string | undefined, status: FlexSandboxPlanNode['status'], timestamp: string) {
+function updateNodeStatus(
+  nodeId: string | undefined,
+  status: FlexSandboxPlanNode['status'],
+  timestamp: string,
+  patch?: Partial<FlexSandboxPlanNode>
+) {
   if (!nodeId) return
   if (!plan.value) {
     plan.value = {
@@ -1290,7 +1298,8 @@ function updateNodeStatus(nodeId: string | undefined, status: FlexSandboxPlanNod
       version: undefined,
       metadata: null,
       nodes: [],
-      history: []
+      history: [],
+      edges: []
     }
   }
   const nodes = plan.value.nodes.slice()
@@ -1301,11 +1310,13 @@ function updateNodeStatus(nodeId: string | undefined, status: FlexSandboxPlanNod
       capabilityId: null,
       label: nodeId,
       status,
-      lastUpdatedAt: timestamp
+      lastUpdatedAt: timestamp,
+      ...(patch ?? {})
     })
   } else {
     nodes[index] = {
       ...nodes[index],
+      ...(patch ?? {}),
       status,
       lastUpdatedAt: timestamp
     }
@@ -1359,10 +1370,21 @@ function handleEvent(evt: FlexEventWithId) {
       updateNodeStatus(evt.nodeId, 'running', evt.timestamp)
       flexTasksStore.handleNodeStart(evt)
       break
-    case 'node_complete':
-      updateNodeStatus(evt.nodeId, 'completed', evt.timestamp)
+    case 'node_complete': {
+      const payload = (evt.payload ?? {}) as Record<string, unknown>
+      const routingResult =
+        payload.routingResult && typeof payload.routingResult === 'object'
+          ? (payload.routingResult as FlexSandboxPlanNode['routingResult'])
+          : undefined
+      updateNodeStatus(
+        evt.nodeId,
+        'completed',
+        evt.timestamp,
+        routingResult ? { routingResult } : undefined
+      )
       flexTasksStore.handleNodeComplete(evt)
       break
+    }
     case 'node_error':
       updateNodeStatus(evt.nodeId, 'error', evt.timestamp)
       if (!runError.value && evt.message) {

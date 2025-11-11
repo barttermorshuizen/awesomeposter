@@ -1,7 +1,12 @@
 import { getDb, orchestratorRuns, flexRuns, flexPlanNodes, flexPlanSnapshots, flexRunOutputs, eq, and, isNotNull } from '@awesomeposter/db'
 import { sql, notInArray, desc, asc } from 'drizzle-orm'
 import type { Plan, RunReport, StepResult, HitlRunState, HitlRequestRecord } from '@awesomeposter/shared'
-import type { TaskEnvelope, ContextBundle, FlexFacetProvenanceMap } from '@awesomeposter/shared'
+import type {
+  TaskEnvelope,
+  ContextBundle,
+  FlexFacetProvenanceMap,
+  ConditionalRoutingNode
+} from '@awesomeposter/shared'
 import {
   ensureFacetPlaceholders,
   mergeFacetValuesIntoStructure,
@@ -454,6 +459,7 @@ export type FlexPlanNodeSnapshot = {
   metadata?: Record<string, unknown> | null
   rationale?: string[] | null
   executor?: FlexPlanExecutor | null
+  routing?: ConditionalRoutingNode | null
 }
 
 export type FlexRunRecord = {

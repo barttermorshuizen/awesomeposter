@@ -27,6 +27,7 @@ describe('flexSandboxPlan utils', () => {
     })
     expect(result?.nodes).toHaveLength(2)
     expect(result?.nodes[0]).toMatchObject({ id: 'node-1', status: 'running' })
+    expect(result?.edges).toEqual([])
   })
 
   it('extracts plan data from top-level plan payload', () => {
@@ -72,6 +73,25 @@ describe('flexSandboxPlan utils', () => {
     }
 
     expect(() => extractPlanPayload(payload)).toThrow(/version/i)
+  })
+
+  it('parses edges when present', () => {
+    const payload = {
+      plan: {
+        runId: 'run-edges',
+        version: 4,
+        nodes: [
+          { id: 'node-1', capabilityId: 'writer.v1', label: 'Writer', status: 'pending' },
+          { id: 'node-2', capabilityId: 'qa.v1', label: 'QA', status: 'pending' }
+        ],
+        edges: [
+          { from: 'node-1', to: 'node-2', reason: 'routing' }
+        ]
+      }
+    }
+    const result = extractPlanPayload(payload)
+    expect(result?.edges).toHaveLength(1)
+    expect(result?.edges?.[0]).toEqual({ from: 'node-1', to: 'node-2', reason: 'routing' })
   })
 
   it('appends plan history entries while keeping most recent', () => {

@@ -13,7 +13,7 @@ const ConditionRangeSchema = z.object({
   end: ConditionPositionSchema
 })
 
-const ConditionDslWarningSchema = z.object({
+export const ConditionDslWarningSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
   range: ConditionRangeSchema.optional()

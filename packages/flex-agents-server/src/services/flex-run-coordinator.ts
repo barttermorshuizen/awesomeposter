@@ -8,7 +8,9 @@ import type {
   ContextBundle,
   NodeContract,
   HitlContractSummary,
-  TaskMetadata
+  TaskMetadata,
+  ConditionalRoutingNode,
+  RoutingEvaluationResult
 } from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
 import {
@@ -842,6 +844,44 @@ export class FlexRunCoordinator {
 
       activePlan = this.rehydratePlan(resumeCandidate, envelopeToUse, latestSnapshot)
       activePlanVersion = activePlan.version
+      const pendingStateSnapshotRaw =
+        latestSnapshot.snapshot && typeof latestSnapshot.snapshot === 'object'
+          ? (latestSnapshot.snapshot as { pendingState?: unknown }).pendingState ?? null
+          : null
+
+      let resumeInitialState:
+        | {
+            completedNodeIds: string[]
+            nodeOutputs: Record<string, Record<string, unknown>>
+            policyActions?: PendingPolicyActionState[]
+            policyAttempts?: Record<string, number>
+            mode?: RuntimePolicySnapshotMode
+          }
+        | undefined = pendingStateSnapshotRaw
+        ? {
+            completedNodeIds: Array.isArray((pendingStateSnapshotRaw as any).completedNodeIds)
+              ? ((pendingStateSnapshotRaw as any).completedNodeIds as string[])
+              : [],
+            nodeOutputs:
+              (pendingStateSnapshotRaw as any).nodeOutputs &&
+              typeof (pendingStateSnapshotRaw as any).nodeOutputs === 'object'
+                ? ((pendingStateSnapshotRaw as any).nodeOutputs as Record<string, Record<string, unknown>>)
+                : {},
+            policyActions: Array.isArray((pendingStateSnapshotRaw as any).policyActions)
+              ? ((pendingStateSnapshotRaw as any).policyActions as PendingPolicyActionState[])
+              : [],
+            policyAttempts:
+              (pendingStateSnapshotRaw as any).policyAttempts &&
+              typeof (pendingStateSnapshotRaw as any).policyAttempts === 'object'
+                ? ((pendingStateSnapshotRaw as any).policyAttempts as Record<string, number>)
+                : {},
+            mode:
+              typeof (pendingStateSnapshotRaw as any).mode === 'string'
+                ? ((pendingStateSnapshotRaw as any).mode as RuntimePolicySnapshotMode)
+                : undefined
+          }
+        : undefined
+
       await emitEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -870,6 +910,11 @@ export class FlexRunCoordinator {
                   : undefined
               const metadata =
                 node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+              const initialNodeOutputs = resumeInitialState?.nodeOutputs ?? {}
+              const routingResult =
+                initialNodeOutputs && initialNodeOutputs[node.id] && typeof initialNodeOutputs[node.id] === 'object'
+                  ? ((initialNodeOutputs[node.id] as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
+                  : undefined
               return {
                 id: node.id,
                 capabilityId: node.capabilityId,
@@ -879,42 +924,20 @@ export class FlexRunCoordinator {
                 ...(contracts ? { contracts } : {}),
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
-                ...(metadata ? { metadata } : {})
+                ...(metadata ? { metadata } : {}),
+                ...(node.routing ? { routing: node.routing } : {}),
+                ...(routingResult ? { routingResult } : {})
               }
             }),
+            edges: activePlan.edges.map((edge) => ({
+              from: edge.from,
+              to: edge.to,
+              ...(edge.reason ? { reason: edge.reason } : {})
+            })),
             metadata: { resumed: true }
           }
         }
       })
-
-      const pendingStateSnapshotRaw =
-        latestSnapshot.snapshot && typeof latestSnapshot.snapshot === 'object'
-          ? (latestSnapshot.snapshot as { pendingState?: unknown }).pendingState ?? null
-          : null
-      let resumeInitialState = pendingStateSnapshotRaw
-        ? {
-            completedNodeIds: Array.isArray((pendingStateSnapshotRaw as any).completedNodeIds)
-              ? ((pendingStateSnapshotRaw as any).completedNodeIds as string[])
-              : [],
-            nodeOutputs:
-              (pendingStateSnapshotRaw as any).nodeOutputs &&
-              typeof (pendingStateSnapshotRaw as any).nodeOutputs === 'object'
-                ? ((pendingStateSnapshotRaw as any).nodeOutputs as Record<string, Record<string, unknown>>)
-                : {},
-            policyActions: Array.isArray((pendingStateSnapshotRaw as any).policyActions)
-              ? ((pendingStateSnapshotRaw as any).policyActions as PendingPolicyActionState[])
-              : [],
-            policyAttempts:
-              (pendingStateSnapshotRaw as any).policyAttempts &&
-              typeof (pendingStateSnapshotRaw as any).policyAttempts === 'object'
-                ? ((pendingStateSnapshotRaw as any).policyAttempts as Record<string, number>)
-                : {},
-            mode:
-              typeof (pendingStateSnapshotRaw as any).mode === 'string'
-                ? ((pendingStateSnapshotRaw as any).mode as RuntimePolicySnapshotMode)
-                : undefined
-          }
-        : undefined
 
       let pendingState:
         | {
@@ -1359,7 +1382,8 @@ export class FlexRunCoordinator {
                   contracts: node.contracts,
                   provenance: node.provenance,
                   metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
-                  rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+                  rationale: node.rationale && node.rationale.length ? [...node.rationale] : null,
+                  routing: node.routing ?? null
                 }
               })
               state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
@@ -1393,11 +1417,11 @@ export class FlexRunCoordinator {
                   previousVersion,
                   version: updatedPlan.version,
                   trigger,
-                  nodes: updatedPlan.nodes.map((node) => {
-                    const contractSource = node.contracts
-                    const contracts =
-                      contractSource && (contractSource.input || contractSource.output)
-                        ? {
+              nodes: updatedPlan.nodes.map((node) => {
+                const contractSource = node.contracts
+                const contracts =
+                  contractSource && (contractSource.input || contractSource.output)
+                    ? {
                             ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
                             ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
                           }
@@ -1412,23 +1436,35 @@ export class FlexRunCoordinator {
                       typeof node.derivedCapability.fromCapabilityId === 'string'
                         ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
                         : undefined
-                    const metadata =
-                      node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
-                    return {
-                      id: node.id,
-                      capabilityId: node.capabilityId,
-                      label: node.label,
-                      kind: node.kind,
-                      status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
-                      ...(contracts ? { contracts } : {}),
-                      ...(facets ? { facets } : {}),
-                      ...(derived ? { derivedCapability: derived } : {}),
-                    ...(metadata ? { metadata } : {})
-                  }
-                }),
-                  metadata: updatedPlan.metadata
-                }
-              })
+              const metadata =
+                node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+              const nodeOutput = state.nodeOutputs[node.id]
+              const routingResult =
+                nodeOutput && typeof nodeOutput === 'object'
+                  ? ((nodeOutput as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
+                  : undefined
+              return {
+                id: node.id,
+                capabilityId: node.capabilityId,
+                label: node.label,
+                kind: node.kind,
+                status: pendingState!.completedNodeIds.includes(node.id) ? 'completed' : 'pending',
+                ...(contracts ? { contracts } : {}),
+                ...(facets ? { facets } : {}),
+                ...(derived ? { derivedCapability: derived } : {}),
+                ...(metadata ? { metadata } : {}),
+                ...(node.routing ? { routing: node.routing } : {}),
+                ...(routingResult ? { routingResult } : {})
+              }
+            }),
+              edges: updatedPlan.edges.map((edge) => ({
+                from: edge.from,
+                to: edge.to,
+                ...(edge.reason ? { reason: edge.reason } : {})
+              })),
+              metadata: updatedPlan.metadata
+            }
+          })
               executionMode = 'execute'
               finalOutputSeed = null
               continue
@@ -1519,7 +1555,8 @@ export class FlexRunCoordinator {
         contracts: node.contracts,
         provenance: node.provenance,
         metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
-        rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+        rationale: node.rationale && node.rationale.length ? [...node.rationale] : null,
+        routing: node.routing ?? null
       }))
       await this.persistence.savePlanSnapshot(runId, activePlan.version, planSnapshot, {
         facets: runContext.snapshot(),
@@ -1570,9 +1607,15 @@ export class FlexRunCoordinator {
                 ...(contracts ? { contracts } : {}),
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
-                ...(metadata ? { metadata } : {})
+                ...(metadata ? { metadata } : {}),
+                ...(node.routing ? { routing: node.routing } : {})
               }
             }),
+            edges: activePlan.edges.map((edge) => ({
+              from: edge.from,
+              to: edge.to,
+              ...(edge.reason ? { reason: edge.reason } : {})
+            })),
             metadata: activePlan.metadata
           }
         }
@@ -1740,6 +1783,11 @@ export class FlexRunCoordinator {
                       : undefined
                   const metadata =
                     node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                  const nodeOutput = state.nodeOutputs[node.id]
+                  const routingResult =
+                    nodeOutput && typeof nodeOutput === 'object'
+                      ? ((nodeOutput as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
+                      : undefined
                   return {
                     id: node.id,
                     capabilityId: node.capabilityId,
@@ -1749,9 +1797,16 @@ export class FlexRunCoordinator {
                     ...(contracts ? { contracts } : {}),
                     ...(facets ? { facets } : {}),
                     ...(derived ? { derivedCapability: derived } : {}),
-                    ...(metadata ? { metadata } : {})
+                    ...(metadata ? { metadata } : {}),
+                    ...(node.routing ? { routing: node.routing } : {}),
+                    ...(routingResult ? { routingResult } : {})
                   }
                 }),
+                edges: updatedPlan.edges.map((edge) => ({
+                  from: edge.from,
+                  to: edge.to,
+                  ...(edge.reason ? { reason: edge.reason } : {})
+                })),
                 metadata: updatedPlan.metadata
               }
             })
@@ -1867,6 +1922,7 @@ export class FlexRunCoordinator {
         provenance?: FlexPlanNodeProvenance | null
         metadata?: Record<string, unknown> | null
         rationale?: string[] | null
+        routing?: ConditionalRoutingNode | null
       }
     >()
 
@@ -1885,7 +1941,8 @@ export class FlexRunCoordinator {
             contracts: (raw.contracts as FlexPlanNodeContracts | null | undefined) ?? null,
             provenance: (raw.provenance as FlexPlanNodeProvenance | null | undefined) ?? null,
             metadata: (raw.metadata as Record<string, unknown> | null | undefined) ?? null,
-            rationale: Array.isArray(raw.rationale) ? (raw.rationale as string[]) : null
+            rationale: Array.isArray(raw.rationale) ? (raw.rationale as string[]) : null,
+            routing: (raw.routing as ConditionalRoutingNode | null | undefined) ?? null
           })
         }
       })
@@ -1961,7 +2018,15 @@ export class FlexRunCoordinator {
           : typeof (nodeMetadata as any)?.plannerStage === 'string'
           ? ((nodeMetadata as any).plannerStage as string)
           : undefined
-      const allowedKinds: FlexPlanNodeKind[] = ['structuring', 'branch', 'execution', 'transformation', 'validation', 'fallback']
+      const allowedKinds: FlexPlanNodeKind[] = [
+        'structuring',
+        'branch',
+        'execution',
+        'transformation',
+        'validation',
+        'fallback',
+        'routing'
+      ]
       const kind: FlexPlanNodeKind =
         kindRaw && allowedKinds.includes(kindRaw as FlexPlanNodeKind)
           ? (kindRaw as FlexPlanNodeKind)
@@ -1995,7 +2060,8 @@ export class FlexRunCoordinator {
         facets,
         provenance,
         rationale,
-        metadata: nodeMetadata
+        metadata: nodeMetadata,
+        routing: snapshotNode?.routing ?? node.routing ?? null
       }
     })
 

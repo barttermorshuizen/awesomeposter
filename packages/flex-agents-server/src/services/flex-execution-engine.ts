@@ -1,6 +1,6 @@
 import Ajv, { type ErrorObject } from 'ajv'
 import { z, type ZodTypeAny } from 'zod'
-import type { FlexPlan, FlexPlanNode } from './flex-planner'
+import type { FlexPlan, FlexPlanNode, FlexPlanEdge } from './flex-planner'
 import type {
   AssignmentDefaults,
   TaskEnvelope,
@@ -16,7 +16,9 @@ import type {
   Action,
   HitlContractSummary,
   ContextBundle,
-  FacetProvenance
+  FacetProvenance,
+  JsonLogicExpression,
+  RoutingEvaluationResult
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -26,7 +28,7 @@ import { getRuntime, resolveCapabilityPrompt } from './agents-container'
 import type { AgentRuntime } from './agent-runtime'
 import { getLogger } from './logger'
 import { RunContext, type RunContextSnapshot, type FacetSnapshot } from './run-context'
-import { FacetContractCompiler, getFacetCatalog } from '@awesomeposter/shared'
+import { FacetContractCompiler, getFacetCatalog, evaluateCondition as evaluateRoutingCondition } from '@awesomeposter/shared'
 import type { RuntimePolicyEffect } from './policy-normalizer'
 import type { PendingPolicyActionState, PolicyAttemptState, RuntimePolicySnapshotMode } from './runtime-policy-types'
 import {
@@ -41,7 +43,7 @@ type AjvInstance = ReturnType<typeof Ajv>
 type AjvValidateFn = ReturnType<AjvInstance['compile']>
 
 type RuntimePolicyActionResult =
-  | { kind: 'goto'; nextIndex: number }
+  | { kind: 'goto'; targetNodeId: string }
   | { kind: 'noop' }
 
 const POLICY_ACTION_SOURCE = {
@@ -63,6 +65,213 @@ type EventFacetProvenanceEntry = {
 type EventFacetProvenanceMap = {
   input?: EventFacetProvenanceEntry[]
   output?: EventFacetProvenanceEntry[]
+}
+
+type PlanGraphStructures = {
+  incoming: Map<string, Set<string>>
+  outgoing: Map<string, Set<string>>
+  order: Map<string, number>
+  edges: FlexPlanEdge[]
+}
+
+type RoutingNodeOutcome =
+  | { kind: 'matched' | 'else'; selectedTarget: string; evaluation: RoutingEvaluationResult }
+  | { kind: 'replan'; evaluation: RoutingEvaluationResult }
+
+class PlanScheduler {
+  private readonly graph: PlanGraphStructures
+  private readonly readyQueue: string[] = []
+  private readonly readySet = new Set<string>()
+  private readonly conditionalLocks = new Map<string, Set<string>>()
+  private readonly conditionalTargets = new Map<string, Set<string>>()
+  private readonly nodeKinds = new Map<string, FlexPlanNodeKind>()
+
+  constructor(
+    private readonly plan: FlexPlan,
+    private readonly completedNodeIds: Set<string>,
+    routingSelections?: Map<string, string[]>
+  ) {
+    this.graph = this.buildGraph(plan)
+    this.pruneCompleted()
+    this.applyRoutingSelections(routingSelections)
+    this.refreshAll()
+  }
+
+  hasRemainingWork(): boolean {
+    return this.plan.nodes.some((node) => !this.completedNodeIds.has(node.id))
+  }
+
+  peek(): string | null {
+    return this.readyQueue.length ? this.readyQueue[0] : null
+  }
+
+  next(): string | null {
+    while (this.readyQueue.length) {
+      const nextId = this.readyQueue.shift()!
+      this.readySet.delete(nextId)
+      if (!this.completedNodeIds.has(nextId)) {
+        return nextId
+      }
+    }
+    return null
+  }
+
+  markCompleted(nodeId: string): void {
+    this.completedNodeIds.add(nodeId)
+    const downstream = this.graph.outgoing.get(nodeId)
+    if (downstream) {
+      for (const target of downstream) {
+        const locks = this.conditionalLocks.get(target)
+        if (locks && locks.has(nodeId)) {
+          continue
+        }
+        this.enqueueIfReady(target)
+      }
+    }
+  }
+
+  markConditionalRelease(nodeId: string, allowedTargets: string[]) {
+    const targets = this.conditionalTargets.get(nodeId)
+    if (!targets || !allowedTargets.length) return
+    const allowSet = new Set(allowedTargets)
+    for (const target of targets) {
+      if (!allowSet.has(target)) continue
+      const locks = this.conditionalLocks.get(target)
+      if (!locks) continue
+      locks.delete(nodeId)
+      if (!locks.size) {
+        this.enqueueIfReady(target)
+      }
+    }
+  }
+
+  private applyRoutingSelections(selections?: Map<string, string[]>) {
+    if (!selections || !selections.size) return
+    for (const [nodeId, targets] of selections.entries()) {
+      if (!this.completedNodeIds.has(nodeId)) continue
+      this.markConditionalRelease(nodeId, targets)
+    }
+  }
+
+  resetFromNode(nodeId: string): string[] {
+    if (!this.graph.order.has(nodeId)) {
+      return []
+    }
+    const affected = new Set<string>()
+    const stack = [nodeId]
+    while (stack.length) {
+      const current = stack.pop()!
+      if (affected.has(current)) continue
+      affected.add(current)
+      const outgoing = this.graph.outgoing.get(current)
+      if (outgoing) {
+        for (const target of outgoing) {
+          stack.push(target)
+        }
+      }
+    }
+    this.requeueNodes(affected)
+    return Array.from(affected)
+  }
+
+  refreshAll(): void {
+    this.readyQueue.length = 0
+    this.readySet.clear()
+    for (const node of this.plan.nodes) {
+      this.enqueueIfReady(node.id)
+    }
+  }
+
+  private requeueNodes(nodes: Set<string>) {
+    for (const id of nodes) {
+      this.completedNodeIds.delete(id)
+      if (this.readySet.delete(id)) {
+        const index = this.readyQueue.indexOf(id)
+        if (index >= 0) {
+          this.readyQueue.splice(index, 1)
+        }
+      }
+      const targets = this.conditionalTargets.get(id)
+      if (targets) {
+        for (const target of targets) {
+          if (!this.conditionalLocks.has(target)) {
+            this.conditionalLocks.set(target, new Set())
+          }
+          this.conditionalLocks.get(target)!.add(id)
+        }
+      }
+    }
+    for (const id of nodes) {
+      this.enqueueIfReady(id)
+    }
+  }
+
+  private enqueueIfReady(nodeId: string) {
+    if (!this.graph.order.has(nodeId)) return
+    if (this.completedNodeIds.has(nodeId) || this.readySet.has(nodeId)) return
+    const incoming = this.graph.incoming.get(nodeId)
+    if (incoming) {
+      for (const dependency of incoming) {
+        if (!this.completedNodeIds.has(dependency)) {
+          return
+        }
+      }
+    }
+    const locks = this.conditionalLocks.get(nodeId)
+    if (locks && locks.size > 0) {
+      return
+    }
+    this.readyQueue.push(nodeId)
+    this.readySet.add(nodeId)
+    this.readyQueue.sort((a, b) => (this.graph.order.get(a)! - this.graph.order.get(b)!))
+  }
+
+  private buildGraph(plan: FlexPlan): PlanGraphStructures {
+    const order = new Map<string, number>()
+    const incoming = new Map<string, Set<string>>()
+    const outgoing = new Map<string, Set<string>>()
+    plan.nodes.forEach((node, index) => {
+      order.set(node.id, index)
+      incoming.set(node.id, new Set())
+      outgoing.set(node.id, new Set())
+      this.nodeKinds.set(node.id, node.kind)
+    })
+    const edges = plan.edges && plan.edges.length ? plan.edges : this.deriveSequentialEdges(plan.nodes)
+    for (const edge of edges) {
+      if (!order.has(edge.from) || !order.has(edge.to)) {
+        continue
+      }
+      incoming.get(edge.to)!.add(edge.from)
+      outgoing.get(edge.from)!.add(edge.to)
+      if (this.nodeKinds.get(edge.from) === 'routing') {
+        if (!this.conditionalLocks.has(edge.to)) {
+          this.conditionalLocks.set(edge.to, new Set())
+        }
+        this.conditionalLocks.get(edge.to)!.add(edge.from)
+        if (!this.conditionalTargets.has(edge.from)) {
+          this.conditionalTargets.set(edge.from, new Set())
+        }
+        this.conditionalTargets.get(edge.from)!.add(edge.to)
+      }
+    }
+    return { incoming, outgoing, order, edges }
+  }
+
+  private deriveSequentialEdges(nodes: FlexPlanNode[]): FlexPlanEdge[] {
+    const edges: FlexPlanEdge[] = []
+    for (let index = 0; index < nodes.length - 1; index += 1) {
+      edges.push({ from: nodes[index].id, to: nodes[index + 1].id, reason: 'sequence' })
+    }
+    return edges
+  }
+
+  private pruneCompleted() {
+    for (const nodeId of Array.from(this.completedNodeIds)) {
+      if (!this.graph.order.has(nodeId)) {
+        this.completedNodeIds.delete(nodeId)
+      }
+    }
+  }
 }
 
 export class FlexValidationError extends Error {
@@ -443,6 +652,191 @@ export class FlexExecutionEngine {
     )
   }
 
+  private async handleRoutingNode(args: {
+    runId: string
+    plan: FlexPlan
+    node: FlexPlanNode
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    nodeTimings: Map<string, NodeTiming>
+    nodeOutputs: Map<string, Record<string, unknown>>
+  }): Promise<RoutingNodeOutcome> {
+    const { runId, plan, node, opts, runContext, nodeTimings, nodeOutputs } = args
+    if (!node.routing || !node.routing.routes.length) {
+      throw new Error(`Routing node "${node.id}" is missing routing configuration.`)
+    }
+
+    const startedAt = new Date()
+    const persistenceContext = this.buildPersistenceContext(node, runContext)
+    nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), startedAt })
+    await this.persistence.markNode(runId, node.id, {
+      status: 'running',
+      label: node.label,
+      context: persistenceContext,
+      startedAt
+    })
+
+    try {
+      getLogger().info('flex_routing_node_start', {
+        runId,
+        nodeId: node.id,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+
+    await opts.onEvent(
+      this.buildEvent(
+        'node_start',
+        {
+          label: node.label,
+          kind: node.kind,
+          routing: node.routing,
+          startedAt: startedAt.toISOString()
+        },
+        {
+          runId,
+          nodeId: node.id,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(node.provenance)
+        }
+      )
+    )
+
+    const runContextSnapshot = runContext.snapshot()
+    const metadataPayload: Record<string, unknown> =
+      node.metadata && typeof node.metadata === 'object'
+        ? { ...(node.metadata as Record<string, unknown>) }
+        : {}
+    metadataPayload.runContextSnapshot = runContextSnapshot
+
+    const evaluationPayload = {
+      run: {
+        id: runId,
+        version: plan.version
+      },
+      metadata: metadataPayload
+    }
+
+    const traces: RoutingEvaluationResult['traces'] = []
+    let matchedRoute: (typeof node.routing.routes)[number] | null = null
+
+    for (const route of node.routing.routes) {
+      const trace: RoutingEvaluationResult['traces'][number] = {
+        to: route.to,
+        label: route.label,
+        dsl: route.condition.dsl,
+        canonicalDsl: route.condition.canonicalDsl ?? null
+      }
+      const jsonLogic = route.condition.jsonLogic as JsonLogicExpression | undefined
+      if (!jsonLogic) {
+        trace.error = 'Routing condition is missing compiled jsonLogic payload.'
+        traces.push(trace)
+        continue
+      }
+      const evaluation = evaluateRoutingCondition(jsonLogic, evaluationPayload)
+      if (!evaluation.ok) {
+        trace.error = evaluation.error
+        traces.push(trace)
+        continue
+      }
+      trace.matched = evaluation.result
+      if (evaluation.resolvedVariables && Object.keys(evaluation.resolvedVariables).length) {
+        trace.resolvedVariables = evaluation.resolvedVariables
+      }
+      traces.push(trace)
+      if (evaluation.result && !matchedRoute) {
+        matchedRoute = route
+      }
+    }
+
+    let resolution: RoutingEvaluationResult['resolution'] = matchedRoute ? 'match' : undefined
+    let selectedTarget: string | undefined = matchedRoute?.to
+    if (!selectedTarget && node.routing.elseTo) {
+      selectedTarget = node.routing.elseTo
+      resolution = 'else'
+    }
+    if (!resolution) {
+      resolution = 'replan'
+    }
+
+    const completedAt = new Date()
+    nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), startedAt, completedAt })
+
+    const evaluationResult: RoutingEvaluationResult = {
+      nodeId: node.id,
+      evaluatedAt: completedAt.toISOString(),
+      selectedTarget,
+      elseTarget: node.routing.elseTo,
+      resolution,
+      traces
+    }
+
+    nodeOutputs.set(node.id, { routingResult: evaluationResult })
+    await this.persistence.markNode(runId, node.id, {
+      status: 'completed',
+      completedAt,
+      output: { routingResult: evaluationResult }
+    })
+
+    try {
+      getLogger().info('flex_routing_node_complete', {
+        runId,
+        nodeId: node.id,
+        resolution,
+        selectedTarget,
+        correlationId: opts.correlationId
+      })
+    } catch {}
+
+    await opts.onEvent(
+      this.buildEvent(
+        'node_complete',
+        {
+          label: node.label,
+          kind: node.kind,
+          completedAt: completedAt.toISOString(),
+          routingResult: evaluationResult
+        },
+        {
+          runId,
+          nodeId: node.id,
+          planVersion: plan.version,
+          facetProvenance: this.normalizeFacetProvenance(node.provenance)
+        }
+      )
+    )
+
+    await opts.onEvent(
+      this.buildEvent(
+        'log',
+        {
+          severity: resolution === 'replan' ? 'warn' : 'info',
+          routingResult: evaluationResult,
+          routingNode: node.id
+        },
+        {
+          runId,
+          nodeId: node.id,
+          message:
+            resolution === 'replan'
+              ? 'routing_replan_required'
+              : `routing_selected:${selectedTarget ?? 'none'}`,
+          planVersion: plan.version
+        }
+      )
+    )
+
+    if (!selectedTarget) {
+      return { kind: 'replan', evaluation: evaluationResult }
+    }
+
+    return {
+      kind: resolution === 'else' ? 'else' : 'matched',
+      selectedTarget,
+      evaluation: evaluationResult
+    }
+  }
+
   async execute(runId: string, envelope: TaskEnvelope, plan: FlexPlan, opts: FlexExecutionOptions) {
     const initialNodeOutputs = opts.initialState?.nodeOutputs ?? {}
     const nodeOutputs = new Map<string, Record<string, unknown>>(Object.entries(initialNodeOutputs))
@@ -454,11 +848,21 @@ export class FlexExecutionEngine {
       ? opts.initialState!.policyActions.map((action) => ({ ...action }))
       : []
     const policyAttempts = new Map<string, number>(Object.entries(opts.initialState?.policyAttempts ?? {}))
+    const nodeLookup = new Map<string, FlexPlanNode>()
     for (const node of plan.nodes) {
+      nodeLookup.set(node.id, node)
       nodeStatuses.set(node.id, completedNodeIds.has(node.id) ? 'completed' : 'pending')
     }
 
-    let startIndex = 0
+    for (const staleId of Array.from(completedNodeIds)) {
+      if (!nodeLookup.has(staleId)) {
+        completedNodeIds.delete(staleId)
+      }
+    }
+
+    const routingSelections = this.buildRoutingSelectionsFromOutputs(nodeOutputs)
+    const scheduler = new PlanScheduler(plan, completedNodeIds, routingSelections)
+
     if (policyActions.length) {
       const pendingDispatch = await this.processPendingPolicyActions({
         runId,
@@ -471,21 +875,17 @@ export class FlexExecutionEngine {
         nodeTimings,
         completedNodeIds,
         policyActions,
-        policyAttempts
+        policyAttempts,
+        scheduler
       })
       policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
-      if (typeof pendingDispatch.nextIndex === 'number') {
-        startIndex = pendingDispatch.nextIndex
-      }
     }
 
-    if (startIndex === 0) {
-      const firstPendingIndex = plan.nodes.findIndex((node) => !completedNodeIds.has(node.id))
-      startIndex = firstPendingIndex >= 0 ? firstPendingIndex : plan.nodes.length
-    }
+    scheduler.refreshAll()
 
     if (opts.onStart) {
-      const nextNode = startIndex < plan.nodes.length ? plan.nodes[startIndex] : null
+      const nextNodeId = scheduler.peek()
+      const nextNode = nextNodeId ? nodeLookup.get(nextNodeId) ?? null : null
       const effect = await opts.onStart({
         runId,
         envelope,
@@ -526,32 +926,81 @@ export class FlexExecutionEngine {
                 nodeTimings,
                 completedNodeIds,
                 policyActions,
-                policyAttempts
+                policyAttempts,
+                scheduler
               },
               { source: POLICY_ACTION_SOURCE.runtime }
             )
-            if (actionOutcome?.kind === 'goto' && typeof actionOutcome.nextIndex === 'number') {
-              startIndex = actionOutcome.nextIndex
+            if (actionOutcome?.kind === 'goto') {
+              scheduler.refreshAll()
             }
           }
         }
       }
     }
 
-    for (let index = startIndex; index < plan.nodes.length; ) {
-      const node = plan.nodes[index]
-      if (completedNodeIds.has(node.id)) {
-        nodeStatuses.set(node.id, 'completed')
-        index += 1
+    while (scheduler.hasRemainingWork()) {
+      const nextNodeId = scheduler.next()
+      if (!nextNodeId) {
+        if (scheduler.hasRemainingWork()) {
+          throw new Error('Plan graph deadlocked: no runnable nodes available.')
+        }
+        break
+      }
+      const node = nodeLookup.get(nextNodeId)
+      if (!node) {
+        scheduler.markCompleted(nextNodeId)
         continue
       }
+      if (completedNodeIds.has(node.id)) {
+        nodeStatuses.set(node.id, 'completed')
+        scheduler.markCompleted(node.id)
+        continue
+      }
+
+      if (node.kind === 'routing') {
+        nodeStatuses.set(node.id, 'running')
+        const outcome = await this.handleRoutingNode({
+          runId,
+          plan,
+          node,
+          opts,
+          runContext,
+          nodeTimings,
+          nodeOutputs
+        })
+        nodeStatuses.set(node.id, 'completed')
+        completedNodeIds.add(node.id)
+        scheduler.markCompleted(node.id)
+        if (outcome.kind === 'replan') {
+          throw new ReplanRequestedError(
+            {
+              reason: 'routing_no_match',
+              details: {
+                nodeId: node.id,
+                routingResult: outcome.evaluation
+              }
+            },
+            {
+              completedNodeIds: Array.from(completedNodeIds),
+              nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+              facets: runContext.snapshot(),
+              policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
+              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+            }
+          )
+        }
+        scheduler.markConditionalRelease(node.id, [outcome.selectedTarget])
+        continue
+      }
+
       const isVirtual = !node.capabilityId
       if (isVirtual) {
         nodeStatuses.set(node.id, 'running')
         await this.handleVirtualNode(runId, plan, node, opts)
         nodeStatuses.set(node.id, 'completed')
         completedNodeIds.add(node.id)
-        index += 1
+        scheduler.markCompleted(node.id)
         continue
       }
 
@@ -676,14 +1125,16 @@ export class FlexExecutionEngine {
               completedAt: completedAt.toISOString(),
               output: result.output
             },
-      {
-        runId,
-        nodeId: node.id,
-        planVersion: plan.version,
-        facetProvenance: this.normalizeFacetProvenance(node.provenance)
-      }
+            {
+              runId,
+              nodeId: node.id,
+              planVersion: plan.version,
+              facetProvenance: this.normalizeFacetProvenance(node.provenance)
+            }
           )
         )
+
+        scheduler.markCompleted(node.id)
 
         const effect = await opts.onNodeComplete?.({
           node,
@@ -716,18 +1167,17 @@ export class FlexExecutionEngine {
                 nodeTimings,
                 completedNodeIds,
                 policyActions,
-                policyAttempts
+                policyAttempts,
+                scheduler
               },
               { source: POLICY_ACTION_SOURCE.runtime }
             )
             if (actionOutcome?.kind === 'goto') {
-              index = actionOutcome.nextIndex
+              scheduler.refreshAll()
               continue
             }
           }
         }
-
-        index += 1
       } catch (error) {
         if (error instanceof ReplanRequestedError) {
           throw error
@@ -1009,6 +1459,7 @@ export class FlexExecutionEngine {
       completedNodeIds: Set<string>
       policyActions: PendingPolicyActionState[]
       policyAttempts: Map<string, number>
+      scheduler?: PlanScheduler
     },
     options: {
       actionOverride?: Action
@@ -1735,6 +2186,7 @@ export class FlexExecutionEngine {
       nodeTimings: Map<string, NodeTiming>
       completedNodeIds: Set<string>
       policyAttempts: Map<string, number>
+      scheduler?: PlanScheduler
     }
   }): Promise<RuntimePolicyActionResult> {
     const { policy, action, context } = args
@@ -1766,8 +2218,13 @@ export class FlexExecutionEngine {
       return { kind: 'noop' }
     }
 
-    for (let i = targetIndex; i < context.plan.nodes.length; i++) {
-      const targetNode = context.plan.nodes[i]
+    const affectedIds = context.scheduler
+      ? context.scheduler.resetFromNode(action.next)
+      : context.plan.nodes.slice(targetIndex).map((node) => node.id)
+
+    for (const nodeId of affectedIds) {
+      const targetNode = context.plan.nodes.find((node) => node.id === nodeId)
+      if (!targetNode) continue
       context.completedNodeIds.delete(targetNode.id)
       context.nodeOutputs.delete(targetNode.id)
       context.nodeStatuses.set(targetNode.id, 'pending')
@@ -1810,7 +2267,7 @@ export class FlexExecutionEngine {
       )
     } catch {}
 
-    return { kind: 'goto', nextIndex: targetIndex }
+    return { kind: 'goto', targetNodeId: action.next }
   }
 
   private async triggerPolicyPause(args: {
@@ -1897,14 +2354,15 @@ export class FlexExecutionEngine {
     completedNodeIds: Set<string>
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
-  }): Promise<{ remainingActions: PendingPolicyActionState[]; nextIndex: number | null }> {
+    scheduler?: PlanScheduler
+  }): Promise<{ remainingActions: PendingPolicyActionState[]; resumeNodeId: string | null }> {
     const hitlState = args.opts.hitl?.state
     if (!hitlState) {
-      return { remainingActions: args.policyActions, nextIndex: null }
+      return { remainingActions: args.policyActions, resumeNodeId: null }
     }
 
     const remaining: PendingPolicyActionState[] = []
-    let nextIndex: number | null = null
+    let resumeNodeId: string | null = null
 
     for (const entry of args.policyActions) {
       if (!entry.requestId) {
@@ -1951,7 +2409,8 @@ export class FlexExecutionEngine {
           nodeTimings: args.nodeTimings,
           completedNodeIds: args.completedNodeIds,
           policyActions: args.policyActions,
-          policyAttempts: args.policyAttempts
+          policyAttempts: args.policyAttempts,
+          scheduler: args.scheduler
         },
         {
           actionOverride: followUpAction,
@@ -1960,14 +2419,14 @@ export class FlexExecutionEngine {
         }
       )
 
-      if (actionOutcome?.kind === 'goto') {
-        nextIndex = nextIndex === null ? actionOutcome.nextIndex : Math.min(nextIndex, actionOutcome.nextIndex)
+      if (actionOutcome?.kind === 'goto' && !args.scheduler) {
+        resumeNodeId = resumeNodeId ?? actionOutcome.targetNodeId
       }
     }
 
     return {
       remainingActions: remaining,
-      nextIndex
+      resumeNodeId
     }
   }
 
@@ -2707,6 +3166,28 @@ export class FlexExecutionEngine {
     }
   }
 
+  private buildRoutingSelectionsFromOutputs(
+    nodeOutputs: Map<string, Record<string, unknown>>
+  ): Map<string, string[]> {
+    const selections = new Map<string, string[]>()
+    for (const [nodeId, output] of nodeOutputs.entries()) {
+      const result = this.extractRoutingResult(output)
+      if (result?.selectedTarget) {
+        selections.set(nodeId, [result.selectedTarget])
+      }
+    }
+    return selections
+  }
+
+  private extractRoutingResult(
+    output: Record<string, unknown> | null | undefined
+  ): RoutingEvaluationResult | null {
+    if (!output || typeof output !== 'object') return null
+    const candidate = (output as { routingResult?: unknown }).routingResult
+    if (!candidate || typeof candidate !== 'object') return null
+    return candidate as RoutingEvaluationResult
+  }
+
   private buildPlanSnapshotNodes(
     plan: FlexPlan,
     nodeStatuses: Map<string, FlexPlanNodeStatus>,
@@ -2730,6 +3211,7 @@ export class FlexExecutionEngine {
         provenance: node.provenance,
         metadata,
         rationale,
+        routing: node.routing ?? null,
         startedAt: timing.startedAt ?? null,
         completedAt: timing.completedAt ?? null
       }
@@ -2834,7 +3316,7 @@ export class FlexExecutionEngine {
         policyAttempts
       })
       policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
-      if (typeof pendingDispatch.nextIndex === 'number') {
+      if (pendingDispatch.resumeNodeId) {
         return this.execute(runId, envelope, plan, {
           onEvent: opts.onEvent,
           correlationId: opts.correlationId,

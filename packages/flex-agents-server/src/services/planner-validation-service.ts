@@ -12,7 +12,7 @@ type PlannerValidationResult =
   | { ok: true; diagnostics: PlannerDiagnostics }
   | { ok: false; diagnostics: PlannerDiagnostics }
 
-const OPTIONAL_NODE_KINDS = new Set(['branch', 'fallback'])
+const OPTIONAL_NODE_KINDS = new Set(['branch', 'fallback', 'routing'])
 
 export class PlannerValidationService {
   private readonly compiler: FacetContractCompiler
@@ -117,4 +117,3 @@ export class PlannerValidationService {
     return hasErrors ? { ok: false, diagnostics } : { ok: true, diagnostics }
   }
 }
-

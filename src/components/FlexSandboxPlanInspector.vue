@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { CapabilityRecord } from '@awesomeposter/shared'
-import type { FlexSandboxPlan, FlexSandboxPlanNode, FlexSandboxPlanHistoryEntry } from '@/lib/flexSandboxTypes'
+import type {
+  FlexSandboxPlan,
+  FlexSandboxPlanNode,
+  FlexSandboxPlanHistoryEntry,
+  FlexSandboxPlanEdge
+} from '@/lib/flexSandboxTypes'
 
 interface Props {
   plan: FlexSandboxPlan | null
@@ -22,6 +27,17 @@ const capabilityLookup = computed(() => {
 
 const nodes = computed<FlexSandboxPlanNode[]>(() => props.plan?.nodes ?? [])
 const history = computed<FlexSandboxPlanHistoryEntry[]>(() => props.plan?.history ?? [])
+const edgeMap = computed<Map<string, FlexSandboxPlanEdge[]>>(() => {
+  const map = new Map<string, FlexSandboxPlanEdge[]>()
+  const edges = props.plan?.edges ?? []
+  for (const edge of edges) {
+    if (!edge || !edge.from || !edge.to) continue
+    const list = map.get(edge.from) ?? []
+    list.push(edge)
+    map.set(edge.from, list)
+  }
+  return map
+})
 const metadataExpanded = ref(false)
 
 function statusColor(status: FlexSandboxPlanNode['status']): string {
@@ -89,6 +105,32 @@ function formatJson(value: unknown): string | null {
     return String(value)
   }
 }
+
+function downstreamEdges(nodeId: string): FlexSandboxPlanEdge[] {
+  return edgeMap.value.get(nodeId) ?? []
+}
+
+function routingTrace(node: FlexSandboxPlanNode, targetId: string) {
+  const traces = node.routingResult?.traces ?? []
+  return traces.find((trace) => trace.to === targetId) ?? null
+}
+
+function routeIcon(trace: ReturnType<typeof routingTrace>) {
+  if (!trace) return { icon: 'mdi-checkbox-blank-circle-outline', color: 'secondary' }
+  if (trace.error) return { icon: 'mdi-alert-circle', color: 'warning' }
+  if (trace.matched) return { icon: 'mdi-check-circle', color: 'success' }
+  return { icon: 'mdi-close-circle', color: 'secondary' }
+}
+
+function routeStatusText(trace: ReturnType<typeof routingTrace>): string {
+  if (!trace) return 'Pending evaluation'
+  if (trace.error) return 'Evaluation failed'
+  return trace.matched ? 'Matched' : 'Not matched'
+}
+
+function elseBranchState(node: FlexSandboxPlanNode): 'selected' | 'available' {
+  return node.routingResult?.resolution === 'else' ? 'selected' : 'available'
+}
 </script>
 
 <template>
@@ -152,6 +194,82 @@ function formatJson(value: unknown): string | null {
                   <v-icon icon="mdi-creation" size="18" class="me-1 text-warning" />
                   {{ derivedDescription(node) }}
                 </div>
+                <div v-if="node.routing" class="routing-section">
+                  <div class="text-caption text-medium-emphasis mb-1">Conditional routes</div>
+                  <div
+                    v-if="node.routingResult"
+                    class="text-caption text-medium-emphasis mb-1"
+                  >
+                    Selected target:
+                    <code>{{ node.routingResult.selectedTarget ?? 'none' }}</code>
+                    <span
+                      v-if="node.routingResult.resolution === 'else'"
+                      class="ms-1"
+                    >
+                      (else branch)
+                    </span>
+                    <span
+                      v-else-if="node.routingResult.resolution === 'replan'"
+                      class="text-warning ms-1"
+                    >
+                      replan requested
+                    </span>
+                  </div>
+                  <ul class="routing-list">
+                    <li
+                      v-for="route in node.routing.routes"
+                      :key="`${node.id}-${route.to}`"
+                      class="routing-list__item"
+                    >
+                      <v-icon
+                        v-bind="routeIcon(routingTrace(node, route.to))"
+                        size="16"
+                        class="me-2"
+                      />
+                      <div class="flex-grow-1">
+                        <div class="text-body-2">
+                          {{ route.label || 'Route' }}
+                          <span class="text-medium-emphasis">
+                            → {{ route.to }}
+                          </span>
+                        </div>
+                        <div class="text-caption text-medium-emphasis">
+                          IF {{ route.condition?.dsl || 'expression' }}
+                        </div>
+                        <div class="text-caption text-medium-emphasis">
+                          {{ routeStatusText(routingTrace(node, route.to)) }}
+                        </div>
+                        <div
+                          v-if="routingTrace(node, route.to)?.error"
+                          class="text-caption text-warning mt-1"
+                        >
+                          {{ routingTrace(node, route.to)?.error }}
+                        </div>
+                      </div>
+                    </li>
+                  </ul>
+                  <div v-if="node.routing.elseTo" class="text-body-2 mt-1">
+                    <v-icon
+                      :icon="elseBranchState(node) === 'selected' ? 'mdi-check-circle' : 'mdi-arrow-right-drop-circle'"
+                      :color="elseBranchState(node) === 'selected' ? 'success' : 'secondary'"
+                      size="16"
+                      class="me-2"
+                    />
+                    Else → <code>{{ node.routing.elseTo }}</code>
+                    <span
+                      v-if="elseBranchState(node) === 'selected'"
+                      class="text-caption text-medium-emphasis ms-1"
+                    >
+                      Selected
+                    </span>
+                  </div>
+                  <div
+                    v-if="node.routingResult?.resolution === 'replan'"
+                    class="text-caption text-warning mt-1"
+                  >
+                    No routes matched; planner requested a replan.
+                  </div>
+                </div>
                 <div v-if="node.facets && (node.facets.input?.length || node.facets.output?.length)">
                   <div class="text-caption text-medium-emphasis mb-1">Facets</div>
                   <div class="d-flex flex-wrap ga-2">
@@ -173,6 +291,23 @@ function formatJson(value: unknown): string | null {
                 <div v-if="node.metadata">
                   <div class="text-caption text-medium-emphasis mb-1">Metadata</div>
                   <pre class="metadata-block">{{ formatJson(node.metadata) }}</pre>
+                </div>
+                <div v-if="downstreamEdges(node.id).length" class="edges-section">
+                  <div class="text-caption text-medium-emphasis mb-1">Downstream edges</div>
+                  <div class="d-flex flex-wrap ga-2">
+                    <v-chip
+                      v-for="edge in downstreamEdges(node.id)"
+                      :key="`${node.id}-${edge.to}-${edge.reason ?? 'edge'}`"
+                      size="x-small"
+                      color="info"
+                      variant="outlined"
+                    >
+                      → {{ edge.to }}
+                      <span v-if="edge.reason" class="text-medium-emphasis ms-1">
+                        ({{ edge.reason }})
+                      </span>
+                    </v-chip>
+                  </div>
                 </div>
               </div>
             </v-expansion-panel-text>
@@ -255,5 +390,29 @@ function formatJson(value: unknown): string | null {
 
 .history-trigger-json {
   white-space: pre-wrap;
+}
+
+.routing-section {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.routing-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.routing-list__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.edges-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
 }
 </style>

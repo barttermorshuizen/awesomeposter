@@ -162,11 +162,21 @@ export function buildPlannerSystemPrompt(params: { facetTable: string; capabilit
     '    label?: string',
     '    capabilityId?: string',
     '    derived?: boolean',
-    '    kind?: "structuring" | "execution" | "transformation" | "validation"',
+    '    kind?: "structuring" | "execution" | "transformation" | "validation" | "routing"',
     '    inputFacets?: string[] | string | Record<string, unknown>',
     '    outputFacets?: string[] | string | Record<string, unknown>',
     '    rationale?: string | string[]',
     '    instructions?: string | string[]',
+    '    routing?: {',
+      '      routes: Array<{',
+        '        condition: string | { dsl?: string; jsonLogic?: unknown }',
+        '        to: string',
+        '        label?: string',
+        '        metadata?: Record<string, unknown>',
+      '      }>',
+      '      elseTo?: string',
+      '      metadata?: Record<string, unknown>',
+    '    }',
     '  }>',
     '  metadata?: { provider?: string; model?: string }',
     '}',
@@ -216,10 +226,16 @@ export function buildPlannerSystemPrompt(params: { facetTable: string; capabilit
     '   - Set `stage` to the pipeline phase the node occupies (e.g., `structuring`, `generation`, `validation`).  ',
     '   - Respect policy directives such as `disallowStages` and `replanAfter`; never leave `stage` blank.  ',
     '',
-    '5. **Kinds:**  ',
+    '5. **Kinds & routing nodes:**  ',
     '   - Use `structuring` for strategy or brief creation,  ',
     '     `execution` for content or design generation,  ',
-    '     `validation` for QA or review  ',
+    '     `validation` for QA or review,  ',
+    '     `transformation` for normalization/reshaping,  ',
+    '     and `routing` for conditional branching decisions.  ',
+    '   - When conditional logic is required (e.g., pick different downstream capabilities based on run-context facets or policy state), insert a node with `kind: "routing"` and no `capabilityId`.  ',
+    '   - Define `routing.routes` as an ordered list of `{ condition, to }` entries using the Condition DSL (string form) and reference downstream node `stage` names in the `to` field.  ',
+    '   - Use `routing.elseTo` when no predicate matches. The referenced stages must exist elsewhere in the plan; do not spawn nodes dynamically.  ',
+    '   - Routing nodes never mutate facets themselves—they only gate which downstream capability runs next.',
     '',
     '6. **Rationale & instructions:**  ',
     '   - Each node should include a short `"rationale"` explaining *why* it was selected, referencing the facets it consumes and produces.  ',
@@ -676,7 +692,7 @@ export class PlannerService implements PlannerServiceInterface {
       new OpenAI({
         apiKey: process.env.FLEX_OPENAI_API_KEY || process.env.OPENAI_API_KEY
       })
-    const defaultTimeout = Number(process.env.FLEX_PLANNER_TIMEOUT_MS || 180000)
+    const defaultTimeout = Number(process.env.FLEX_PLANNER_TIMEOUT_MS || 240000)
     this.timeoutMs = options?.timeoutMs ?? defaultTimeout
     this.model =
       options?.model ??

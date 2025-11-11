@@ -125,6 +125,8 @@ describe('planner prompt builders', () => {
     expect(content).toContain('### INTERNAL CHECKLIST (for the model)')
     expect(content).toContain('### OUTPUT INSTRUCTIONS')
     expect(content).toContain('status: "pending" | "running" | "completed" | "awaiting_hitl" | "awaiting_human" | "error"')
+    expect(content).toContain('kind?: "structuring" | "execution" | "transformation" | "validation" | "routing"')
+    expect(content).toContain('routing?: {')
     expect(content).toContain('Node status semantics')
     expect(content).toMatch(/PlannerDraft = {/)
     expect(content).not.toContain('fallback"')

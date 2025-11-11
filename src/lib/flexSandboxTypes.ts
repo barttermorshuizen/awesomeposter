@@ -1,3 +1,5 @@
+import type { ConditionalRoutingNode, RoutingEvaluationResult } from '@awesomeposter/shared'
+
 export type FlexSandboxPlanNodeStatus =
   | 'pending'
   | 'running'
@@ -5,6 +7,12 @@ export type FlexSandboxPlanNodeStatus =
   | 'error'
   | 'awaiting_hitl'
   | 'awaiting_human'
+
+export type FlexSandboxPlanEdge = {
+  from: string
+  to: string
+  reason?: string | null
+}
 
 export type FlexSandboxPlanNode = {
   id: string
@@ -23,6 +31,8 @@ export type FlexSandboxPlanNode = {
   } | null
   metadata?: Record<string, unknown> | null
   lastUpdatedAt?: string
+  routing?: ConditionalRoutingNode | null
+  routingResult?: RoutingEvaluationResult | null
 }
 
 export type FlexSandboxPlanHistoryEntry = {
@@ -37,4 +47,5 @@ export type FlexSandboxPlan = {
   metadata?: Record<string, unknown> | null
   nodes: FlexSandboxPlanNode[]
   history: FlexSandboxPlanHistoryEntry[]
+  edges: FlexSandboxPlanEdge[]
 }

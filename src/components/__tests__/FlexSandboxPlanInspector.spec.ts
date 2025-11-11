@@ -78,6 +78,9 @@ describe('FlexSandboxPlanInspector', () => {
       history: [
         { version: 1, timestamp: new Date().toISOString(), trigger: 'initial' },
         { version: 2, timestamp: new Date().toISOString(), trigger: 'replan' }
+      ],
+      edges: [
+        { from: 'node-1', to: 'node-2', reason: 'sequence' }
       ]
     }
 
@@ -106,5 +109,69 @@ describe('FlexSandboxPlanInspector', () => {
     expect(wrapper.text()).toContain('QA review')
     expect(wrapper.text()).toContain('Derived via Writer')
     expect(wrapper.text()).toContain('Facets')
+  })
+
+  it('renders routing nodes and downstream edges', async () => {
+    const plan: FlexSandboxPlan = {
+      runId: 'run-routing',
+      version: 1,
+      metadata: null,
+      nodes: [
+        {
+          id: 'route-1',
+          capabilityId: null,
+          label: 'Branching',
+          status: 'completed',
+          kind: 'routing',
+          metadata: null,
+          facets: null,
+          contracts: null,
+          derivedFrom: null,
+          routing: {
+            routes: [
+              { to: 'node-a', label: 'High score', condition: { dsl: 'score > 0.8', jsonLogic: { '>': [{ var: 'score' }, 0.8] } } },
+              { to: 'node-b', label: 'Fallback', condition: { dsl: 'score <= 0.8', jsonLogic: { '<=': [{ var: 'score' }, 0.8] } } }
+            ],
+            elseTo: 'node-c'
+          },
+          routingResult: {
+            nodeId: 'route-1',
+            evaluatedAt: new Date().toISOString(),
+            selectedTarget: 'node-b',
+            elseTarget: 'node-c',
+            resolution: 'match',
+            traces: [
+              { to: 'node-a', label: 'High score', matched: false, dsl: 'score > 0.8' },
+              { to: 'node-b', label: 'Fallback', matched: true, dsl: 'score <= 0.8' }
+            ]
+          },
+          lastUpdatedAt: new Date().toISOString()
+        }
+      ],
+      history: [{ version: 1, timestamp: new Date().toISOString(), trigger: 'initial' }],
+      edges: [
+        { from: 'route-1', to: 'node-a', reason: 'routing' },
+        { from: 'route-1', to: 'node-b', reason: 'routing' },
+        { from: 'route-1', to: 'node-c', reason: 'routing_else' }
+      ]
+    }
+
+    const wrapper = mount(FlexSandboxPlanInspector, {
+      props: {
+        plan,
+        capabilityCatalog: [capability]
+      },
+      global: {
+        plugins: [vuetify]
+      }
+    })
+
+    const panel = wrapper.findAll('.v-expansion-panel-title')[0]
+    await panel.trigger('click')
+
+    expect(wrapper.text()).toContain('Conditional routes')
+    expect(wrapper.text()).toContain('Selected target')
+    expect(wrapper.text()).toContain('Else → node-c')
+    expect(wrapper.text()).toContain('Downstream edges')
   })
 })

@@ -7,14 +7,16 @@ import type {
   NodeContract,
   OutputContract,
   TaskEnvelope,
-  TaskPolicies
+  TaskPolicies,
+  ConditionalRoutingNode
 } from '@awesomeposter/shared'
 import {
   FacetContractCompiler,
   type FacetCatalog,
   type FacetProvenance,
   getFacetCatalog,
-  parseTaskPolicies
+  parseTaskPolicies,
+  compileConditionalRoutingNode
 } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
@@ -34,6 +36,7 @@ export type FlexPlanNodeKind =
   | 'transformation'
   | 'validation'
   | 'fallback'
+  | 'routing'
 
 export type FlexPlanNodeStatus =
   | 'pending'
@@ -89,6 +92,7 @@ export type FlexPlanNode = {
   provenance: FlexPlanNodeProvenance
   rationale: string[]
   executor?: FlexPlanExecutor
+  routing?: ConditionalRoutingNode | null
   metadata: Record<string, unknown>
 }
 
@@ -159,6 +163,7 @@ function coerceNodeKind(kind?: string | null): FlexPlanNodeKind {
     case 'transformation':
     case 'validation':
     case 'fallback':
+    case 'routing':
       return kind
     default:
       return 'execution'
@@ -433,6 +438,7 @@ export class FlexPlanner {
 
     const availableFacets = this.collectEnvelopeFacets(envelope, canonicalPolicies)
     const nodes: FlexPlanNode[] = []
+    const stageToNodeId = new Map<string, string>()
 
     plannerDraft.nodes.forEach((draftNode, index) => {
       const kind = coerceNodeKind(draftNode.kind)
@@ -462,6 +468,9 @@ export class FlexPlanner {
       const compiledContracts = this.compileFacetContracts(facets)
       const outputContract = this.resolveOutputContract(kind, capability, facets, envelope.outputContract, compiledContracts.output)
       const nodeId = sanitizeNodeId(draftNode.capabilityId ?? draftNode.stage ?? draftNode.label ?? 'node', index)
+      if (draftNode.stage) {
+        stageToNodeId.set(normalizeStageKey(draftNode.stage), nodeId)
+      }
       const compatibilityScore = capability ? this.computeCapabilityCompatibility(capability, plannerContextInternal) : undefined
       const derivedFlag = Boolean(
         draftNode.derived ??
@@ -471,6 +480,22 @@ export class FlexPlanner {
       const status = normalizeDraftStatus(draftNode.status)
 
       const executor = this.buildExecutor(capability)
+
+      let routingConfig: ConditionalRoutingNode | null = null
+      if (kind === 'routing') {
+        if (!draftNode.routing) {
+          throw new UnsupportedObjectiveError(`Routing node "${draftNode.stage}" is missing routing configuration.`)
+        }
+        try {
+          routingConfig = compileConditionalRoutingNode(draftNode.routing)
+        } catch (error) {
+          throw new UnsupportedObjectiveError(
+            `Routing node "${draftNode.stage}" has invalid routing configuration: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        }
+      }
 
       const bundle = this.buildContextBundle({
         runId,
@@ -509,8 +534,8 @@ export class FlexPlanner {
         id: nodeId,
         status,
         kind,
-        capabilityId: capability?.capabilityId ?? null,
-        capabilityLabel: safeCapabilityLabel(capability, draftNode.label),
+        capabilityId: kind === 'routing' ? null : capability?.capabilityId ?? null,
+        capabilityLabel: kind === 'routing' ? nodeLabel : safeCapabilityLabel(capability, draftNode.label),
         capabilityVersion: capability?.version,
         derivedCapability: derivedFlag && capability ? { fromCapabilityId: capability.capabilityId } : undefined,
         label: nodeLabel,
@@ -526,12 +551,15 @@ export class FlexPlanner {
         },
         rationale: draftNode.rationale ?? [],
         executor,
+        routing: routingConfig,
         metadata
       }
 
       nodes.push(node)
       facets.output.forEach((facet) => availableFacets.add(facet))
     })
+
+    this.resolveRoutingTargets(nodes, stageToNodeId)
 
     this.ensureNormalizationNode(nodes, envelope, variantCount)
 
@@ -1000,14 +1028,60 @@ export class FlexPlanner {
 
   private buildEdges(nodes: FlexPlanNode[]): FlexPlanEdge[] {
     const edges: FlexPlanEdge[] = []
-    for (let i = 0; i < nodes.length - 1; i += 1) {
-      edges.push({ from: nodes[i].id, to: nodes[i + 1].id, reason: 'sequence' })
+    const seen = new Set<string>()
+
+    const addEdge = (edge: FlexPlanEdge) => {
+      const key = `${edge.from}->${edge.to}:${edge.reason ?? ''}`
+      if (seen.has(key)) return
+      seen.add(key)
+      edges.push(edge)
     }
+
+    for (let i = 0; i < nodes.length - 1; i += 1) {
+      const source = nodes[i]
+      const target = nodes[i + 1]
+      if (source.kind === 'routing') continue
+      addEdge({ from: source.id, to: target.id, reason: 'sequence' })
+    }
+
+    for (const node of nodes) {
+      if (!node.routing) continue
+      for (const route of node.routing.routes) {
+        addEdge({ from: node.id, to: route.to, reason: route.label ?? 'routing' })
+      }
+      if (node.routing.elseTo) {
+        addEdge({ from: node.id, to: node.routing.elseTo, reason: 'routing_else' })
+      }
+    }
+
     return edges
   }
 
   private computePlanVersion(): number {
     return 1
+  }
+
+  private resolveRoutingTargets(nodes: FlexPlanNode[], stageMap: Map<string, string>) {
+    const nodeIds = new Set(nodes.map((node) => node.id))
+    const resolveTarget = (value: string): string => {
+      if (nodeIds.has(value)) return value
+      const stageId = stageMap.get(normalizeStageKey(value))
+      if (stageId && nodeIds.has(stageId)) {
+        return stageId
+      }
+      throw new UnsupportedObjectiveError(`Routing target "${value}" does not match any planner node.`)
+    }
+
+    for (const node of nodes) {
+      if (!node.routing) continue
+      node.routing.routes = node.routing.routes.map((route) => ({
+        ...route,
+        to: resolveTarget(route.to)
+      }))
+      if (node.routing.elseTo) {
+        node.routing.elseTo = resolveTarget(node.routing.elseTo)
+      }
+    }
   }
 
   private computeCapabilityCompatibility(capability: CapabilityRecord, context: PlannerContextInternal): number {
@@ -1274,6 +1348,10 @@ function toJsonSchemaContract(compiled: { schema: JsonSchemaContract['schema']; 
     mode: 'json_schema',
     schema: safeJsonClone(compiled.schema)
   }
+}
+
+function normalizeStageKey(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase()
 }
 
 function safeCapabilityLabel(capability: CapabilityRecord | undefined, fallback?: string): string {
