@@ -405,6 +405,22 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
   const lastSyncedAt = ref<string | null>(null)
   const nodeIndex = new Map<string, string>()
 
+  const isActionableTask = (task: FlexTaskRecord | undefined | null): boolean => {
+    if (!task) return false
+    if (task.awaitingConfirmation) return false
+    return task.status !== 'completed' && task.status !== 'cancelled'
+  }
+
+  const findNextActionableTaskId = (excludeId?: string | null): string | null => {
+    for (const record of tasksById.value.values()) {
+      if (excludeId && record.taskId === excludeId) continue
+      if (isActionableTask(record)) {
+        return record.taskId
+      }
+    }
+    return null
+  }
+
   const notifications = useNotificationsStore()
   const hitlStore = useHitlStore()
 
@@ -430,9 +446,7 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
   })
 
   const pendingTasks = computed(() =>
-    tasks.value.filter(
-      (task) => task.status !== 'completed' && task.status !== 'cancelled'
-    )
+    tasks.value.filter((task) => isActionableTask(task))
   )
 
   const hasPendingTasks = computed(() => pendingTasks.value.length > 0)
@@ -443,8 +457,13 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
   })
 
   function setActiveTask(taskId: string | null) {
-    if (taskId && !tasksById.value.has(taskId)) {
+    if (taskId === null) {
       activeTaskId.value = null
+      return
+    }
+    const record = tasksById.value.get(taskId)
+    if (!record || !isActionableTask(record)) {
+      activeTaskId.value = findNextActionableTaskId(taskId)
       return
     }
     activeTaskId.value = taskId
@@ -454,8 +473,14 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
     const next = new Map(tasksById.value)
     mutator(next)
     tasksById.value = next
-    if (activeTaskId.value && !next.has(activeTaskId.value)) {
-      activeTaskId.value = next.size ? Array.from(next.keys())[0] : null
+    if (activeTaskId.value) {
+      const current = next.get(activeTaskId.value)
+      if (!current || !isActionableTask(current)) {
+        activeTaskId.value = findNextActionableTaskId(activeTaskId.value)
+      }
+    }
+    if (!activeTaskId.value) {
+      activeTaskId.value = findNextActionableTaskId()
     }
   }
 
@@ -470,7 +495,7 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
   function upsertTask(task: FlexTaskRecord) {
     updateTaskMap((map) => map.set(task.taskId, task))
     ensureNodeIndex(task)
-    if (!activeTaskId.value) {
+    if (!activeTaskId.value && isActionableTask(task)) {
       activeTaskId.value = task.taskId
     }
   }

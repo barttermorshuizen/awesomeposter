@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { FlexEvent, TaskEnvelope } from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import type { FlexPlan, FlexPlanNode } from '../src/services/flex-planner'
-import type { FlexPlanNodeSnapshot } from '../src/services/orchestrator-persistence'
+import type { FlexPlanNodeSnapshot, FlexPlanSnapshotRow } from '../src/services/orchestrator-persistence'
 import { PolicyNormalizer } from '../src/services/policy-normalizer'
 
 class StubPersistence {
@@ -19,6 +19,9 @@ class StubPersistence {
     return null
   }
   async findFlexRunByThreadId() {
+    return null
+  }
+  async loadPlanSnapshot() {
     return null
   }
 }
@@ -54,6 +57,50 @@ class StubHitlService {
 
   async raiseRequest() {
     return { status: 'pending', request: { id: 'req', runId: 'run', threadId: 'thread', payload: {} } }
+  }
+}
+
+class ResumeStubPersistence extends StubPersistence {
+  constructor(
+    private readonly resumeRecord: { run: any; nodes: FlexPlanNodeSnapshot[] },
+    private readonly snapshot: FlexPlanSnapshotRow
+  ) {
+    super()
+  }
+
+  async loadFlexRun(runId: string) {
+    if (runId === this.resumeRecord.run.runId) {
+      return this.resumeRecord
+    }
+    return null
+  }
+
+  async loadPlanSnapshot(runId: string) {
+    if (runId === this.snapshot.runId) {
+      return this.snapshot
+    }
+    return null
+  }
+}
+
+class TrackingEngine extends StubEngine {
+  executeCalls = 0
+  resumeCalls = 0
+
+  async execute(runId: string, _envelope: TaskEnvelope, _plan: FlexPlan, opts: any) {
+    this.executeCalls += 1
+    await opts.onEvent({
+      type: 'complete',
+      timestamp: new Date().toISOString(),
+      runId,
+      payload: { output: { executed: true } }
+    })
+    return { executed: true }
+  }
+
+  async resumePending() {
+    this.resumeCalls += 1
+    return { resumed: true }
   }
 }
 
@@ -279,5 +326,152 @@ describe('FlexRunCoordinator sandbox emission', () => {
       'copywriter_SocialpostDrafting_2',
       'designer_VisualDesign_3'
     ])
+  })
+
+  it('executes pending nodes when resuming a run paused for HITL even if stored output exists', async () => {
+    const resumeRunId = 'flex_resume_hitl_case'
+    const envelope: TaskEnvelope = {
+      objective: 'Resume HITL run',
+      constraints: { resumeRunId },
+      outputContract: {
+        mode: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: { postCopy: { type: 'string' } }
+        }
+      }
+    }
+
+    const resumeNodes: FlexPlanNodeSnapshot[] = [
+      {
+        nodeId: 'strategist_SocialPosting_1',
+        capabilityId: 'strategist.SocialPosting',
+        label: 'Strategist',
+        status: 'completed',
+        context: null,
+        output: { brief: true },
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: { plannerStage: 'structuring' },
+        rationale: null,
+        executor: null
+      },
+      {
+        nodeId: 'copywriter_SocialpostDrafting_2',
+        capabilityId: 'copywriter.SocialpostDrafting',
+        label: 'Copywriter',
+        status: 'awaiting_hitl',
+        context: null,
+        output: null,
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: { plannerStage: 'execution' },
+        rationale: null,
+        executor: null
+      },
+      {
+        nodeId: 'director_SocialPostingReview_3',
+        capabilityId: 'director.SocialPostingReview',
+        label: 'Director',
+        status: 'pending',
+        context: null,
+        output: null,
+        error: null,
+        facets: null,
+        contracts: null,
+        provenance: null,
+        metadata: { plannerStage: 'validation' },
+        rationale: null,
+        executor: null
+      }
+    ]
+
+    const snapshotNodes = resumeNodes.map((node) => ({
+      nodeId: node.nodeId,
+      capabilityId: node.capabilityId ?? null,
+      label: node.label ?? null,
+      status: node.status,
+      context: null,
+      output: node.output ?? null,
+      error: null,
+      facets: null,
+      contracts: null,
+      provenance: null,
+      metadata: node.metadata ?? null,
+      rationale: null,
+      executor: null
+    }))
+
+    const snapshot: FlexPlanSnapshotRow = {
+      runId: resumeRunId,
+      planVersion: 1,
+      snapshot: {
+        nodes: snapshotNodes,
+        edges: [
+          { from: 'strategist_SocialPosting_1', to: 'copywriter_SocialpostDrafting_2', reason: 'sequence' },
+          { from: 'copywriter_SocialpostDrafting_2', to: 'director_SocialPostingReview_3', reason: 'sequence' }
+        ],
+        metadata: {},
+        pendingState: {
+          completedNodeIds: ['strategist_SocialPosting_1'],
+          nodeOutputs: {
+            strategist_SocialPosting_1: { brief: true }
+          },
+          mode: 'hitl'
+        }
+      },
+      facets: null,
+      schemaHash: null,
+      pendingNodeIds: ['copywriter_SocialpostDrafting_2', 'director_SocialPostingReview_3'],
+      createdAt: null,
+      updatedAt: null
+    }
+
+    const resumeCandidate = {
+      run: {
+        runId: resumeRunId,
+        threadId: null,
+        status: 'awaiting_hitl',
+        objective: envelope.objective,
+        envelope,
+        schemaHash: null,
+        metadata: null,
+        result: { cached: true },
+        planVersion: 1,
+        contextSnapshot: null,
+        createdAt: null,
+        updatedAt: null
+      },
+      nodes: resumeNodes
+    }
+
+    const persistence = new ResumeStubPersistence(resumeCandidate, snapshot)
+    const engine = new TrackingEngine()
+    const coordinator = new FlexRunCoordinator(
+      persistence as any,
+      {} as any,
+      engine as any,
+      new StubHitlService() as any,
+      new PolicyNormalizer(),
+      new Map()
+    )
+
+    const events: FlexEvent[] = []
+
+    const result = await coordinator.run(envelope, {
+      correlationId: 'corr-resume',
+      onEvent: async (event: FlexEvent) => {
+        events.push(event)
+      }
+    })
+
+    expect(engine.executeCalls).toBe(1)
+    expect(engine.resumeCalls).toBe(0)
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual({ executed: true })
   })
 })

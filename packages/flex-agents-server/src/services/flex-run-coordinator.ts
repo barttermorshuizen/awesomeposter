@@ -983,6 +983,16 @@ export class FlexRunCoordinator {
         finalOutputSeed = {}
       }
 
+      const completedSet = new Set(resumeInitialState?.completedNodeIds ?? [])
+      const planNodes = activePlan?.nodes ?? []
+      const hasIncompletePlanNodes = planNodes.some((node) => !completedSet.has(node.id))
+      const statusRequiresExecution = ['awaiting_hitl', 'awaiting_human', 'running'].includes(
+        resumeCandidate.run.status
+      )
+      if (hasIncompletePlanNodes || statusRequiresExecution) {
+        executionMode = 'execute'
+      }
+
       let resumeStatusUpdated = false
 
       if (resumeCandidate.run.status === 'awaiting_human') {

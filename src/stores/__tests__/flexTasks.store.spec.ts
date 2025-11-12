@@ -169,6 +169,27 @@ describe('useFlexTasksStore', () => {
     expect(store.pendingTasks).toHaveLength(0)
   })
 
+  it('hides tasks that are awaiting orchestrator confirmation', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart(buildNodeStartEvent())
+
+    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch).mockRejectedValue(new Error('network failure'))
+    vi.mocked(postFlexEventStream).mockReturnValue({
+      abort: vi.fn(),
+      done: Promise.resolve()
+    })
+
+    await store.submitTask('task_alpha', {
+      output: { toneOfVoice: 'Calm' }
+    })
+
+    expect(store.pendingTasks).toHaveLength(0)
+    expect(store.hasPendingTasks).toBe(false)
+    const storedTask = store.tasks.find((task) => task.taskId === 'task_alpha')
+    expect(storedTask?.awaitingConfirmation).toBe(true)
+    fetchMock.mockRestore()
+  })
+
   it('declines tasks via flex tasks decline endpoint', async () => {
     const store = useFlexTasksStore()
     store.handleNodeStart(buildNodeStartEvent())
