@@ -29,6 +29,9 @@ const RECOMMENDATION_SET_ALIAS = 'facets.recommendationSet'
 const READY_FOR_PLANNER_CANONICAL =
   'metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner'
 const READY_FOR_PLANNER_ALIAS = 'facets.clarificationResponse.readyForPlanner'
+const READY_FOR_PLANNER_EXISTS_JSON: JsonLogicExpression = {
+  '!': [{ missing: [READY_FOR_PLANNER_CANONICAL] }],
+}
 
 function loadFixture(name: string): { dsl: string; json: JsonLogicExpression } {
   const dslPath = path.join(FIXTURES_DIR, `${name}.dsl`)
@@ -171,6 +174,38 @@ describe('parseDsl', () => {
 
     expect(result.errors.some((error) => error.code === 'invalid_quantifier')).toBe(true)
   })
+
+  it('parses exists helper expressions and returns canonical payloads', () => {
+    const { dsl, json } = loadFixture('exists-roundtrip')
+    const result = parseDsl(dsl, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.jsonLogic).toEqual(json)
+    expect(result.canonical).toBe(dsl)
+    expect(result.variables.map((variable) => variable.path)).toEqual([
+      READY_FOR_PLANNER_CANONICAL,
+    ])
+  })
+
+  it('rejects exists helper usage with unknown variables', () => {
+    const result = parseDsl('exists(unknownVar)', conditionVariableCatalog)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    expect(result.errors.some((error) => error.code === 'invalid_condition_exists')).toBe(true)
+  })
+
+  it('rejects exists helper usage with nested expressions', () => {
+    const result = parseDsl(
+      `exists(${READY_FOR_PLANNER_ALIAS} == true)`,
+      conditionVariableCatalog,
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    expect(result.errors.some((error) => error.code === 'invalid_condition_exists')).toBe(true)
+  })
 })
 
 describe('toDsl', () => {
@@ -254,6 +289,15 @@ describe('toDsl', () => {
     expect(result.expression).toBe(
       `some(${RECOMMENDATION_SET_ALIAS}, item.status == "open")`,
     )
+  })
+
+  it('renders exists helper payloads back into DSL form', () => {
+    const { dsl, json } = loadFixture('exists-roundtrip')
+    const result = toDsl(json, conditionVariableCatalog)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.expression).toBe(dsl)
   })
 })
 
@@ -500,5 +544,32 @@ describe('evaluateCondition', () => {
     if (!noMatch.ok) return
 
     expect(noMatch.result).toBe(false)
+  })
+
+  it('evaluates exists helper payloads for missing values', () => {
+    const payload = { metadata: { runContextSnapshot: { facets: {} } } }
+
+    const missingResult = evaluateCondition(READY_FOR_PLANNER_EXISTS_JSON, payload)
+    expect(missingResult.ok).toBe(true)
+    if (!missingResult.ok) return
+    expect(missingResult.result).toBe(false)
+    expect(missingResult.resolvedVariables).toHaveProperty(READY_FOR_PLANNER_CANONICAL, undefined)
+
+    const presentResult = evaluateCondition(READY_FOR_PLANNER_EXISTS_JSON, {
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            clarificationResponse: { value: { readyForPlanner: true } },
+          },
+        },
+      },
+    })
+    expect(presentResult.ok).toBe(true)
+    if (!presentResult.ok) return
+    expect(presentResult.result).toBe(true)
+    expect(presentResult.resolvedVariables).toHaveProperty(
+      READY_FOR_PLANNER_CANONICAL,
+      true,
+    )
   })
 })

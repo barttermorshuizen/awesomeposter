@@ -1,0 +1,21 @@
+{
+  "and": [
+    {
+      "!": [
+        {
+          "missing": [
+            "metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner"
+          ]
+        }
+      ]
+    },
+    {
+      "==": [
+        {
+          "var": "metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner"
+        },
+        true
+      ]
+    }
+  ]
+}

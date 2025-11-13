@@ -232,6 +232,13 @@ const conditionDslHelpSections = [
     example: 'all(facets.recommendationSet as rec, rec.status != "declined")',
   },
   {
+    title: 'Guard optional variables with `exists()`',
+    description:
+      'Use `exists(<catalogPath>)` before comparing optional facets so missing values resolve to `false` instead of throwing.',
+    example:
+      'exists(facets.clarificationResponse.readyForPlanner) && facets.clarificationResponse.readyForPlanner == true',
+  },
+  {
     title: 'Reach nested fields inside predicates',
     description:
       'Dot notation stays available inside quantifiers. Combine comparisons and logic just like top-level expressions.',
