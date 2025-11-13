@@ -112,6 +112,14 @@ function cloneExpressionNode(node: ConditionExpressionNode): ConditionExpression
         aliasRange: cloneRange(node.aliasRange),
         predicateRange: cloneRange(node.predicateRange),
       }
+    case 'exists':
+      return {
+        type: 'exists',
+        argument: cloneExpressionNode(node.argument),
+        range: cloneRange(node.range),
+        keywordRange: cloneRange(node.keywordRange),
+        argumentRange: cloneRange(node.argumentRange),
+      }
     default:
       return node
   }
@@ -140,6 +148,10 @@ function normalizeVariablePaths(
     case 'binary': {
       normalizeVariablePaths(node.left, map, options)
       normalizeVariablePaths(node.right, map, options)
+      return
+    }
+    case 'exists': {
+      normalizeVariablePaths(node.argument, map, options)
       return
     }
     case 'quantifier': {
@@ -632,6 +644,24 @@ function parsePrimary(ctx: ParseContext): ConditionExpressionNode {
       ) {
         return parseQuantifier(ctx, token)
       }
+      if (token.value === 'exists') {
+        const opening = matchKind(ctx, 'paren')
+        if (!opening || opening.value !== '(') {
+          throw createParseError('Expected `(` after `exists`.', ctx, token.end)
+        }
+        const argument = parseExpression(ctx)
+        const closing = consume(ctx)
+        if (!closing || closing.kind !== 'paren' || closing.value !== ')') {
+          throw createParseError('Unclosed `exists` argument.', ctx, token.start)
+        }
+        return {
+          type: 'exists',
+          argument,
+          range: { start: token.start, end: closing.end },
+          keywordRange: { start: token.start, end: token.end },
+          argumentRange: argument.range,
+        }
+      }
       if (token.value === 'null') {
         return {
           type: 'literal',
@@ -1086,6 +1116,58 @@ function validateNode(
       }
       return
     }
+    case 'exists': {
+      const argument = node.argument
+      const start = argument.range?.start ?? node.range?.start ?? 0
+      const end = argument.range?.end ?? node.range?.end ?? 0
+      if (argument.type !== 'variable') {
+        errors.push(
+          createDiagnostic(
+            {
+              code: 'invalid_condition_exists',
+              message: '`exists()` requires a catalog variable argument.',
+            },
+            index,
+            start,
+            end,
+          ),
+        )
+        return
+      }
+      if (isAliasReference(argument.path, scopes)) {
+        errors.push(
+          createDiagnostic(
+            {
+              code: 'invalid_condition_exists',
+              message: `exists() only supports catalog variables. Alias \`${argument.path}\` cannot be used here.`,
+            },
+            index,
+            start,
+            end,
+          ),
+        )
+        return
+      }
+      const definition = lookup.get(argument.path)
+      if (!definition) {
+        const suggestion = suggestCatalogVariable(argument.path, lookup)
+        const message = suggestion
+          ? `Variable \`${argument.path}\` is not registered. exists() only supports catalog variables (did you mean \`${suggestion}\`?).`
+          : `Variable \`${argument.path}\` is not registered. exists() only supports catalog variables.`
+        errors.push(
+          createDiagnostic(
+            {
+              code: 'invalid_condition_exists',
+              message,
+            },
+            index,
+            start,
+            end,
+          ),
+        )
+      }
+      return
+    }
     case 'quantifier': {
       validateNode(node.collection, lookup, index, errors, scopes)
       if (node.collection.type !== 'variable') {
@@ -1154,6 +1236,45 @@ function markAliasUsage(path: string, scopes: QuantifierScopeState[]): boolean {
   return false
 }
 
+function isAliasReference(path: string, scopes: QuantifierScopeState[]): boolean {
+  for (const scope of scopes) {
+    if (path === scope.alias || path.startsWith(`${scope.alias}.`)) {
+      return true
+    }
+  }
+  return false
+}
+
+function suggestCatalogVariable(
+  path: string,
+  lookup: Map<string, ConditionVariableDefinition>,
+): string | null {
+  const targetSegments = path.split('.').filter((segment) => segment.length > 0)
+  let best: { score: number; display: string } | null = null
+  for (const definition of lookup.values()) {
+    const alias = definition.dslPath ?? definition.path
+    const aliasSegments = alias.split('.').filter((segment) => segment.length > 0)
+    const score = sharedPrefixLength(targetSegments, aliasSegments)
+    if (score === 0) continue
+    if (!best || score > best.score) {
+      best = { score, display: definitionDisplayPath(definition) }
+    }
+  }
+  return best?.display ?? null
+}
+
+function sharedPrefixLength(left: string[], right: string[]): number {
+  const length = Math.min(left.length, right.length)
+  let score = 0
+  for (let i = 0; i < length; i += 1) {
+    if (left[i] !== right[i]) {
+      break
+    }
+    score += 1
+  }
+  return score
+}
+
 function expressionToJsonLogic(node: ConditionExpressionNode): JsonLogicExpression {
   switch (node.type) {
     case 'literal':
@@ -1172,6 +1293,12 @@ function expressionToJsonLogic(node: ConditionExpressionNode): JsonLogicExpressi
         return { or: flattenLogical('or', [left, right]) }
       }
       return { [node.operator]: [left, right] }
+    }
+    case 'exists': {
+      if (node.argument.type !== 'variable') {
+        throw new Error('`exists` argument must resolve to a variable.')
+      }
+      return { '!': [{ missing: [node.argument.path] }] }
     }
     case 'quantifier': {
       const collection = expressionToJsonLogic(node.collection)
@@ -1220,6 +1347,10 @@ function jsonLogicToExpression(
       return foldLogical(op, operand, lookup, aliasStack)
     }
     case '!': {
+      const existsNode = tryParseExistsFromJsonLogic(operand, lookup, aliasStack)
+      if (existsNode) {
+        return existsNode
+      }
       return {
         type: 'unary',
         operator: '!',
@@ -1315,6 +1446,37 @@ function foldLogical(
   return result
 }
 
+function tryParseExistsFromJsonLogic(
+  operand: JsonLogicExpression,
+  lookup: Map<string, ConditionVariableDefinition>,
+  aliasStack: readonly string[],
+): ConditionExpressionNode | null {
+  const candidate = Array.isArray(operand) ? operand[0] : operand
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null
+  }
+  if (!('missing' in candidate)) {
+    return null
+  }
+  const missingOperand = (candidate as Record<string, JsonLogicExpression>)['missing']
+  const list = Array.isArray(missingOperand) ? missingOperand : [missingOperand]
+  if (list.length !== 1) {
+    return null
+  }
+  const first = list[0]
+  if (typeof first !== 'string') {
+    return null
+  }
+  const normalized = normaliseVarFromJsonLogic(first, lookup, aliasStack)
+  return {
+    type: 'exists',
+    argument: { type: 'variable', path: normalized, range: null },
+    range: null,
+    keywordRange: null,
+    argumentRange: null,
+  }
+}
+
 function normaliseVarFromJsonLogic(
   path: string,
   lookup: Map<string, ConditionVariableDefinition>,
@@ -1389,6 +1551,10 @@ function renderNode(node: ConditionExpressionNode, parentPrecedence: number): st
       const expression = `${left} ${node.operator} ${right}`
       return expression
     }
+    case 'exists': {
+      const argument = renderNode(node.argument, Number.POSITIVE_INFINITY)
+      return `exists(${argument})`
+    }
     case 'quantifier': {
       const collection = renderNode(node.collection, Number.POSITIVE_INFINITY)
       const predicate = renderNode(node.predicate, 0)
@@ -1432,8 +1598,14 @@ function needsParensForChild(
 }
 
 function nodePrecedence(node: ConditionExpressionNode): number {
-  if (node.type === 'binary' || node.type === 'unary') {
-    return getPrecedence(node.type === 'binary' ? node.operator : node.operator)
+  if (node.type === 'binary') {
+    return getPrecedence(node.operator)
+  }
+  if (node.type === 'unary') {
+    return getPrecedence(node.operator)
+  }
+  if (node.type === 'exists') {
+    return Number.POSITIVE_INFINITY
   }
   return Number.POSITIVE_INFINITY
 }
@@ -1687,6 +1859,8 @@ function walk(node: ConditionExpressionNode, visit: (node: ConditionExpressionNo
     walk(node.right, visit)
   } else if (node.type === 'unary') {
     walk(node.argument, visit)
+  } else if (node.type === 'exists') {
+    walk(node.argument, visit)
   } else if (node.type === 'quantifier') {
     walk(node.collection, visit)
     walk(node.predicate, visit)
@@ -1748,8 +1922,32 @@ function evaluate(
       return false
     }
     case '!': {
-      const value = evaluate(operand, payload, resolved, scope)
+      const value = Array.isArray(operand)
+        ? evaluate(operand[0]!, payload, resolved, scope)
+        : evaluate(operand, payload, resolved, scope)
       return !truthy(value)
+    }
+    case 'missing': {
+      const list = Array.isArray(operand) ? operand : [operand]
+      const missing: string[] = []
+      for (const item of list) {
+        if (typeof item !== 'string') {
+          throw new Error('`missing` operator expects string paths.')
+        }
+        const scoped = resolveScopedValue(item, scope)
+        if (scoped.found) {
+          resolved[item] = scoped.value
+          continue
+        }
+        const result = readPathWithExistence(payload, item)
+        if (result.exists) {
+          resolved[item] = result.value
+        } else {
+          resolved[item] = undefined
+          missing.push(item)
+        }
+      }
+      return missing
     }
     case 'var': {
       if (typeof operand === 'string') {
@@ -1857,6 +2055,9 @@ function evaluate(
 }
 
 function truthy(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length > 0
+  }
   return Boolean(value)
 }
 

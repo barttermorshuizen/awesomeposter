@@ -127,6 +127,77 @@ describe('PolicyNormalizer', () => {
     expect(effect?.kind).toBe('replan')
   })
 
+  it('normalizes exists helper usage and treats missing values as false', () => {
+    const normalizer = new PolicyNormalizer()
+    const envelope: TaskEnvelope = {
+      objective: 'exists-guard',
+      inputs: {},
+      outputContract: OUTPUT_CONTRACT,
+      policies: {
+        runtime: [
+          {
+            id: 'requires-ready-for-planner',
+            trigger: {
+              kind: 'onNodeComplete',
+              condition: {
+                dsl: 'exists(facets.clarificationResponse.readyForPlanner) && facets.clarificationResponse.readyForPlanner == true',
+              },
+            },
+            action: { type: 'replan', rationale: 'Run is not ready for planner hand-off.' },
+          },
+        ],
+      },
+    }
+
+    const normalized = normalizer.normalize(envelope)
+    const runtimeCondition = normalized.runtime[0]?.trigger.kind === 'onNodeComplete'
+      ? (normalized.runtime[0]?.trigger as any).condition
+      : null
+    expect(runtimeCondition?.jsonLogic).toMatchObject({
+      and: [
+        {
+          '!': [
+            {
+              missing: [
+                'metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner',
+              ],
+            },
+          ],
+        },
+        {
+          '==': [
+            {
+              var: 'metadata.runContextSnapshot.facets.clarificationResponse.value.readyForPlanner',
+            },
+            true,
+          ],
+        },
+      ],
+    })
+
+    const effect = normalizer.evaluateRuntimeEffect(normalized, {
+      id: 'qa-node',
+      kind: 'validation',
+      capabilityId: 'qa.agent',
+      capabilityLabel: 'QA Agent',
+      label: 'QA Review',
+      bundle: { runId: 'run', nodeId: 'qa-node', objective: 'exists-guard', contract: OUTPUT_CONTRACT } as any,
+      contracts: { output: OUTPUT_CONTRACT },
+      facets: { input: [], output: [] },
+      provenance: {},
+      rationale: [],
+      metadata: {
+        runContextSnapshot: {
+          facets: {
+            // intentionally missing clarificationResponse facet to exercise exists helper
+          },
+        },
+      },
+    } as any)
+
+    expect(effect).toBeNull()
+  })
+
   it('converts legacy directives into canonical runtime policies and planner topology', () => {
     const normalizer = new PolicyNormalizer()
     const envelope: TaskEnvelope = {

@@ -29,6 +29,17 @@ rendering, and evaluation utilities used by both the Vue playground and Nitro se
 is available so human-authored expressions stay tidy while the runtime continues to persist the
 canonical run-context path.
 
+## Existence Checks
+
+- Use `exists(<catalogPath>)` to guard optional variables. The helper evaluates to `true` when the
+  provided catalog variable resolves without missing segments and `false` otherwise.
+- The transpiler compiles `exists(foo.bar)` into JSON-Logic `{"!": [{"missing": ["foo.bar"]}]}` so
+  the runtime keeps using canonical operators while remaining backwards compatible with legacy
+  payloads.
+- Operands must reference catalog-backed identifiers. Nested expressions, scoped aliases (e.g.
+  `item.foo`), or unknown variables emit an `invalid_condition_exists` diagnostic with line/column
+  metadata and catalog suggestions.
+
 ## Quantifier Support
 
 - The grammar accepts `some(<collection>, <predicate>)` and `all(<collection>, <predicate>)`.
@@ -45,7 +56,9 @@ canonical run-context path.
   runtime. `routes/api/v1/flex/run.stream.post.ts` calls it before orchestrating a run.
 - When DSL is supplied the helper reuses `parseDsl`; failures throw an `H3Error` with
   `statusCode: 400`, `statusMessage: "Invalid condition expression."`, and a `data` payload
-  containing `{ code: 'invalid_condition_dsl', errors }`.
+  containing `{ code: 'invalid_condition_dsl', errors }`. Misused existence checks surface
+  `invalid_condition_exists` entries within the `errors` array so callers can display targeted
+  guidance.
 - If only JSON-Logic is provided, the helper passes the payload through to preserve backwards
   compatibility.
 
@@ -58,6 +71,7 @@ the orchestrator keeps executing deterministic JSON-Logic.
 
 - Golden fixtures live in `tests/fixtures/condition-dsl/` for regression coverage.
   - `quantifier-*.dsl/json` fixtures pin the `some`/`all` syntax and alias rendering.
+  - `exists-roundtrip.dsl/json` captures the `exists()` helper round-trip contract.
 - Unit tests:
   - `packages/shared/__tests__/condition-dsl.spec.ts` exercises round-trip parsing/rendering,
     unknown variable/type errors, and evaluator behaviour.

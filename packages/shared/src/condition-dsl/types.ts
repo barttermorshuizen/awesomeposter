@@ -92,6 +92,7 @@ export type ConditionDslErrorCode =
   | 'empty_expression'
   | 'type_mismatch'
   | 'invalid_quantifier'
+  | 'invalid_condition_exists'
 
 export interface ConditionDslError {
   code: ConditionDslErrorCode
@@ -207,4 +208,11 @@ export type ConditionExpressionNode =
       collectionRange: SourceRange | null
       aliasRange: SourceRange | null
       predicateRange: SourceRange | null
+    }
+  | {
+      type: 'exists'
+      argument: ConditionExpressionNode
+      range: SourceRange | null
+      keywordRange: SourceRange | null
+      argumentRange: SourceRange | null
     }
