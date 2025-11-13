@@ -8,11 +8,7 @@ import type {
   ConditionalRoutingNode,
   GoalConditionResult
 } from '@awesomeposter/shared'
-import {
-  ensureFacetPlaceholders,
-  mergeFacetValuesIntoStructure,
-  stripPlannerFields
-} from './run-context-utils'
+import { ensureFacetPlaceholders, stripPlannerFields } from './run-context-utils'
 import type { RunContextSnapshot } from './run-context'
 import type {
   FlexPlanNodeContracts,
@@ -1099,62 +1095,25 @@ export class FlexRunPersistence {
           }
         }
       }
-      const runContextOutputsSanitized = stripPlannerFields(
-        resolvedRunContext && facets && Array.isArray(facets.output)
-          ? extractFacetValues(resolvedRunContext, facets.output)
-          : {}
-      )
-      if (runContextOutputsSanitized && Object.keys(runContextOutputsSanitized).length) {
-        contextExtras.currentOutput = ensureFacetPlaceholders(runContextOutputsSanitized, facets?.output ?? [])
-      } else if (hasObjectKeys(outputsCandidateRaw)) {
+      let resolvedOutputPayload: Record<string, unknown> | null = null
+      if (hasObjectKeys(outputsCandidateRaw)) {
         const sanitized = stripPlannerFields(outputsCandidateRaw as Record<string, unknown>)
         if (sanitized && Object.keys(sanitized).length) {
-          contextExtras.currentOutput = ensureFacetPlaceholders(sanitized, facets?.output ?? [])
+          resolvedOutputPayload = sanitized
         }
-      } else {
-        const metadataOutputBase =
-          assignmentMetadata && typeof assignmentMetadata.currentOutput === 'object'
-            ? stripPlannerFields(assignmentMetadata.currentOutput as Record<string, unknown>) ?? {}
-            : {}
+      }
 
-        const existingContextOutput =
-          contextExtras.currentOutput && typeof contextExtras.currentOutput === 'object'
-            ? (contextExtras.currentOutput as Record<string, unknown>)
-            : {}
-
-        const runContextOutputs =
-          resolvedRunContext && facets && Array.isArray(facets.output)
-            ? extractFacetValues(resolvedRunContext, facets.output)
-            : {}
-
-        let mergedOutputs = mergeFacetValuesIntoStructure(existingContextOutput, {}, facetProvenance?.output)
-        if (Object.keys(metadataOutputBase).length) {
-          mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, metadataOutputBase, facetProvenance?.output)
+      if (!resolvedOutputPayload && assignmentMetadata && typeof assignmentMetadata.currentOutput === 'object') {
+        const sanitized = stripPlannerFields(assignmentMetadata.currentOutput as Record<string, unknown>)
+        if (sanitized && Object.keys(sanitized).length) {
+          resolvedOutputPayload = sanitized
         }
-        if (Object.keys(runContextOutputs).length) {
-          mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, runContextOutputs, facetProvenance?.output)
-        }
+      }
 
-        if (!Object.keys(mergedOutputs).length && envelope && envelope.inputs && typeof envelope.inputs === 'object' && facets && Array.isArray(facets.output)) {
-          const fallbackOutputs: Record<string, unknown> = {}
-          for (const facet of facets.output) {
-            if (typeof facet !== 'string') continue
-            const value = (envelope.inputs as Record<string, unknown>)[facet]
-            if (value !== undefined) {
-              fallbackOutputs[facet] = clone(value)
-            }
-          }
-          if (Object.keys(fallbackOutputs).length) {
-            mergedOutputs = mergeFacetValuesIntoStructure(mergedOutputs, fallbackOutputs, facetProvenance?.output)
-          }
-        }
-
-        const sanitizedOutputs = stripPlannerFields(mergedOutputs)
-        if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
-          contextExtras.currentOutput = ensureFacetPlaceholders(sanitizedOutputs, facets?.output ?? [])
-        } else if (Array.isArray(facets?.output) && facets.output.length) {
-          contextExtras.currentOutput = ensureFacetPlaceholders(null, facets.output)
-        }
+      if (resolvedOutputPayload) {
+        contextExtras.currentOutput = ensureFacetPlaceholders(resolvedOutputPayload, facets?.output ?? [])
+      } else if (Array.isArray(facets?.output) && facets.output.length) {
+        contextExtras.currentOutput = ensureFacetPlaceholders(null, facets.output)
       }
       if (resolvedRunContext) {
         contextExtras.runContextSnapshot = clone(resolvedRunContext)

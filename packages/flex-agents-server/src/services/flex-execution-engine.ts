@@ -2707,12 +2707,7 @@ export class FlexExecutionEngine {
     const sanitizedBundleOutputs =
       bundleOutputs && typeof bundleOutputs === 'object' ? stripPlannerFields(bundleOutputs) : null
 
-    const runContextOutputValues = extractFacetSnapshotValues(options.runContextSnapshot ?? null, facetsSnapshot.output)
-    const mergedOutputs = mergeFacetValuesIntoStructure(
-      metadataOutputs ?? sanitizedBundleOutputs ?? null,
-      runContextOutputValues,
-      Array.isArray(node.provenance?.output) ? node.provenance?.output : undefined
-    )
+    const mergedOutputs = metadataOutputs ?? sanitizedBundleOutputs ?? null
     const sanitizedOutputs = stripPlannerFields(mergedOutputs)
     if (sanitizedOutputs && Object.keys(sanitizedOutputs).length) {
       contextExtras.currentOutput = ensureFacetPlaceholders(sanitizedOutputs, facetsSnapshot.output)

@@ -82,12 +82,6 @@ export type PlannerGraphContext = {
 
 export type PlannerContextHints = {
   objective: string
-  channel?: string
-  platform?: string
-  formats: string[]
-  languages: string[]
-  audiences: string[]
-  tags: string[]
   variantCount: number
   plannerDirectives: Record<string, unknown>
   specialInstructions: string[]
@@ -415,15 +409,7 @@ export function buildPlannerUserPrompt(params: {
 }): PlannerUserPromptResult {
   const { input, capabilities, facets } = params
   const context = input.context
-  const planningHints = [
-    context.channel ? `Primary channel: ${context.channel}` : null,
-    context.platform ? `Platform: ${context.platform}` : null,
-    context.formats.length ? `Formats: ${context.formats.join(', ')}` : null,
-    context.languages.length ? `Languages: ${context.languages.join(', ')}` : null,
-    context.audiences.length ? `Audiences: ${context.audiences.join(', ')}` : null,
-    context.tags.length ? `Tags: ${context.tags.join(', ')}` : null,
-    `Variant count: ${context.variantCount}`
-  ].filter((line): line is string => Boolean(line))
+  const planningHints = [`Variant count: ${context.variantCount}`]
 
   if (Object.keys(context.plannerDirectives).length) {
     planningHints.push(`Planner directives: ${stringifyJson(context.plannerDirectives)}`)

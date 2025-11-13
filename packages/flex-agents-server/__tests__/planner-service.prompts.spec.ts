@@ -92,12 +92,6 @@ function buildEnvelope(): TaskEnvelope {
 function buildContext(): PlannerContextHints {
   return {
     objective: 'Draft LinkedIn post variants promoting our webinar',
-    channel: 'social',
-    platform: 'linkedin',
-    formats: ['post'],
-    languages: ['en'],
-    audiences: ['b2b_marketers'],
-    tags: ['webinar', 'flex'],
     variantCount: 2,
     plannerDirectives: {
       max_tokens: 1500

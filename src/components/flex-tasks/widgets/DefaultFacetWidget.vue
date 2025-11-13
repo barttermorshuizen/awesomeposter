@@ -104,11 +104,6 @@ function onJsonBlur() {
   }
   try {
     const parsed = JSON.parse(jsonDraft.value)
-    if (schemaType.value === 'array' && !Array.isArray(parsed)) {
-      emit('update:modelValue', [parsed])
-      jsonDraft.value = JSON.stringify([parsed], null, 2)
-      return
-    }
     emit('update:modelValue', parsed)
   } catch (error) {
     console.warn('Invalid JSON in facet widget', error)

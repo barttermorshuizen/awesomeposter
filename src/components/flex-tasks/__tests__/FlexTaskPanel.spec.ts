@@ -365,7 +365,7 @@ describe('FlexTaskPanel', () => {
     expect(titlesText).not.toContain('Strategic Rationale')
   })
 
-  it('wraps feedback JSON objects into arrays for convenience', async () => {
+  it('keeps feedback JSON untouched when user omits array wrapper', async () => {
     const store = useFlexTasksStore()
     store.handleNodeStart({
       type: 'node_start',
@@ -392,18 +392,16 @@ describe('FlexTaskPanel', () => {
     await nextTick()
 
     const textarea = wrapper.get('textarea')
-    await textarea.setValue(
-      JSON.stringify(
-        { facet: 'post', message: 'Looks good', author: 'Director' },
-        null,
-        2
-      )
+    const originalValue = JSON.stringify(
+      { facet: 'post', message: 'Looks good', author: 'Director' },
+      null,
+      2
     )
+    await textarea.setValue(originalValue)
     await textarea.trigger('blur')
     await nextTick()
 
-    expect(textarea.element.value).toContain('[')
-    expect(textarea.element.value).toContain('"Looks good"')
+    expect(textarea.element.value).toBe(originalValue)
   })
 
   it('prefills handoff summary from metadata currentOutput', async () => {
