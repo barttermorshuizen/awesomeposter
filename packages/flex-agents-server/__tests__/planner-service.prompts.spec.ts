@@ -278,4 +278,34 @@ describe('planner prompt builders', () => {
     expect(telemetryPayload.facetRows).toBeGreaterThan(0)
     expect(telemetryPayload.capabilityRows).toBeGreaterThan(0)
   })
+
+  it('adds GOAL CONDITION REPAIR details when failures exist', () => {
+    const facets = [buildFacet('summary', 'output', 'Summarized status.')]
+    const capabilities = [buildCapability({ capabilityId: 'summary.Writer' })]
+    const input: PlannerServiceInput = {
+      envelope: buildEnvelope(),
+      context: buildContext(),
+      capabilities,
+      policies: { planner: undefined, runtime: [] },
+      policyMetadata: { legacyNotes: [], legacyFields: [] },
+      goalConditionFailures: [
+        {
+          facet: 'summary',
+          path: '/status',
+          expression: 'status == "approved"',
+          dsl: 'status == "approved"',
+          jsonLogic: { '==': [{ var: 'status' }, 'approved'] },
+          satisfied: false,
+          observedValue: 'draft',
+          error: 'Condition evaluation failed.'
+        }
+      ]
+    }
+
+    const result = buildPlannerUserPrompt({ input, capabilities, facets })
+    expect(result.message.content).toContain('### GOAL CONDITION REPAIR')
+    expect(result.message.content).toContain('Facet "summary" @ path "/status"')
+    expect(result.message.content).toContain('Canonical DSL')
+    expect(result.message.content).toContain('Evaluator error: Condition evaluation failed.')
+  })
 })

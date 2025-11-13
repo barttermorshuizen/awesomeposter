@@ -1,0 +1,40 @@
+schema: 1
+story: '8.37'
+story_title: 'Flex GoalCondition Replan Orchestration'
+gate: PASS
+status_reason: 'Execution engine now re-evaluates goal predicates after HITL resumes and raises GoalConditionFailedError, so FlexRunCoordinator executes the same capped replan loop before emitting `complete`; all ACs satisfied with regression coverage.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-13T08:09:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 95
+expires: '2025-11-27T00:00:00Z'
+
+evidence:
+  tests_reviewed: 4
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Backend-only workflow change; no new external attack surface.'
+  performance:
+    status: PASS
+    notes: 'Replan logic mirrors existing execution flow; negligible overhead.'
+  reliability:
+    status: PASS
+    notes: 'Resume path now enforces the same goal-condition gating as initial executions.'
+  maintainability:
+    status: PASS
+    notes: 'Change set remains localized once the missing branch is implemented.'
+
+recommendations:
+  immediate: []
+  future: []

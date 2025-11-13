@@ -36,7 +36,8 @@ const LIFECYCLE_EVENT_TYPES: FlexEventType[] = [
   'plan_rejected',
   'plan_generated',
   'plan_updated',
-  'policy_triggered'
+  'policy_triggered',
+  'goal_condition_failed'
 ]
 
 class TelemetryService {
@@ -319,6 +320,18 @@ class TelemetryService {
         })
         break
       }
+      case 'goal_condition_failed': {
+        const failures = Array.isArray(payload.failedGoalConditions)
+          ? payload.failedGoalConditions.length
+          : 0
+        logger.warn('flex_goal_condition_failed', {
+          ...base,
+          failures,
+          attempt: typeof payload.attempt === 'number' ? payload.attempt : undefined,
+          limit: typeof payload.limit === 'number' ? payload.limit : undefined
+        })
+        break
+      }
       case 'hitl_request': {
         const request = payload.request as Record<string, unknown> | undefined
         logger.info('flex_hitl_request', {
@@ -402,6 +415,16 @@ class TelemetryService {
       }
       case 'policy_triggered': {
         this.recordCounter('flex.policy.triggers', undefined, event)
+        break
+      }
+      case 'goal_condition_failed': {
+        this.recordCounter(
+          'flex.goal_condition.replans',
+          {
+            attempt: typeof (event.payload as any)?.attempt === 'number' ? String((event.payload as any).attempt) : undefined
+          },
+          event
+        )
         break
       }
       case 'hitl_request': {

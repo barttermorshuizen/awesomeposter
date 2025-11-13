@@ -102,6 +102,8 @@ type FlexResumeSubmission = {
   note?: string | null
 }
 
+type EventFrame = FlexEventWithId & { __key: string }
+
 type RuntimePolicyDraft = {
   index: number
   id: string
@@ -181,7 +183,7 @@ const validationWarnings = ref<string[]>([])
 const conversationMissingFields = ref<string[]>([])
 const parsedEnvelope = ref<TaskEnvelope | null>(null)
 
-const eventLog = ref<FlexEventWithId[]>([])
+const eventLog = ref<EventFrame[]>([])
 const runStatus = ref<'idle' | 'running' | 'hitl' | 'completed' | 'error'>('idle')
 const runError = ref<string | null>(null)
 const correlationId = ref<string | undefined>()
@@ -198,6 +200,7 @@ const { pendingRun, hasActiveRequest, operatorProfile } = storeToRefs(hitlStore)
 
 const backoffNotices = ref<string[]>([])
 const expandedEventIds = ref<Set<string>>(new Set())
+let eventSequence = 0
 const showCapabilitySnapshot = ref(false)
 const showFacetSnapshot = ref(false)
 const showCatalogSnapshot = ref(false)
@@ -1177,6 +1180,7 @@ function schedulePersist() {
 
 function resetRunState() {
   eventLog.value = []
+  expandedEventIds.value = new Set()
   backoffNotices.value = []
   runStatus.value = 'idle'
   runError.value = null
@@ -1185,6 +1189,7 @@ function resetRunState() {
   plan.value = null
   planStreamError.value = null
   hitlStore.resetAll()
+  eventSequence = 0
 }
 
 function updatePlanFromGenerated(payload: unknown, timestamp: string) {
@@ -1328,7 +1333,9 @@ function updateNodeStatus(
 }
 
 function appendEvent(evt: FlexEventWithId) {
-  eventLog.value = [...eventLog.value, evt]
+  const timestamp = evt.timestamp ?? new Date().toISOString()
+  const key = `${evt.id ?? 'frame'}-${timestamp}-${eventSequence++}`
+  eventLog.value = [...eventLog.value, { ...evt, timestamp, __key: key }]
 }
 
 function handleEvent(evt: FlexEventWithId) {
@@ -1462,17 +1469,33 @@ function handleEvent(evt: FlexEventWithId) {
   }
 }
 
-function toggleEventExpansion(id: string | undefined) {
-  if (!id) return
+function toggleEventExpansion(key: string | undefined) {
+  if (!key) return
   const next = new Set(expandedEventIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
   expandedEventIds.value = next
 }
 
-function isEventExpanded(id: string | undefined): boolean {
-  if (!id) return false
-  return expandedEventIds.value.has(id)
+function isEventExpanded(key: string | undefined): boolean {
+  if (!key) return false
+  return expandedEventIds.value.has(key)
+}
+
+async function copyEventFrame(frame: EventFrame) {
+  const { __key, ...rest } = frame
+  const serialized = JSON.stringify(rest, null, 2)
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(serialized)
+    } else {
+      fallbackCopy(serialized)
+    }
+    notifications.notifySuccess('Event frame copied to clipboard.')
+  } catch (error) {
+    console.warn('[Flex Sandbox] Failed to copy event frame', error)
+    notifications.notifyError('Unable to copy event frame on this browser.')
+  }
 }
 
 function handleBackoff(info: { retryAfter: number; attempt: number; pending?: number; limit?: number }) {
@@ -2355,7 +2378,7 @@ watch(
               <v-timeline v-else density="compact" side="end">
                 <v-timeline-item
                   v-for="frame in eventLog"
-                  :key="`${frame.timestamp}-${frame.id ?? ''}-${frame.type}`"
+                  :key="frame.__key"
                   size="x-small"
                   :dot-color="frame.type === 'node_error' || frame.type === 'validation_error' ? 'error' : 'primary'"
                 >
@@ -2364,18 +2387,30 @@ watch(
                       <strong>{{ frame.type }}</strong>
                       <span class="text-caption text-medium-emphasis ms-2">{{ formatTimestamp(frame.timestamp) }}</span>
                     </div>
-                    <v-btn
-                      icon
-                      size="x-small"
-                      variant="text"
-                      :title="isEventExpanded(frame.id) ? 'Collapse details' : 'Expand details'"
-                      @click="toggleEventExpansion(frame.id)"
-                    >
-                      <v-icon :icon="isEventExpanded(frame.id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
-                    </v-btn>
+                    <div class="d-flex align-center">
+                      <v-btn
+                        icon
+                        size="x-small"
+                        variant="text"
+                        :title="`Copy frame ${frame.type}`"
+                        :aria-label="`Copy frame ${frame.type}`"
+                        @click="copyEventFrame(frame)"
+                      >
+                        <v-icon icon="mdi-content-copy" />
+                      </v-btn>
+                      <v-btn
+                        icon
+                        size="x-small"
+                        variant="text"
+                        :title="isEventExpanded(frame.__key) ? 'Collapse details' : 'Expand details'"
+                        @click="toggleEventExpansion(frame.__key)"
+                      >
+                        <v-icon :icon="isEventExpanded(frame.__key) ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+                      </v-btn>
+                    </div>
                   </div>
                   <transition name="expand">
-                    <div v-if="isEventExpanded(frame.id)" class="mt-2">
+                    <div v-if="isEventExpanded(frame.__key)" class="mt-2">
                       <div v-if="frame.message" class="text-caption mb-2">{{ frame.message }}</div>
                       <pre v-if="frame.payload" class="payload-preview">{{ JSON.stringify(frame.payload, null, 2) }}</pre>
                       <div v-else class="text-caption text-medium-emphasis">No payload</div>

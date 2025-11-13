@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { OpenAI } from 'openai'
-import type { TaskEnvelope, CapabilityRecord, FacetDefinition, TaskPolicies } from '@awesomeposter/shared'
+import type {
+  TaskEnvelope,
+  CapabilityRecord,
+  FacetDefinition,
+  TaskPolicies,
+  GoalConditionResult
+} from '@awesomeposter/shared'
 import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
 import { getLogger } from './logger'
@@ -119,6 +125,7 @@ export type PlannerServiceInput = {
     legacyNotes: string[]
     legacyFields: string[]
   }
+  goalConditionFailures?: GoalConditionResult[]
 }
 
 type PlannerPromptMessage = { role: 'system' | 'user'; content: string }
@@ -591,6 +598,37 @@ export function buildPlannerUserPrompt(params: {
 
   if (graphSections.length) {
     sections.push('### CURRENT GRAPH CONTEXT', graphSections.join('\n\n'))
+  }
+
+  if (input.goalConditionFailures?.length) {
+    const failureDescriptions = input.goalConditionFailures.map((failure, index) => {
+      const header = `${index + 1}. Facet "${failure.facet}" @ path "${failure.path}"`
+      const canonicalDslBlock = indentBlock(`Canonical DSL:\n${failure.expression}`, 2)
+      const originalDslBlock =
+        failure.dsl && failure.dsl !== failure.expression
+          ? indentBlock(`Original DSL:\n${failure.dsl}`, 2)
+          : ''
+      const jsonLogicBlock = failure.jsonLogic
+        ? indentBlock(`JSON Logic:\n${stringifyJson(failure.jsonLogic)}`, 2)
+        : ''
+      const observedValueBlock =
+        Object.prototype.hasOwnProperty.call(failure, 'observedValue') && failure.observedValue !== undefined
+          ? indentBlock(`Observed value:\n${stringifyJson(failure.observedValue)}`, 2)
+          : ''
+      const outcomeBlock = failure.error
+        ? indentBlock(`Evaluator error: ${failure.error}`, 2)
+        : indentBlock('Result: FAILED (satisfied=false)', 2)
+      return [header, canonicalDslBlock, originalDslBlock, jsonLogicBlock, observedValueBlock, outcomeBlock]
+        .filter(Boolean)
+        .join('\n')
+    })
+    sections.push(
+      '### GOAL CONDITION REPAIR',
+      [
+        'The following goal conditions must evaluate `true` before completion. Replan nodes to gather the needed data or transformations that satisfy every predicate:',
+        failureDescriptions.join('\n\n')
+      ].join('\n\n')
+    )
   }
 
   const planSnapshot = input.graphContext?.planSnapshot

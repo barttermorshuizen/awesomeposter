@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { RuntimeConditionDslSchema, TaskPoliciesSchema } from './policies.js'
+import type { JsonLogicExpression } from '../condition-dsl/types.js'
 
 import type { RuntimePolicyConditionDsl } from './policies.js'
 
@@ -263,13 +264,18 @@ export type FacetConditionDsl = RuntimePolicyConditionDsl
 /**
  * Result payload emitted after evaluating a single goal condition.
  */
+const JsonLogicExpressionSchema = z.custom<JsonLogicExpression>(() => true)
+
 export const GoalConditionResultSchema = z
   .object({
     facet: z.string().min(1),
     path: z.string().min(1),
     expression: z.string().min(1),
     satisfied: z.boolean(),
-    error: z.string().min(1).optional()
+    error: z.string().min(1).optional(),
+    dsl: z.string().min(1).optional(),
+    jsonLogic: JsonLogicExpressionSchema.optional(),
+    observedValue: z.unknown().optional()
   })
   .strict()
 export type GoalConditionResult = z.infer<typeof GoalConditionResultSchema>
@@ -370,6 +376,7 @@ export const FlexEventTypeSchema = z.enum([
   'validation_error',
   'policy_triggered',
   'policy_update',
+  'goal_condition_failed',
   'log',
   'complete'
 ])

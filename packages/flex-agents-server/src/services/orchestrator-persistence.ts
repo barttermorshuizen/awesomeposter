@@ -484,6 +484,7 @@ type PlanSnapshotState = {
   policyActions?: PendingPolicyActionState[]
   policyAttempts?: Record<string, number>
   mode?: RuntimePolicySnapshotMode
+  goalConditionFailures?: GoalConditionResult[]
 }
 
 type SavePlanSnapshotOptions = {
@@ -713,7 +714,10 @@ export class FlexRunPersistence {
               ...(options.pendingState.policyAttempts
                 ? { policyAttempts: clone(options.pendingState.policyAttempts) }
                 : {}),
-              ...(options.pendingState.mode ? { mode: options.pendingState.mode } : {})
+              ...(options.pendingState.mode ? { mode: options.pendingState.mode } : {}),
+              ...(options.pendingState.goalConditionFailures
+                ? { goalConditionFailures: clone(options.pendingState.goalConditionFailures) }
+                : {})
             }
           : undefined
       }
@@ -862,6 +866,45 @@ export class FlexRunPersistence {
         orchestrator: 'flex'
       }
     })
+  }
+
+  async recordGoalConditionCheckpoint(
+    runId: string,
+    context: {
+      planVersion?: number
+      schemaHash?: string | null
+      status?: FlexRunStatus
+      output?: Record<string, unknown> | null
+      goalConditionResults: GoalConditionResult[]
+    }
+  ) {
+    const now = new Date()
+    const outputPayload = context.output ?? {}
+    await this.db
+      .insert(flexRunOutputs)
+      .values({
+        runId,
+        planVersion: context.planVersion ?? 0,
+        schemaHash: context.schemaHash ?? null,
+        status: context.status ?? 'running',
+        outputJson: clone(outputPayload),
+        facetSnapshotJson: null,
+        provenanceJson: null,
+        goalConditionResultsJson: clone(context.goalConditionResults),
+        recordedAt: now,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: flexRunOutputs.runId,
+        set: {
+          planVersion: sql`excluded.plan_version`,
+          schemaHash: sql`excluded.schema_hash`,
+          status: sql`excluded.status`,
+          outputJson: sql`excluded.output_json`,
+          goalConditionResultsJson: sql`excluded.goal_condition_results_json`,
+          updatedAt: now
+        }
+      })
   }
 
   async loadRunOutput(runId: string): Promise<FlexRunOutputRow | null> {

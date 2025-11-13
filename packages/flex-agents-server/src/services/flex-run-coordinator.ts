@@ -10,7 +10,8 @@ import type {
   HitlContractSummary,
   TaskMetadata,
   ConditionalRoutingNode,
-  RoutingEvaluationResult
+  RoutingEvaluationResult,
+  GoalConditionResult
 } from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
 import {
@@ -40,6 +41,7 @@ import {
   RunPausedError,
   RuntimePolicyFailureError,
   FlexValidationError,
+  GoalConditionFailedError,
   type FlexExecutionOptions
 } from './flex-execution-engine'
 import { getHitlService, parseHitlDecisionAction, resolveHitlDecision, type HitlService } from './hitl-service'
@@ -116,6 +118,15 @@ const isFlexValidationError = (error: unknown): error is FlexValidationError => 
     Array.isArray(candidate.errors)
   )
 }
+
+const DEFAULT_GOAL_CONDITION_REPLAN_LIMIT = 2
+const GOAL_CONDITION_REPLAN_LIMIT = (() => {
+  const raw = Number(process.env.FLEX_GOAL_CONDITION_REPLAN_LIMIT ?? DEFAULT_GOAL_CONDITION_REPLAN_LIMIT)
+  if (Number.isFinite(raw) && raw >= 0) {
+    return raw
+  }
+  return DEFAULT_GOAL_CONDITION_REPLAN_LIMIT
+})()
 
 const formatFacetTitle = (value: string, fallback: string): string => {
   if (!value) return fallback
@@ -273,6 +284,9 @@ export class FlexRunCoordinator {
     let resolvedDecisionResult: RunResult | null = null
     let activePlan: FlexPlan | undefined
     let activePlanVersion: number | null = resumeCandidate?.run.planVersion ?? null
+    let pendingFailedGoalConditions: GoalConditionResult[] = []
+    const goalConditionReplanLimit = GOAL_CONDITION_REPLAN_LIMIT
+    let goalConditionReplanAttempts = 0
     const emitEvent = async (event: FlexEvent) => {
       const enriched: FlexEvent = {
         ...event,
@@ -737,7 +751,10 @@ export class FlexRunCoordinator {
     let plannerAttemptCounter = 0
     const requestPlan = async (
       phase: 'initial' | 'replan',
-      requestOptions: { graphState?: PlannerGraphState } = {}
+      requestOptions: {
+        graphState?: PlannerGraphState
+        replanContext?: { reason?: string; failedGoalConditions?: GoalConditionResult[] }
+      } = {}
     ): Promise<{ plan: FlexPlan; attempt: number }> => {
       const maxPlannerAttempts = 2
       let attemptsInPhase = 0
@@ -755,6 +772,13 @@ export class FlexRunCoordinator {
             graphState: requestOptions.graphState,
             onRequest: async (requestContext) => {
               const plannerHints = requestContext.context
+              const replanMetadata =
+                phase === 'replan'
+                  ? {
+                      reason: requestOptions.replanContext?.reason ?? 'runtime_replan',
+                      failedGoalConditions: requestOptions.replanContext?.failedGoalConditions
+                    }
+                  : undefined
               await emitEvent({
                 type: 'plan_requested',
                 timestamp: new Date().toISOString(),
@@ -790,7 +814,8 @@ export class FlexRunCoordinator {
                     capabilityId: capability.capabilityId,
                     displayName: capability.displayName,
                     status: capability.status
-                  }))
+                  })),
+                  ...(replanMetadata ? { replan: replanMetadata } : {})
                 }
               })
             }
@@ -856,6 +881,7 @@ export class FlexRunCoordinator {
             policyActions?: PendingPolicyActionState[]
             policyAttempts?: Record<string, number>
             mode?: RuntimePolicySnapshotMode
+            goalConditionFailures?: GoalConditionResult[]
           }
         | undefined = pendingStateSnapshotRaw
         ? {
@@ -878,9 +904,16 @@ export class FlexRunCoordinator {
             mode:
               typeof (pendingStateSnapshotRaw as any).mode === 'string'
                 ? ((pendingStateSnapshotRaw as any).mode as RuntimePolicySnapshotMode)
-                : undefined
+                : undefined,
+            goalConditionFailures: Array.isArray((pendingStateSnapshotRaw as any).goalConditionFailures)
+              ? ((pendingStateSnapshotRaw as any).goalConditionFailures as GoalConditionResult[])
+              : undefined
           }
         : undefined
+
+      if (resumeInitialState?.goalConditionFailures?.length) {
+        pendingFailedGoalConditions = [...resumeInitialState.goalConditionFailures]
+      }
 
       await emitEvent({
         type: 'plan_generated',
@@ -1332,8 +1365,51 @@ export class FlexRunCoordinator {
               finalOutput = result
             }
           } catch (error) {
-            if (error instanceof ReplanRequestedError) {
+            if (error instanceof GoalConditionFailedError || error instanceof ReplanRequestedError) {
               const trigger = error.trigger
+              const isGoalFailure = error instanceof GoalConditionFailedError
+              if (isGoalFailure) {
+                pendingFailedGoalConditions = [...error.failedGoalConditions]
+                goalConditionReplanAttempts += 1
+                await this.persistence.recordGoalConditionCheckpoint(runId, {
+                  planVersion: activePlan?.version ?? 0,
+                  schemaHash: schemaHashValue,
+                  output: error.finalOutput,
+                  goalConditionResults: error.goalConditionResults
+                })
+                const limitReached =
+                  goalConditionReplanLimit > 0 && goalConditionReplanAttempts > goalConditionReplanLimit
+                if (limitReached) {
+                  await this.persistence.saveRunContext(runId, runContext.snapshot())
+                const failurePayload = {
+                  status: 'failed',
+                  error: {
+                    code: 'goal_condition_replan_limit',
+                    message: 'Automatic goal condition replans exceeded the configured limit',
+                    attempts: goalConditionReplanAttempts
+                  },
+                  goal_condition_results: error.goalConditionResults
+                }
+                  await this.persistence.recordResult(runId, failurePayload, {
+                    status: 'failed',
+                    planVersion: activePlan?.version ?? 0,
+                    schemaHash: schemaHashValue,
+                    facets: runContext.snapshot(),
+                    goalConditionResults: error.goalConditionResults
+                  })
+                  await emitEvent({
+                    type: 'complete',
+                    timestamp: new Date().toISOString(),
+                    runId,
+                    payload: failurePayload
+                  })
+                  this.emittedHitlResolutions.delete(runId)
+                  return { runId, status: 'failed', output: null }
+                }
+              } else {
+                pendingFailedGoalConditions = []
+              }
+
               pendingState = {
                 completedNodeIds: error.state.completedNodeIds,
                 nodeOutputs: error.state.nodeOutputs,
@@ -1343,15 +1419,30 @@ export class FlexRunCoordinator {
               }
               const state = pendingState
               resumeInitialState = undefined
-              await emitEvent({
-                type: 'policy_triggered',
-                timestamp: new Date().toISOString(),
-                runId,
-                payload: {
+              if (isGoalFailure && pendingFailedGoalConditions.length) {
+                await emitEvent({
+                  type: 'goal_condition_failed',
+                  timestamp: new Date().toISOString(),
                   runId,
-                  trigger
-                }
-              })
+                  payload: {
+                    runId,
+                    trigger,
+                    failedGoalConditions: pendingFailedGoalConditions,
+                    attempt: goalConditionReplanAttempts,
+                    limit: goalConditionReplanLimit > 0 ? goalConditionReplanLimit : null
+                  }
+                })
+              } else {
+                await emitEvent({
+                  type: 'policy_triggered',
+                  timestamp: new Date().toISOString(),
+                  runId,
+                  payload: {
+                    runId,
+                    trigger
+                  }
+                })
+              }
 
               const currentPlan = activePlan
               const previousVersion = currentPlan.version
@@ -1359,9 +1450,17 @@ export class FlexRunCoordinator {
                 plan: currentPlan,
                 completedNodeIds: state.completedNodeIds,
                 nodeOutputs: state.nodeOutputs,
-                facets: state.facets
+                facets: state.facets,
+                goalConditionFailures: pendingFailedGoalConditions.length ? pendingFailedGoalConditions : undefined
               }
-              const { plan: updatedPlan } = await requestPlan('replan', { graphState })
+              const replanContext =
+                isGoalFailure && pendingFailedGoalConditions.length
+                  ? { reason: 'goal_condition_failed', failedGoalConditions: pendingFailedGoalConditions }
+                  : { reason: trigger.reason }
+              const { plan: updatedPlan } = await requestPlan('replan', {
+                graphState,
+                replanContext
+              })
               updatedPlan.nodes = updatedPlan.nodes.map((node) => ({
                 ...node,
                 status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending'
@@ -1415,8 +1514,71 @@ export class FlexRunCoordinator {
                   nodeOutputs: state.nodeOutputs,
                   policyActions: state.policyActions ?? [],
                   policyAttempts: state.policyAttempts ?? {},
-                  mode: state.mode
+                  mode: state.mode,
+                  goalConditionFailures: pendingFailedGoalConditions.length
+                    ? pendingFailedGoalConditions
+                    : undefined
                 }
+              })
+              const replanPlanPayload = {
+                plan: {
+                  runId: updatedPlan.runId,
+                  version: updatedPlan.version,
+                  nodes: updatedPlan.nodes.map((node) => {
+                    const contractSource = node.contracts
+                    const contracts =
+                      contractSource && (contractSource.input || contractSource.output)
+                        ? {
+                            ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                            ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                          }
+                        : undefined
+                    const facetSource = node.facets
+                    const facets =
+                      (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                        ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                        : undefined
+                    const derived =
+                      node.derivedCapability?.fromCapabilityId &&
+                      typeof node.derivedCapability.fromCapabilityId === 'string'
+                        ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                        : undefined
+                    const metadata =
+                      node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                    return {
+                      id: node.id,
+                      capabilityId: node.capabilityId,
+                      label: node.label,
+                      kind: node.kind,
+                      status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending',
+                      ...(contracts ? { contracts } : {}),
+                      ...(facets ? { facets } : {}),
+                      ...(derived ? { derivedCapability: derived } : {}),
+                      ...(metadata ? { metadata } : {}),
+                      ...(node.routing ? { routing: node.routing } : {})
+                    }
+                  }),
+                  edges: updatedPlan.edges.map((edge) => ({
+                    from: edge.from,
+                    to: edge.to,
+                    ...(edge.reason ? { reason: edge.reason } : {})
+                  })),
+                  metadata: updatedPlan.metadata
+                },
+                ...(pendingFailedGoalConditions.length
+                  ? {
+                      replan: {
+                        reason: 'goal_condition_failed',
+                        failedGoalConditions: pendingFailedGoalConditions
+                      }
+                    }
+                  : { replan: { reason: replanContext.reason } })
+              }
+              await emitEvent({
+                type: 'plan_generated',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: replanPlanPayload
               })
               await emitEvent({
                 type: 'plan_updated',
@@ -1427,8 +1589,16 @@ export class FlexRunCoordinator {
                   previousVersion,
                   version: updatedPlan.version,
                   trigger,
-              nodes: updatedPlan.nodes.map((node) => {
-                const contractSource = node.contracts
+                  ...(pendingFailedGoalConditions.length
+                    ? {
+                        replan: {
+                          reason: 'goal_condition_failed',
+                          failedGoalConditions: pendingFailedGoalConditions
+                        }
+                      }
+                    : { replan: { reason: trigger.reason } }),
+                  nodes: updatedPlan.nodes.map((node) => {
+                    const contractSource = node.contracts
                 const contracts =
                   contractSource && (contractSource.input || contractSource.output)
                     ? {
@@ -1538,9 +1708,11 @@ export class FlexRunCoordinator {
             }
 
             throw error
-          }
         }
+      }
 
+      pendingFailedGoalConditions = []
+      goalConditionReplanAttempts = 0
       await this.persistence.saveRunContext(runId, runContext.snapshot())
       this.emittedHitlResolutions.delete(runId)
       if (resolvedDecisionResult) {
@@ -1679,8 +1851,51 @@ export class FlexRunCoordinator {
           })
           finalOutput = result
         } catch (error) {
-          if (error instanceof ReplanRequestedError) {
+          if (error instanceof GoalConditionFailedError || error instanceof ReplanRequestedError) {
             const trigger = error.trigger
+            const isGoalFailure = error instanceof GoalConditionFailedError
+            if (isGoalFailure) {
+              pendingFailedGoalConditions = [...error.failedGoalConditions]
+              goalConditionReplanAttempts += 1
+              await this.persistence.recordGoalConditionCheckpoint(runId, {
+                planVersion: activePlan?.version ?? 0,
+                schemaHash: schemaHashValue,
+                output: error.finalOutput,
+                goalConditionResults: error.goalConditionResults
+              })
+              const limitReached =
+                goalConditionReplanLimit > 0 && goalConditionReplanAttempts > goalConditionReplanLimit
+              if (limitReached) {
+                await this.persistence.saveRunContext(runId, runContext.snapshot())
+                const failurePayload = {
+                  status: 'failed',
+                  error: {
+                    code: 'goal_condition_replan_limit',
+                    message: 'Automatic goal condition replans exceeded the configured limit',
+                    attempts: goalConditionReplanAttempts
+                  },
+                  goal_condition_results: error.goalConditionResults
+                }
+                await this.persistence.recordResult(runId, failurePayload, {
+                  status: 'failed',
+                  planVersion: activePlan?.version ?? 0,
+                  schemaHash: schemaHashValue,
+                  facets: runContext.snapshot(),
+                  goalConditionResults: error.goalConditionResults
+                })
+                await emitEvent({
+                  type: 'complete',
+                  timestamp: new Date().toISOString(),
+                  runId,
+                  payload: failurePayload
+                })
+                this.emittedHitlResolutions.delete(runId)
+                return { runId, status: 'failed', output: null }
+              }
+            } else {
+              pendingFailedGoalConditions = []
+            }
+
             pendingState = {
               completedNodeIds: error.state.completedNodeIds,
               nodeOutputs: error.state.nodeOutputs,
@@ -1689,15 +1904,30 @@ export class FlexRunCoordinator {
               ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
             }
             const state = pendingState
-            await emitEvent({
-              type: 'policy_triggered',
-              timestamp: new Date().toISOString(),
-              runId,
-              payload: {
+            if (isGoalFailure && pendingFailedGoalConditions.length) {
+              await emitEvent({
+                type: 'goal_condition_failed',
+                timestamp: new Date().toISOString(),
                 runId,
-                trigger
-              }
-            })
+                payload: {
+                  runId,
+                  trigger,
+                  failedGoalConditions: pendingFailedGoalConditions,
+                  attempt: goalConditionReplanAttempts,
+                  limit: goalConditionReplanLimit > 0 ? goalConditionReplanLimit : null
+                }
+              })
+            } else {
+              await emitEvent({
+                type: 'policy_triggered',
+                timestamp: new Date().toISOString(),
+                runId,
+                payload: {
+                  runId,
+                  trigger
+                }
+              })
+            }
 
             const currentPlan = activePlan
             const previousVersion = currentPlan.version
@@ -1705,9 +1935,14 @@ export class FlexRunCoordinator {
               plan: currentPlan,
               completedNodeIds: state.completedNodeIds,
               nodeOutputs: state.nodeOutputs,
-              facets: state.facets
+              facets: state.facets,
+              goalConditionFailures: pendingFailedGoalConditions.length ? pendingFailedGoalConditions : undefined
             }
-            const { plan: updatedPlan } = await requestPlan('replan', { graphState })
+            const replanContext =
+              isGoalFailure && pendingFailedGoalConditions.length
+                ? { reason: 'goal_condition_failed', failedGoalConditions: pendingFailedGoalConditions }
+                : { reason: trigger.reason }
+            const { plan: updatedPlan } = await requestPlan('replan', { graphState, replanContext })
             updatedPlan.nodes = updatedPlan.nodes.map((node) => ({
               ...node,
               status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending'
@@ -1760,8 +1995,71 @@ export class FlexRunCoordinator {
                 nodeOutputs: state.nodeOutputs,
                 policyActions: state.policyActions ?? [],
                 policyAttempts: state.policyAttempts ?? {},
-                mode: state.mode
+                mode: state.mode,
+                goalConditionFailures: pendingFailedGoalConditions.length
+                  ? pendingFailedGoalConditions
+                  : undefined
               }
+            })
+            const replanPlanPayload = {
+              plan: {
+                runId: updatedPlan.runId,
+                version: updatedPlan.version,
+                nodes: updatedPlan.nodes.map((node) => {
+                  const contractSource = node.contracts
+                  const contracts =
+                    contractSource && (contractSource.input || contractSource.output)
+                      ? {
+                          ...(contractSource.input ? { inputMode: contractSource.input.mode } : {}),
+                          ...(contractSource.output ? { outputMode: contractSource.output.mode } : {})
+                        }
+                      : undefined
+                  const facetSource = node.facets
+                  const facets =
+                    (facetSource?.input?.length ?? 0) || (facetSource?.output?.length ?? 0)
+                      ? { input: facetSource?.input ?? [], output: facetSource?.output ?? [] }
+                      : undefined
+                  const derived =
+                    node.derivedCapability?.fromCapabilityId &&
+                    typeof node.derivedCapability.fromCapabilityId === 'string'
+                      ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
+                      : undefined
+                  const metadata =
+                    node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                  return {
+                    id: node.id,
+                    capabilityId: node.capabilityId,
+                    label: node.label,
+                    kind: node.kind,
+                    status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending',
+                    ...(contracts ? { contracts } : {}),
+                    ...(facets ? { facets } : {}),
+                    ...(derived ? { derivedCapability: derived } : {}),
+                    ...(metadata ? { metadata } : {}),
+                    ...(node.routing ? { routing: node.routing } : {})
+                  }
+                }),
+                edges: updatedPlan.edges.map((edge) => ({
+                  from: edge.from,
+                  to: edge.to,
+                  ...(edge.reason ? { reason: edge.reason } : {})
+                })),
+                metadata: updatedPlan.metadata
+              },
+              ...(pendingFailedGoalConditions.length
+                ? {
+                    replan: {
+                      reason: 'goal_condition_failed',
+                      failedGoalConditions: pendingFailedGoalConditions
+                    }
+                  }
+                : { replan: { reason: replanContext.reason } })
+            }
+            await emitEvent({
+              type: 'plan_generated',
+              timestamp: new Date().toISOString(),
+              runId,
+              payload: replanPlanPayload
             })
             await emitEvent({
               type: 'plan_updated',
@@ -1772,6 +2070,14 @@ export class FlexRunCoordinator {
                 previousVersion,
                 version: updatedPlan.version,
                 trigger,
+                ...(pendingFailedGoalConditions.length
+                  ? {
+                      replan: {
+                        reason: 'goal_condition_failed',
+                        failedGoalConditions: pendingFailedGoalConditions
+                      }
+                    }
+                  : { replan: { reason: trigger.reason } }),
                 nodes: updatedPlan.nodes.map((node) => {
                   const contractSource = node.contracts
                   const contracts =
@@ -1869,6 +2175,8 @@ export class FlexRunCoordinator {
         }
       }
 
+      pendingFailedGoalConditions = []
+      goalConditionReplanAttempts = 0
       await this.persistence.saveRunContext(runId, runContext.snapshot())
       await this.persistence.updateStatus(runId, 'completed')
       this.emittedHitlResolutions.delete(runId)

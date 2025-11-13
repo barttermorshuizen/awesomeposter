@@ -18,7 +18,8 @@ import type {
   ContextBundle,
   FacetProvenance,
   JsonLogicExpression,
-  RoutingEvaluationResult
+  RoutingEvaluationResult,
+  GoalConditionResult
 } from '@awesomeposter/shared'
 import { FlexRunPersistence, type FlexPlanNodeSnapshot, type FlexPlanNodeStatus } from './orchestrator-persistence'
 import { withHitlContext } from './hitl-context'
@@ -534,6 +535,40 @@ export class ReplanRequestedError extends Error {
     super('Replan requested')
     this.name = 'ReplanRequestedError'
   }
+}
+
+export class GoalConditionFailedError extends ReplanRequestedError {
+  constructor(
+    args: {
+      trigger?: ReplanTrigger
+      state: {
+        completedNodeIds: string[]
+        nodeOutputs: Record<string, Record<string, unknown>>
+        facets: RunContextSnapshot
+        policyActions?: PendingPolicyActionState[]
+        policyAttempts?: PolicyAttemptState
+      }
+      results: GoalConditionResult[]
+      failed: GoalConditionResult[]
+      finalOutput: Record<string, unknown>
+    }
+  ) {
+    super(
+      args.trigger ?? {
+        reason: 'goal_condition_failed',
+        details: { failedGoalConditions: args.failed }
+      },
+      args.state
+    )
+    this.goalConditionResults = args.results
+    this.failedGoalConditions = args.failed
+    this.finalOutput = args.finalOutput
+    this.name = 'GoalConditionFailedError'
+  }
+
+  readonly goalConditionResults: GoalConditionResult[]
+  readonly failedGoalConditions: GoalConditionResult[]
+  readonly finalOutput: Record<string, unknown>
 }
 
 export class FlexExecutionEngine {
@@ -1276,6 +1311,24 @@ export class FlexExecutionEngine {
       envelope.goal_condition && envelope.goal_condition.length
         ? evaluateGoalConditions(envelope.goal_condition, { runContextSnapshot: facetsSnapshot })
         : []
+    const failedGoalConditions = goalConditionResults.filter(
+      (entry) => !entry.satisfied || (typeof entry.error === 'string' && entry.error.length > 0)
+    )
+    if (failedGoalConditions.length) {
+      throw new GoalConditionFailedError({
+        state: {
+          completedNodeIds: Array.from(completedNodeIds),
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+          facets: facetsSnapshot,
+          ...(policyActions.length ? { policyActions: this.clonePolicyActions(policyActions) } : {}),
+          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {})
+        },
+        results: goalConditionResults,
+        failed: failedGoalConditions,
+        finalOutput
+      })
+    }
+
     const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
     const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
     await this.persistence.recordResult(runId, finalOutput, {
@@ -1284,7 +1337,7 @@ export class FlexExecutionEngine {
       schemaHash: opts.schemaHash ?? null,
       facets: facetsSnapshot,
       provenance,
-       goalConditionResults: goalConditionResults.length ? goalConditionResults : null,
+      goalConditionResults: goalConditionResults.length ? goalConditionResults : null,
       snapshot: {
         planVersion: plan.version,
         nodes: snapshotNodes,
@@ -3441,6 +3494,23 @@ export class FlexExecutionEngine {
       envelope.goal_condition && envelope.goal_condition.length
         ? evaluateGoalConditions(envelope.goal_condition, { runContextSnapshot: facetsSnapshot })
         : []
+    const failedGoalConditions = goalConditionResults.filter(
+      (entry) => !entry.satisfied || (typeof entry.error === 'string' && entry.error.length > 0)
+    )
+    if (failedGoalConditions.length) {
+      throw new GoalConditionFailedError({
+        state: {
+          completedNodeIds: Array.from(completedNodeIds),
+          nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
+          facets: facetsSnapshot,
+          ...(policyActions.length ? { policyActions: this.clonePolicyActions(policyActions) } : {}),
+          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {})
+        },
+        results: goalConditionResults,
+        failed: failedGoalConditions,
+        finalOutput
+      })
+    }
     const snapshotNodes = this.buildPlanSnapshotNodes(plan, nodeStatuses, nodeOutputs, nodeTimings)
     const provenance = this.extractOutputProvenance(facetsSnapshot, finalOutput)
     await this.persistence.recordResult(runId, finalOutput, {

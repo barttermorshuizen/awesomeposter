@@ -31,8 +31,11 @@ export function evaluateGoalConditions(
       typeof entry.condition.canonicalDsl === 'string' && entry.condition.canonicalDsl.trim().length
         ? entry.condition.canonicalDsl
         : entry.condition.dsl
+    const logicResult = resolveJsonLogic(entry.condition)
+    const jsonLogic = logicResult.jsonLogic ?? undefined
     let satisfied = false
     let error: string | undefined
+    let observedValue: unknown
 
     const facetValue = extractFacetValue(snapshot, entry.facet)
     if (facetValue === undefined) {
@@ -42,7 +45,9 @@ export function evaluateGoalConditions(
         path: entry.path,
         expression,
         satisfied,
-        error
+        dsl: entry.condition.dsl,
+        ...(jsonLogic ? { jsonLogic } : {}),
+        ...(error ? { error } : {})
       })
       continue
     }
@@ -55,26 +60,30 @@ export function evaluateGoalConditions(
         path: entry.path,
         expression,
         satisfied,
-        error
+        dsl: entry.condition.dsl,
+        ...(jsonLogic ? { jsonLogic } : {}),
+        ...(error ? { error } : {})
       })
       continue
     }
+    observedValue = resolution.value
 
-    const payload = buildEvaluationPayload(resolution.value, resolution.lastSegment, snapshot)
-    const logicResult = resolveJsonLogic(entry.condition)
-    if (!logicResult.jsonLogic) {
+    if (!jsonLogic) {
       error = logicResult.error ?? 'Missing JSON-Logic payload for condition.'
       results.push({
         facet: entry.facet,
         path: entry.path,
         expression,
         satisfied,
-        error
+        dsl: entry.condition.dsl,
+        observedValue,
+        ...(error ? { error } : {})
       })
       continue
     }
 
-    const evaluation = evaluateCondition(logicResult.jsonLogic, payload)
+    const payload = buildEvaluationPayload(resolution.value, resolution.lastSegment, snapshot)
+    const evaluation = evaluateCondition(jsonLogic, payload)
     if (evaluation.ok) {
       satisfied = Boolean(evaluation.result)
     } else {
@@ -86,6 +95,9 @@ export function evaluateGoalConditions(
       path: entry.path,
       expression,
       satisfied,
+      dsl: entry.condition.dsl,
+      observedValue,
+      jsonLogic,
       ...(error ? { error } : {})
     })
   }

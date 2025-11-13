@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { FlexEvent, OutputContract, TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
-import { FlexExecutionEngine, ReplanRequestedError } from '../src/services/flex-execution-engine'
+import {
+  FlexExecutionEngine,
+  ReplanRequestedError,
+  GoalConditionFailedError
+} from '../src/services/flex-execution-engine'
 import { RunContext } from '../src/services/run-context'
 import type { FlexPlan, FlexPlanNode, FlexPlanNodeContracts, FlexPlanEdge } from '../src/services/flex-planner'
 import type { FlexRunPersistence } from '../src/services/orchestrator-persistence'
@@ -226,6 +230,54 @@ describe('FlexExecutionEngine routing nodes', () => {
   })
 })
 
+describe('FlexExecutionEngine goal condition handling', () => {
+  it('throws GoalConditionFailedError when predicates fail', async () => {
+    const { engine, recordResult } = buildEngine()
+    const runContext = new RunContext()
+    runContext.updateFacet('routeTarget', 'success', {
+      nodeId: 'seed',
+      capabilityId: null,
+      rationale: 'deterministic routing'
+    })
+    runContext.updateFacet('summary', { status: 'draft' }, { nodeId: 'seed', capabilityId: null, rationale: 'test' })
+    const envelope: TaskEnvelope = {
+      ...buildEnvelope(),
+      goal_condition: [
+        {
+          facet: 'summary',
+          path: '/status',
+          condition: {
+            dsl: 'status == "final"',
+            canonicalDsl: 'status == "final"',
+            jsonLogic: {
+              '==': [{ var: 'status' }, 'final']
+            }
+          }
+        }
+      ]
+    }
+    const { onEvent } = collectEvents()
+    let caught: unknown
+    try {
+      await engine.execute('run-goal', envelope, buildPlan({ includeSuccessNode: true, includeElseNode: false }), {
+        onEvent,
+        runContext
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(GoalConditionFailedError)
+    const failure = caught as GoalConditionFailedError
+    expect(failure.failedGoalConditions).toHaveLength(1)
+    expect(failure.goalConditionResults[0]).toMatchObject({
+      facet: 'summary',
+      path: '/status',
+      satisfied: false
+    })
+    expect(recordResult).not.toHaveBeenCalled()
+  })
+})
+
 describe('FlexExecutionEngine goal condition evaluation', () => {
   it('emits goal_condition_results and persists evaluation output', async () => {
     const { engine, recordResult } = buildEngine()
@@ -272,5 +324,43 @@ describe('FlexExecutionEngine goal condition evaluation', () => {
       facet: 'post_copy',
       satisfied: true
     })
+  })
+
+  it('throws GoalConditionFailedError during resume when predicates fail', async () => {
+    const { engine, recordResult } = buildEngine()
+    const runContext = new RunContext()
+    runContext.updateFacet('summary', { status: 'draft' }, { nodeId: 'node-success', capabilityId: null, rationale: 'resume_seed' })
+    const plan = buildPlan({ includeSuccessNode: true, includeElseNode: false })
+    const envelope: TaskEnvelope = {
+      ...buildEnvelope(),
+      goal_condition: [
+        {
+          facet: 'summary',
+          path: '/status',
+          condition: {
+            dsl: 'status == "approved"',
+            canonicalDsl: 'status == "approved"',
+            jsonLogic: {
+              '==': [{ var: 'status' }, 'approved']
+            }
+          }
+        }
+      ]
+    }
+    const finalOutput = { summary: { status: 'draft' } }
+    const { onEvent } = collectEvents()
+
+    await expect(
+      engine.resumePending('run-resume', envelope, plan, finalOutput, {
+        onEvent,
+        runContext,
+        initialState: {
+          completedNodeIds: plan.nodes.map((node) => node.id),
+          nodeOutputs: { 'node-success': finalOutput }
+        }
+      })
+    ).rejects.toBeInstanceOf(GoalConditionFailedError)
+
+    expect(recordResult).not.toHaveBeenCalled()
   })
 })

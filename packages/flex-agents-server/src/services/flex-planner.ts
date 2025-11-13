@@ -8,7 +8,8 @@ import type {
   OutputContract,
   TaskEnvelope,
   TaskPolicies,
-  ConditionalRoutingNode
+  ConditionalRoutingNode,
+  GoalConditionResult
 } from '@awesomeposter/shared'
 import {
   FacetContractCompiler,
@@ -110,6 +111,7 @@ export type PlannerGraphState = {
   completedNodeIds: string[]
   nodeOutputs: Record<string, Record<string, unknown>>
   facets?: FacetSnapshot | RunContextSnapshot
+  goalConditionFailures?: GoalConditionResult[]
 }
 
 export class UnsupportedObjectiveError extends Error {
@@ -409,7 +411,8 @@ export class FlexPlanner {
       capabilities: capabilitySnapshot.active,
       graphContext,
       policies: canonicalPolicies,
-      policyMetadata
+      policyMetadata,
+      goalConditionFailures: options?.graphState?.goalConditionFailures
     })
     try {
       const draftPretty = JSON.stringify(plannerDraft, null, 2)

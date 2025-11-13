@@ -52,7 +52,15 @@ describe('evaluateGoalConditions', () => {
       facet: 'post_copy',
       path: '/variants[0]',
       expression: 'quality_score >= 0.8',
-      satisfied: true
+      satisfied: true,
+      dsl: 'quality_score >= 0.8'
+    })
+    expect(results[0]?.jsonLogic).toEqual({
+      '>=': [{ var: 'quality_score' }, 0.8]
+    })
+    expect(results[0]?.observedValue).toMatchObject({
+      quality_score: 0.92,
+      status: 'ready'
     })
     expect(results[0].error).toBeUndefined()
   })
@@ -74,6 +82,7 @@ describe('evaluateGoalConditions', () => {
 
     const results = evaluateGoalConditions(conditions, { runContextSnapshot: baseSnapshot })
     expect(results[0]?.satisfied).toBe(false)
+    expect(results[0]?.observedValue).toBe('pending')
     expect(results[0]?.error).toBeUndefined()
   })
 
@@ -95,5 +104,6 @@ describe('evaluateGoalConditions', () => {
     const results = evaluateGoalConditions(conditions, { runContextSnapshot: baseSnapshot })
     expect(results[0]?.satisfied).toBe(false)
     expect(results[0]?.error).toContain('did not resolve')
+    expect(Object.prototype.hasOwnProperty.call(results[0] ?? {}, 'observedValue')).toBe(false)
   })
 })
