@@ -12,7 +12,7 @@ import {
   type InputFacetDecoratorEntry
 } from './widgets/registry'
 import DefaultFacetWidget from './widgets/DefaultFacetWidget.vue'
-import type { FeedbackEntryDisplay, FeedbackComposerPayload } from './widgets/types'
+import type { FeedbackEntryDisplay, FeedbackComposerPayload, FeedbackResolution } from './widgets/types'
 
 const flexTasksStore = useFlexTasksStore()
 const hitlStore = useHitlStore()
@@ -537,6 +537,17 @@ function handleFeedbackEntryRemove(sourceIndex: number) {
     updateFacetValue(pointer, null)
     return
   }
+  updateFacetValue(pointer, current)
+}
+
+function handleFeedbackResolutionChange(payload: { sourceIndex: number; resolution: FeedbackResolution }) {
+  const pointer = feedbackFacetPointer.value
+  if (!pointer) return
+  const current = feedbackDraftEntries.value.map((entry) => cloneValue(entry))
+  if (payload.sourceIndex < 0 || payload.sourceIndex >= current.length) return
+  const target = current[payload.sourceIndex]
+  if (!target || typeof target !== 'object') return
+  ;(target as Record<string, unknown>).resolution = payload.resolution
   updateFacetValue(pointer, current)
 }
 
@@ -1088,6 +1099,7 @@ function toStringOrNull(value: unknown): string | null {
                       :show-badge="false"
                       @submit="handleFeedbackComposerSubmit"
                       @remove="handleFeedbackEntryRemove"
+                      @set-resolution="handleFeedbackResolutionChange"
                     />
                   </v-expansion-panel-text>
                 </v-expansion-panel>

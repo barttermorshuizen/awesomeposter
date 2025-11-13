@@ -31,6 +31,11 @@ Deliver a curated set of flex server capabilities and facets tailored for market
 - **Mitigation:** Stage capability rollout through sandbox verification, log defects with reproduction steps, and keep fallback to legacy capability paths ready.
 - **Rollback Plan:** Remove or disable the marketing capability registrations while leaving legacy capability catalog intact; rely on existing generic flows until fixes land.
 
+## Feedback Resolution Rollout Guidance
+- Strategist, copywriter, and designer capabilities now emit the shared `feedback` facet alongside their normal deliverables. When they apply a reviewer note, they must edit the existing entry referencing the affected facet/path, set `resolution = "addressed"`, and add a short `note`. Planner validation and telemetry treat the absence of this flag as “still open”.
+- The flex sandbox UI exposes inline resolve/undo controls on every feedback decorator so operators can flip `resolution` without editing JSON. These controls propagate through the same decorator pipeline as the composer, ensuring Ajv validation and downstream runs stay in sync.
+- Registry migrations should bundle code, shared catalog metadata, and sample payload updates in the same release so sandbox metadata, HITL cues, and telemetry snapshots all observe the new contract simultaneously.
+
 ## Open Risks & Assumptions (Story 11.1)
 - Dynamic replanning feedback loop may require additional engineering before launch; current orchestration retries are brittle when planner feedback escalates, so Story 11.2 must budget time for instrumentation and failure-handling tweaks.
 - Introducing the marketing capability taxonomy could expose latent sandbox defects because the system will execute unfamiliar capability IDs and task envelopes; validation needs broader scenario coverage to flush out compatibility gaps.

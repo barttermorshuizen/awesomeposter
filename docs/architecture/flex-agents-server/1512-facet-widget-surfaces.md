@@ -22,6 +22,7 @@ Human-facing flex tasks render input/output facets through a shared widget pipel
   - A badge placed inside the panel header (`<template #actions>`).
   - A contextual composer below the widget content (button, severity toggle, comment list).
   - Author-aware deletion: only the current operator can remove their entries; entries store their source index so removals map back into the draft array.
+  - Resolve/undo icon controls with tooltips so operators can flip the `resolution` field in-place. These controls emit the same decorator events as the composer, ensuring addressed items persist through the Ajv validator and telemetry snapshots.
 
 ## Guidelines for New Widgets
 

@@ -35,7 +35,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       outputContract: {
         mode: 'facets',
-        facets: ['creative_brief', 'strategic_rationale', 'handoff_summary']
+        facets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
       },
       cost: {
         tier: 'standard',
@@ -60,12 +60,12 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
       inputFacets: ['company_information', 'post_context'],
-      outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary']
+      outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
     },
     prompt: {
       instructions: [
         'Synthesize the campaign context into a creative brief, rationale, and handoff summary.',
-        'Address the feedback in the run context with facet = ["creative_brief", "strategic_rationale", "handoff_summary"] before finalising your update.',
+        'Review existing feedback entries (facet, path, message, resolution) targeting the creative_brief or strategic_rationale facets; when you resolve one, update the deliverable and edit the original entry (same facet/path) so `resolution = "addressed"` and the `note` explains the change—do not duplicate entries.',
         'If required context is missing or conflicting, pause and escalate with the `hitl_request` tool. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for open questions—expect freeform operator input rather than multiple-choice options.',
         'While waiting on a HITL response, insert descriptive placeholders in the output facets so the run can resume safely.'
       ].join(' '),
@@ -146,7 +146,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       outputContract: {
         mode: 'facets',
-        facets: ['post_copy', 'handoff_summary']
+        facets: ['post_copy', 'handoff_summary', 'feedback']
       },
       cost: {
         tier: 'standard',
@@ -171,12 +171,12 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
       inputFacets: ['company_information', 'creative_brief', 'handoff_summary'],
-      outputFacets: ['post_copy', 'handoff_summary']
+      outputFacets: ['post_copy', 'handoff_summary', 'feedback']
     },
     prompt: {
       instructions: [
         'Draft compliant social copy variants from the creative brief and update the handoff summary with decisions made.',
-        'Address the feedback in the run context with facet = ["post_copy", "handoff_summary"] before finalising your update.',
+        'Inspect the run-context feedback entries for `post_copy`, keep unresolved ones in place, and when you apply a requested change edit that entry (same facet/path) so `resolution = "addressed"` and the `note` summarizes the fix—no duplicate records.',
         'If policy, brand, or tone conflicts emerge, raise a `hitl_request` instead of guessing. Describe the human decision, use `kind: "approval"` for binary outcomes or `kind: "clarify"` for follow-up questions, and pause output while awaiting the response.'
       ].join(' '),
       toolsAllowlist: ['hitl_request']
@@ -250,7 +250,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       },
       outputContract: {
         mode: 'facets',
-        facets: ['post_visual', 'handoff_summary']
+        facets: ['post_visual', 'handoff_summary', 'feedback']
       },
       cost: undefined,
       preferredModels: undefined,
@@ -259,7 +259,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
         timeoutSeconds: 43200
       },
       instructionTemplates: {
-        app: 'Review the creative brief and produce campaign-ready visual assets. Update the handoff summary with key decisions.'
+        app: 'Review the creative brief, produce campaign-ready visual assets, and update the handoff summary with key decisions. Use the inline feedback decorator (resolve/undo icons) inside the sandbox to mark entries addressed or reopened as you work so replans skip completed items.'
       },
       assignmentDefaults: {
         role: 'Visual Designer',
@@ -277,7 +277,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       lastSeenAt: BASE_TIMESTAMP,
       registeredAt: BASE_TIMESTAMP,
       inputFacets: ['company_information', 'creative_brief', 'handoff_summary', 'feedback'],
-      outputFacets: ['post_visual', 'handoff_summary']
+      outputFacets: ['post_visual', 'handoff_summary', 'feedback']
     }
   },
   {

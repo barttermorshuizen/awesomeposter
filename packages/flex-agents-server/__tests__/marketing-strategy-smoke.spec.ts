@@ -35,7 +35,7 @@ class StubPlannerService implements PlannerServiceInterface {
         capabilityId: node.capabilityId,
         kind: node.kind ?? 'structuring',
         inputFacets: ['company_information', 'post_context'],
-        outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary'],
+        outputFacets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback'],
         rationale: ['stub']
       })),
       metadata: { provider: 'stub', model: 'stub' }
@@ -74,7 +74,7 @@ describe('Marketing capabilities smoke test', () => {
       },
       outputContract: {
         mode: 'facets',
-        facets: ['creative_brief', 'strategic_rationale', 'handoff_summary']
+        facets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
       }
     }
 
@@ -85,7 +85,7 @@ describe('Marketing capabilities smoke test', () => {
     expect(node.capabilityId).toBe('strategist.SocialPosting')
     expect(node.facets.input).toEqual(expect.arrayContaining(['company_information', 'post_context']))
     expect(node.facets.output).toEqual(
-      expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary'])
+      expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback'])
     )
     const catalogIds = getMarketingCapabilityCatalog().map((entry) => entry.id)
     expect(catalogIds).toContain('strategist.SocialPosting')

@@ -173,6 +173,8 @@ All validator outputs use the normalized diagnostic buckets below so planner pro
 - `plan_generated.payload` includes `planVersion`, trimmed node metadata (`nodeId`, `capabilityId`, `provides[]`, `enforces[]`), and the same diagnostic buckets for transparency.
 - `policy_triggered` and `plan_updated` events reuse the schema when policies introduce additional findings (topology only changes after a replan).
 
+When capabilities emit the shared `feedback` facet, the execution engine also raises a `feedback_resolution` event whenever an entry’s `resolution` flips (for example, `open → addressed` or `addressed → open`). The event payload lists each change (facet, path, previous, current, message/note), and telemetry records a `flex.feedback.resolution` counter labeled by capability and facet so operators can audit whether reviewer notes are being closed out promptly.
+
 ## 5.9.5 Constraints vs. Policies Separation
 
 - **Rule of separation**

@@ -128,4 +128,37 @@ describe('FeedbackInlineDecorator', () => {
     expect(removeEvents).toBeTruthy()
     expect(removeEvents?.[0]?.[0]).toBe(0)
   })
+
+  it('emits set-resolution events when resolve/undo controls are used', async () => {
+    const wrapper = mountDecorator({
+      entries: [
+        {
+          facet: 'post_copy',
+          message: 'Tighten CTA',
+          resolution: 'open',
+          sourceIndex: 0
+        }
+      ]
+    })
+
+    await wrapper.get('[data-test="feedback-inline-trigger"]').trigger('click')
+    await wrapper.get('[data-test="feedback-inline-entry-resolve"]').trigger('click')
+
+    const resolutionEvents = wrapper.emitted('set-resolution')
+    expect(resolutionEvents).toBeTruthy()
+    expect(resolutionEvents?.[0]?.[0]).toEqual({ sourceIndex: 0, resolution: 'addressed' })
+
+    await wrapper.setProps({
+      entries: [
+        {
+          facet: 'post_copy',
+          message: 'Tighten CTA',
+          resolution: 'addressed',
+          sourceIndex: 0
+        }
+      ]
+    })
+    await wrapper.get('[data-test="feedback-inline-entry-reopen"]').trigger('click')
+    expect(resolutionEvents?.[1]?.[0]).toEqual({ sourceIndex: 0, resolution: 'open' })
+  })
 })

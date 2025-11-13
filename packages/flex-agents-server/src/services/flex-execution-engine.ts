@@ -80,6 +80,26 @@ type RoutingNodeOutcome =
   | { kind: 'matched' | 'else'; selectedTarget: string; evaluation: RoutingEvaluationResult }
   | { kind: 'replan'; evaluation: RoutingEvaluationResult }
 
+type FeedbackHistoryEntry = {
+  key: string
+  id?: string | null
+  facet?: string | null
+  path?: string | null
+  message?: string | null
+  note?: string | null
+  resolution: string
+}
+
+type FeedbackResolutionChangePayload = {
+  key: string
+  facet?: string | null
+  path?: string | null
+  message?: string | null
+  note?: string | null
+  previous: string
+  current: string
+}
+
 class PlanScheduler {
   private readonly graph: PlanGraphStructures
   private readonly readyQueue: string[] = []
@@ -1133,7 +1153,36 @@ export class FlexExecutionEngine {
           policyAttempts
         )
         nodeOutputs.set(node.id, result.output)
+
+        const emitsFeedback = Array.isArray(node.facets?.output) && node.facets.output.includes('feedback')
+        const previousFeedbackEntries = emitsFeedback
+          ? this.normalizeFeedbackEntries(runContext.getFacet('feedback')?.value)
+          : null
+        const nextFeedbackEntries = emitsFeedback
+          ? this.normalizeFeedbackEntries((result.output ?? ({} as Record<string, unknown>)).feedback)
+          : null
+
         runContext.updateFromNode(node, result.output)
+        if (emitsFeedback && previousFeedbackEntries && nextFeedbackEntries) {
+          const feedbackChanges = this.diffFeedbackResolutions(previousFeedbackEntries, nextFeedbackEntries)
+          if (feedbackChanges.length) {
+            await opts.onEvent(
+              this.buildEvent(
+                'feedback_resolution',
+                {
+                  capabilityId: node.capabilityId,
+                  changes: feedbackChanges
+                },
+                {
+                  runId,
+                  nodeId: node.id,
+                  planVersion: plan.version,
+                  facetProvenance: this.normalizeFacetProvenance(node.provenance)
+                }
+              )
+            )
+          }
+        }
         completedNodeIds.add(node.id)
 
         const completedAt = new Date()
@@ -2002,6 +2051,48 @@ export class FlexExecutionEngine {
     }
 
     return ['Relevant feedback for output facets:', ...lines].join('\n')
+  }
+
+  private normalizeFeedbackEntries(value: unknown): Map<string, FeedbackHistoryEntry> {
+    const entries = new Map<string, FeedbackHistoryEntry>()
+    if (!value) return entries
+    const source = Array.isArray(value) ? value : [value]
+    for (const raw of source) {
+      if (!raw || typeof raw !== 'object') continue
+      const entry = raw as Record<string, unknown>
+      const facet = typeof entry.facet === 'string' ? entry.facet : null
+      const path = typeof entry.path === 'string' ? entry.path : null
+      const message = typeof entry.message === 'string' ? entry.message : null
+      const note = typeof entry.note === 'string' ? entry.note : null
+      const id = typeof entry.id === 'string' ? entry.id : null
+      const resolutionRaw = typeof entry.resolution === 'string' ? entry.resolution : null
+      const resolution = resolutionRaw && resolutionRaw.trim().length ? resolutionRaw : 'open'
+      const key = id ?? `${facet ?? 'unknown'}::${path ?? ''}::${message ?? ''}`
+      entries.set(key, { key, id, facet, path, message, note, resolution })
+    }
+    return entries
+  }
+
+  private diffFeedbackResolutions(
+    previous: Map<string, FeedbackHistoryEntry>,
+    next: Map<string, FeedbackHistoryEntry>
+  ): FeedbackResolutionChangePayload[] {
+    const changes: FeedbackResolutionChangePayload[] = []
+    for (const [key, nextEntry] of next.entries()) {
+      const prevEntry = previous.get(key)
+      if (!prevEntry) continue
+      if (prevEntry.resolution === nextEntry.resolution) continue
+      changes.push({
+        key,
+        facet: nextEntry.facet ?? prevEntry.facet ?? null,
+        path: nextEntry.path ?? prevEntry.path ?? null,
+        message: nextEntry.message ?? prevEntry.message ?? null,
+        note: nextEntry.note ?? prevEntry.note ?? null,
+        previous: prevEntry.resolution,
+        current: nextEntry.resolution
+      })
+    }
+    return changes
   }
 
   private getTerminalExecutionNode(plan: FlexPlan): FlexPlanNode | undefined {

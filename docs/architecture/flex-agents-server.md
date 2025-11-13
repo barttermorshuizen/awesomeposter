@@ -1414,8 +1414,9 @@ Each entry references the facet affected so the planner can map feedback to prod
       {
         "author": "Copywriter",
         "facet": "post_copy",
-        "message": "Tone feedback addressed.",
-        "note": "Softened headline and CTA phrasing.",
+        "path": "/cta",
+        "message": "CTA feedback addressed.",
+        "note": "Softened CTA phrasing and added gratitude.",
         "timestamp": "2025-10-28T10:02:00Z",
         "resolution": "addressed"
       }
@@ -1432,7 +1433,7 @@ Each entry references the facet affected so the planner can map feedback to prod
 
 * path narrows scope for fine-grained feedback targeting.
 
-* Agents addressing items append their own entry with a note and updated resolution.
+* Agents addressing items update the originating entry (matching facet/path) with a new resolution/note rather than appending duplicates, ensuring goal conditions can assert that all feedback is addressed.
 
 * Serves both as conversational context and as a change log for future learning loops.
 

@@ -4,7 +4,7 @@ export const DESIGNER_VISUAL_DESIGN_ID = 'designer.VisualDesign' as const
 
 const catalog = getFacetCatalog()
 const INPUT_FACETS = ['company_information', 'creative_brief', 'handoff_summary', 'feedback'] as const
-const OUTPUT_FACETS = ['post_visual', 'handoff_summary'] as const
+const OUTPUT_FACETS = ['post_visual', 'handoff_summary', 'feedback'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
 catalog.resolveMany([...OUTPUT_FACETS], 'output')
@@ -30,7 +30,7 @@ export const DESIGNER_VISUAL_DESIGN_CAPABILITY: CapabilityRegistration = {
   instructionTemplates: {
     app: [
       'Review company_information, the creative brief, existing handoff summary, and feedback to understand required visual direction and brand guardrails.',
-      'Deliver publication-ready assets and append a concise note to the handoff summary describing key design decisions.'
+      'Deliver publication-ready assets, append a concise note to the handoff summary describing key design decisions, and use the inline feedback decorator (check/undo icons) to mark entries as addressed or reopened once you ship updates.'
     ].join('\n'),
     summary: 'Visual designer produces campaign-ready assets for the social post.'
   },

@@ -455,8 +455,9 @@ Each entry references the facet affected so the planner can map feedback to prod
       {
         "author": "Copywriter",
         "facet": "post_copy",
-        "message": "Tone feedback addressed.",
-        "note": "Softened headline and CTA phrasing.",
+        "path": "/cta",
+        "message": "CTA feedback addressed.",
+        "note": "Softened CTA phrasing and added gratitude.",
         "timestamp": "2025-10-28T10:02:00Z",
         "resolution": "addressed"
       }
@@ -473,7 +474,7 @@ Each entry references the facet affected so the planner can map feedback to prod
 
 * path narrows scope for fine-grained feedback targeting.
 
-* Agents addressing items append their own entry with a note and updated resolution.
+* Agents addressing items update the originating entry (matching facet/path) with a new resolution/note so downstream goal conditions can determine whether all feedback is addressed.
 
 * Serves both as conversational context and as a change log for future learning loops.
 
@@ -489,7 +490,7 @@ When a capability advertises the `feedback` facet (direction: output), the facet
 
 * Surface a badge showing unresolved feedback counts and preview the latest open message inline.
 * Launch a lightweight composer that is pre-filled with the facet key and pointer for the targeted field.
-* Append structured entries (message, severity, path, timestamp) via the existing facet mutation pipeline with no bespoke wiring inside generic widgets.
+* Add structured entries (message, severity, path, timestamp) via the existing facet mutation pipeline with no bespoke wiring inside generic widgets, and update existing entries in place when marking them addressed.
 
 Removing the facet from the contract immediately disables the decorator, keeping the UI purely driven by facet metadata.
 Understood — keeping post\_copy as a single, minimal text field makes it clean and consistent with how you simplified strategic\_rationale.

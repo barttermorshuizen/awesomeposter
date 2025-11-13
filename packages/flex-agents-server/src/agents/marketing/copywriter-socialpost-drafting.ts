@@ -8,19 +8,22 @@ export const COPYWRITER_SOCIAL_DRAFTING_ID = 'copywriter.SocialpostDrafting' as 
 
 const catalog = getFacetCatalog()
 const INPUT_FACETS = ['company_information', 'creative_brief', 'handoff_summary'] as const
-const OUTPUT_FACETS = ['post_copy', 'handoff_summary'] as const
+const OUTPUT_FACETS = ['post_copy', 'handoff_summary', 'feedback'] as const
 
 catalog.resolveMany([...INPUT_FACETS], 'input')
 catalog.resolveMany([...OUTPUT_FACETS], 'output')
 
-const FEEDBACK_DIRECTIVE = `Address feedback in the run context with facet = ["${OUTPUT_FACETS.join('", "')}"] before finalising your update.`
+const FEEDBACK_DIRECTIVE = [
+  'Locate unresolved `feedback` entries tied to `post_copy` (facet, path, message, resolution) before drafting.',
+  'When you apply the requested revision, update that same entry (facet/path match) by setting `resolution = "addressed"` and adding a concise `note` that explains what changed—do not append duplicates.'
+].join(' ')
 
 export const COPYWRITER_SOCIAL_DRAFTING_TOOLS = [HITL_TOOL_NAME] as const
 
 export const COPYWRITER_SOCIAL_DRAFTING_INSTRUCTIONS_APP = [
   'You are the Copywriter producing social post variants from the strategist’s brief.',
   FEEDBACK_DIRECTIVE,
-  'Follow the company_information and creative_brief facets faithfully, respect tone and audience guidance, and append concise notes to handoff_summary.',
+  'Follow the company_information and creative_brief facets faithfully, respect tone and audience guidance, and append concise notes to handoff_summary. Carry forward any feedback entries that still need attention so replans keep targeting them.',
   'If brand, legal, or tone conflicts cannot be resolved confidently, pause and call `hitl_request`. Use `kind: "approval"` for binary decisions and `kind: "clarify"` for outstanding questions—never supply multiple-choice options.',
   'When HITL (approval or clarify) is pending, respond with JSON that honours the post_copy and handoff_summary schema—populate strings with `PENDING_HITL: …` style placeholders that explain what the human must resolve instead of freeform prose.'
 ].join('\n')
@@ -28,7 +31,7 @@ export const COPYWRITER_SOCIAL_DRAFTING_INSTRUCTIONS_APP = [
 export const COPYWRITER_SOCIAL_DRAFTING_INSTRUCTIONS_CHAT = [
   'Draft the requested social copy.',
   FEEDBACK_DIRECTIVE,
-  'Keep the tone aligned with the brief and call out any missing approvals.',
+  'Keep the tone aligned with the brief, summarize which feedback entries you resolved, and call out any approvals you still need.',
   'Ask for human input sparingly; prefer safe defaults when possible.'
 ].join('\n')
 

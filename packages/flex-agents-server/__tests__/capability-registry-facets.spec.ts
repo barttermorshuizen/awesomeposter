@@ -91,11 +91,13 @@ describe('FlexCapabilityRegistryService with facet contracts', () => {
     const strategist = await service.getCapabilityById(STRATEGIST_SOCIAL_POSTING_CAPABILITY.capabilityId)
     expect(strategist?.inputContract?.mode).toBe('json_schema')
     expect(strategist?.inputFacets).toEqual(expect.arrayContaining(['company_information', 'post_context']))
-    expect(strategist?.outputFacets).toEqual(expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary']))
+    expect(strategist?.outputFacets).toEqual(
+      expect.arrayContaining(['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback'])
+    )
 
     const copywriterRow = repo.getRow(COPYWRITER_SOCIAL_DRAFTING_CAPABILITY.capabilityId)
     expect(copywriterRow?.inputFacets).toEqual(['company_information', 'creative_brief', 'handoff_summary'])
-    expect(copywriterRow?.outputFacets).toEqual(['post_copy', 'handoff_summary'])
+    expect(copywriterRow?.outputFacets).toEqual(['post_copy', 'handoff_summary', 'feedback'])
 
     const directorRow = repo.getRow(DIRECTOR_POSITIONING_REVIEW_CAPABILITY.capabilityId)
     expect(directorRow?.agentType).toBe('human')

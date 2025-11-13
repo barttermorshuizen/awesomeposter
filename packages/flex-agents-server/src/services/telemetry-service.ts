@@ -332,6 +332,14 @@ class TelemetryService {
         })
         break
       }
+      case 'feedback_resolution': {
+        logger.info('flex_feedback_resolution', {
+          ...base,
+          capabilityId: payload.capabilityId,
+          changes: payload.changes
+        })
+        break
+      }
       case 'hitl_request': {
         const request = payload.request as Record<string, unknown> | undefined
         logger.info('flex_hitl_request', {
@@ -415,6 +423,22 @@ class TelemetryService {
       }
       case 'policy_triggered': {
         this.recordCounter('flex.policy.triggers', undefined, event)
+        break
+      }
+      case 'feedback_resolution': {
+        const payload = event.payload as Record<string, unknown> | undefined
+        const changes = Array.isArray(payload?.changes) ? (payload?.changes as Record<string, unknown>[]) : []
+        const capabilityId =
+          typeof payload?.capabilityId === 'string' ? payload.capabilityId : undefined
+        for (const change of changes) {
+          const labels = {
+            capabilityId: capabilityId ?? 'unknown',
+            facet: typeof change.facet === 'string' ? change.facet : 'unknown',
+            from: typeof change.previous === 'string' ? change.previous : 'unspecified',
+            to: typeof change.current === 'string' ? change.current : 'unspecified'
+          }
+          this.recordCounter('flex.feedback.resolution', labels, event)
+        }
         break
       }
       case 'goal_condition_failed': {

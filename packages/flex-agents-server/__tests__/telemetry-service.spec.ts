@@ -133,4 +133,33 @@ describe('TelemetryService', () => {
     expect(metrics.histograms['flex.goal_condition.failed|status=completed']?.sum).toBe(1)
     expect(metrics.histograms['flex.goal_condition.errors|status=completed']?.sum).toBe(1)
   })
+
+  it('tracks feedback resolution state changes', () => {
+    const telemetry = getTelemetryService()
+    telemetry.process({
+      type: 'feedback_resolution',
+      timestamp: nowIso(),
+      runId: 'flex_feedback',
+      nodeId: 'node-copy',
+      payload: {
+        capabilityId: 'copywriter.SocialpostDrafting',
+        changes: [
+          {
+            key: 'fb-copy-cta',
+            facet: 'post_copy',
+            previous: 'open',
+            current: 'addressed',
+            message: 'CTA tightened'
+          }
+        ]
+      }
+    })
+
+    const metrics = telemetry.getMetricsSnapshot()
+    expect(
+      metrics.counters[
+        'flex.feedback.resolution|capabilityId=copywriter.SocialpostDrafting|facet=post_copy|from=open|to=addressed'
+      ]
+    ).toBe(1)
+  })
 })

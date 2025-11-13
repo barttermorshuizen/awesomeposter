@@ -376,6 +376,7 @@ export const FlexEventTypeSchema = z.enum([
   'validation_error',
   'policy_triggered',
   'policy_update',
+  'feedback_resolution',
   'goal_condition_failed',
   'log',
   'complete'

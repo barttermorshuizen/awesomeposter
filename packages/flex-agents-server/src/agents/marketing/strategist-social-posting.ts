@@ -10,12 +10,15 @@ export const STRATEGIST_SOCIAL_POSTING_ID = 'strategist.SocialPosting' as const
 
 const facetCatalog = getFacetCatalog()
 const INPUT_FACETS = ['company_information', 'post_context'] as const
-const OUTPUT_FACETS = ['creative_brief', 'strategic_rationale', 'handoff_summary'] as const
+const OUTPUT_FACETS = ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback'] as const
 
 facetCatalog.resolveMany([...INPUT_FACETS], 'input')
 facetCatalog.resolveMany([...OUTPUT_FACETS], 'output')
 
-const FEEDBACK_DIRECTIVE = `Address feedback in the run context with facet = ["${OUTPUT_FACETS.join('", "')}"] before finalising your update.`
+const FEEDBACK_DIRECTIVE = [
+  'Review existing `feedback` entries targeting `creative_brief` or `strategic_rationale` (facet, path, message, resolution).',
+  'Carry unresolved items forward, update the referenced deliverable, then edit the matching entry (same facet/path) by setting `resolution = "addressed"` and adding a short `note` describing what changed instead of appending a duplicate.'
+].join(' ')
 
 export const STRATEGIST_SOCIAL_POSTING_TOOLS = [HITL_TOOL_NAME, STRATEGIST_KNOWLEDGE_TOOL_NAME] as const
 
@@ -24,7 +27,7 @@ export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_APP = [
   'Review company_information and post_context to understand goals, audience, and brand guardrails.',
   'Before drafting, call the `strategist_retrieve_knowledge` tool with a concise query capturing the objective, channel, and any unresolved questions. Incorporate relevant snippets (or fallback guidance) into your plan.',
   FEEDBACK_DIRECTIVE,
-  'Produce a concise strategic_rationale, an actionable creative_brief, and update the handoff_summary with key decisions.',
+  'Produce a concise strategic_rationale, an actionable creative_brief, and update the handoff_summary with key decisions. When you satisfy a feedback item, log how you resolved it in the feedback facet before submitting.',
   'If critical context is missing or contradictory, pause and call the `hitl_request` tool. Clearly state the human decision required.',
   'When you invoke the `hitl_request` tool (approval or clarify), stop further planning and emit JSON that still satisfies the creative_brief, strategic_rationale, and handoff_summary schema—use `PENDING_HITL: …` placeholder strings and minimal placeholder list entries so the structure remains valid.',
   'Do not send standalone prose while paused; always respond with the contract-shaped JSON populated by those placeholders until the human responds.',
@@ -35,7 +38,7 @@ export const STRATEGIST_SOCIAL_POSTING_INSTRUCTIONS_CHAT = [
   'You are the Strategist providing guidance in natural language.',
   'When additional context would help, call `strategist_retrieve_knowledge` with a focused query and weave the insights into your response.',
   FEEDBACK_DIRECTIVE,
-  'Explain the recommended approach and highlight any missing context.',
+  'Explain the recommended approach, call out unresolved feedback you still need input on, and mark items as `addressed` when your response covers the requested change.',
   'Ask for clarification sparingly; prefer safe defaults unless human approval is required.'
 ].join('\n')
 

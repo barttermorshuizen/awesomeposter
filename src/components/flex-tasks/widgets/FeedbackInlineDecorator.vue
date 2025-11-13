@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { FeedbackComposerPayload, FeedbackEntryDisplay, FeedbackSeverity } from './types'
+import type { FeedbackComposerPayload, FeedbackEntryDisplay, FeedbackResolution, FeedbackSeverity } from './types'
 
 const props = defineProps<{
   facetKey: string
@@ -15,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'submit', payload: FeedbackComposerPayload): void
   (e: 'remove', sourceIndex: number): void
+  (e: 'set-resolution', payload: { sourceIndex: number; resolution: FeedbackResolution }): void
 }>()
 
 const panelOpen = ref(false)
@@ -113,6 +114,28 @@ function severityColor(entry: FeedbackEntryDisplay): string {
   if (!entry.severity) return 'info'
   return severityColorMap[entry.severity] ?? 'info'
 }
+
+function hasMutableSource(entry: FeedbackEntryDisplay): entry is FeedbackEntryDisplay & { sourceIndex: number } {
+  return typeof entry.sourceIndex === 'number'
+}
+
+function canMarkAddressed(entry: FeedbackEntryDisplay): boolean {
+  if (props.readonly) return false
+  if (!hasMutableSource(entry)) return false
+  return entry.resolution !== 'addressed'
+}
+
+function canReopen(entry: FeedbackEntryDisplay): boolean {
+  if (props.readonly) return false
+  if (!hasMutableSource(entry)) return false
+  return entry.resolution === 'addressed'
+}
+
+function applyResolution(entry: FeedbackEntryDisplay, resolution: FeedbackResolution) {
+  if (props.readonly) return
+  if (!hasMutableSource(entry)) return
+  emit('set-resolution', { sourceIndex: entry.sourceIndex, resolution })
+}
 </script>
 
 <template>
@@ -193,16 +216,54 @@ function severityColor(entry: FeedbackEntryDisplay): string {
             >
               {{ entry.severity ?? 'info' }}
             </v-chip>
-            <span class="feedback-inline-entry-text">{{ entry.message }}</span>
-            <v-btn
-              v-if="canRemoveEntry(entry)"
-              icon="mdi-trash-can-outline"
-              size="x-small"
-              variant="text"
-              class="feedback-inline-entry-remove"
-              data-test="feedback-inline-entry-remove"
-              @click.stop="handleRemove(entry)"
-            />
+            <div class="feedback-inline-entry-body">
+              <span class="feedback-inline-entry-text">{{ entry.message }}</span>
+              <span v-if="entry.note" class="feedback-inline-entry-note">
+                {{ entry.note }}
+              </span>
+              <span v-if="entry.resolution" class="feedback-inline-entry-status">
+                Status: {{ entry.resolution }}
+              </span>
+            </div>
+            <div class="feedback-inline-entry-actions">
+              <v-tooltip v-if="canMarkAddressed(entry)" location="top">
+                <template #activator="{ props: resolveActivator }">
+                  <v-btn
+                    v-bind="resolveActivator"
+                    icon="mdi-check-circle-outline"
+                    size="x-small"
+                    variant="text"
+                    color="success"
+                    data-test="feedback-inline-entry-resolve"
+                    @click.stop="applyResolution(entry, 'addressed')"
+                  />
+                </template>
+                <span>Mark as addressed</span>
+              </v-tooltip>
+              <v-tooltip v-if="canReopen(entry)" location="top">
+                <template #activator="{ props: reopenActivator }">
+                  <v-btn
+                    v-bind="reopenActivator"
+                    icon="mdi-undo"
+                    size="x-small"
+                    variant="text"
+                    color="warning"
+                    data-test="feedback-inline-entry-reopen"
+                    @click.stop="applyResolution(entry, 'open')"
+                  />
+                </template>
+                <span>Reopen feedback</span>
+              </v-tooltip>
+              <v-btn
+                v-if="canRemoveEntry(entry)"
+                icon="mdi-trash-can-outline"
+                size="x-small"
+                variant="text"
+                class="feedback-inline-entry-remove"
+                data-test="feedback-inline-entry-remove"
+                @click.stop="handleRemove(entry)"
+              />
+            </div>
           </div>
         </div>
         <p v-else class="feedback-inline-empty" data-test="feedback-inline-empty">
@@ -293,18 +354,32 @@ function severityColor(entry: FeedbackEntryDisplay): string {
 
 .feedback-inline-entry {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   padding: 0.35rem 0.25rem;
 }
 
-.feedback-inline-entry-text {
+.feedback-inline-entry-body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.feedback-inline-entry-text {
   font-size: 0.9rem;
 }
 
-.feedback-inline-entry-remove {
-  margin-left: auto;
+.feedback-inline-entry-note,
+.feedback-inline-entry-status {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.feedback-inline-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 .feedback-inline-empty {

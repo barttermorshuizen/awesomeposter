@@ -177,16 +177,22 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             instructions: [],
             contract: {
               input: { mode: 'facets', facets: ['company_information', 'post_context'] },
-              output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
+              output: {
+                mode: 'facets',
+                facets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
+              }
             }
           },
           contracts: {
             input: { mode: 'facets', facets: ['company_information', 'post_context'] },
-            output: { mode: 'facets', facets: ['creative_brief', 'strategic_rationale', 'handoff_summary'] }
+            output: {
+              mode: 'facets',
+              facets: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
+            }
           },
           facets: {
             input: ['company_information', 'post_context'],
-            output: ['creative_brief', 'strategic_rationale', 'handoff_summary']
+            output: ['creative_brief', 'strategic_rationale', 'handoff_summary', 'feedback']
           },
           provenance: { input: [], output: [] },
           rationale: ['Produce marketing strategy deliverables'],
@@ -207,7 +213,7 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
             instructions: [],
             contract: {
               input: { mode: 'facets', facets: ['company_information', 'creative_brief', 'handoff_summary'] },
-              output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
+              output: { mode: 'facets', facets: ['post_copy', 'handoff_summary', 'feedback'] }
             }
           },
           contracts: {
@@ -215,11 +221,11 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
               mode: 'facets',
               facets: ['company_information', 'creative_brief', 'handoff_summary']
             },
-            output: { mode: 'facets', facets: ['post_copy', 'handoff_summary'] }
+            output: { mode: 'facets', facets: ['post_copy', 'handoff_summary', 'feedback'] }
           },
           facets: {
             input: ['company_information', 'creative_brief', 'handoff_summary'],
-            output: ['post_copy', 'handoff_summary']
+            output: ['post_copy', 'handoff_summary', 'feedback']
           },
           provenance: { input: [], output: [] },
           rationale: ['Draft welcome-post copy variants'],
@@ -289,18 +295,50 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
           audience: 'Operations leaders'
         },
         strategic_rationale: 'Introduces Quinn to reinforce QA excellence and employer brand credibility.',
-        handoff_summary: ['Strategy approved']
+        handoff_summary: ['Strategy approved'],
+        feedback: [
+          {
+            id: 'fb-strategy-1',
+            facet: 'creative_brief',
+            path: '/core_message',
+            message: 'Confirmed QA leadership angle.',
+            resolution: 'addressed',
+            note: 'Brief now highlights Quinn’s remit.',
+            author: 'strategist.SocialPosting'
+          }
+        ]
       },
       'node-copywriter': {
         post_copy: ['Say hello to Quinn Rivers, our new QA Lead keeping every release rock solid.'],
-        handoff_summary: ['Copy ready for director review']
+        handoff_summary: ['Copy ready for director review'],
+        feedback: [
+          {
+            id: 'fb-copy-cta',
+            facet: 'post_copy',
+            path: '/0',
+            message: 'CTA tightened per director request.',
+            resolution: 'addressed',
+            note: 'Swapped “drop a welcome” CTA for “say hello”.',
+            author: 'copywriter.SocialpostDrafting'
+          }
+        ]
       },
       'node-director': {
         post: {
           platform: 'linkedin',
           content: 'Join us in welcoming Quinn Rivers, AwesomePoster’s new QA Lead ensuring flawless launches. Drop a welcome note!'
         },
-        feedback: []
+        feedback: [
+          {
+            id: 'fb-copy-cta',
+            facet: 'post_copy',
+            path: '/0',
+            message: 'CTA tightened per director request.',
+            resolution: 'addressed',
+            note: 'Swapped “drop a welcome” CTA for “say hello”.',
+            author: 'copywriter.SocialpostDrafting'
+          }
+        ]
       }
     }
 
@@ -328,7 +366,14 @@ describe('FlexRunCoordinator marketing integration (stubbed)', () => {
       post_copy: expect.arrayContaining([expect.stringContaining('Quinn Rivers')]),
       post: expect.objectContaining({
         platform: 'linkedin'
-      })
+      }),
+      feedback: expect.arrayContaining([
+        expect.objectContaining({
+          facet: 'post_copy',
+          resolution: 'addressed',
+          note: expect.stringContaining('CTA')
+        })
+      ])
     })
 
     const planGenerated = events.find((evt) => evt.type === 'plan_generated')
