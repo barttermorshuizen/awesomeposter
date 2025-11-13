@@ -2716,8 +2716,10 @@ interface ClarificationEntry {
 - Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
 - A facet widget registry (for example `PostVisualWidget`, `CompanyInformationWidget`) maps facet names to reusable UI components that assemble into the task surface.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
+- The same registry can declaratively attach decorators (e.g. `feedback.inline`) so capabilities that emit a facet automatically gain contextual UI affordances—Flex Human renders an inline composer + badge beside every input facet whenever the capability advertises the `feedback` output facet, and removing that facet immediately disables the decorator.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
+- Detailed widget/decorator guidance for future facets lives in [`docs/architecture/flex-agents-server/1512-facet-widget-surfaces.md`](./flex-agents-server/1512-facet-widget-surfaces.md); keep that doc current whenever you add or refactor widgets.
 
 #### 15.4.1 Facet Widget Namespace Convention
 - Facets that need different UX on the read-only (input) side versus the authoring (output) side register widgets under namespaced keys: `facetName.input` for the contextual surface humans consume, and `facetName.output` for any authoring surface that writes back to the node payload.

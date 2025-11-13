@@ -4,10 +4,18 @@ import { storeToRefs } from 'pinia'
 import { getFacetCatalog, getMarketingCapabilitiesSnapshot, type FacetDefinition } from '@awesomeposter/shared'
 import type { Component } from 'vue'
 import { useFlexTasksStore, type FlexTaskRecord } from '@/stores/flexTasks'
-import { getInputFacetWidgetComponent, getOutputFacetWidgetComponent } from './widgets/registry'
+import { useHitlStore } from '@/stores/hitl'
+import {
+  getInputFacetWidgetComponent,
+  getOutputFacetWidgetComponent,
+  getInputFacetDecorators,
+  type InputFacetDecoratorEntry
+} from './widgets/registry'
 import DefaultFacetWidget from './widgets/DefaultFacetWidget.vue'
+import type { FeedbackEntryDisplay, FeedbackComposerPayload } from './widgets/types'
 
 const flexTasksStore = useFlexTasksStore()
+const hitlStore = useHitlStore()
 const { pendingTasks, activeTask, loading, error } = storeToRefs(flexTasksStore)
 
 const submissionNote = ref('')
@@ -287,6 +295,39 @@ function setValueAtPointer(target: Record<string, unknown>, pointer: string, val
   }
 }
 
+const FEEDBACK_SEVERITIES = new Set(['info', 'minor', 'major', 'critical'])
+const FEEDBACK_RESOLUTIONS = new Set(['open', 'addressed', 'dismissed'])
+
+function normalizeFeedbackDisplayEntry(value: unknown): FeedbackEntryDisplay | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const facet = typeof record.facet === 'string' ? record.facet : null
+  const message = typeof record.message === 'string' ? record.message : null
+  if (!facet || !message) return null
+  const path = typeof record.path === 'string' ? record.path : null
+  const severity =
+    typeof record.severity === 'string' && FEEDBACK_SEVERITIES.has(record.severity)
+      ? (record.severity as FeedbackEntryDisplay['severity'])
+      : undefined
+  const resolution =
+    typeof record.resolution === 'string' && FEEDBACK_RESOLUTIONS.has(record.resolution)
+      ? (record.resolution as FeedbackEntryDisplay['resolution'])
+      : null
+  const timestamp = typeof record.timestamp === 'string' ? record.timestamp : null
+  const author = typeof record.author === 'string' ? record.author : null
+  const note = typeof record.note === 'string' ? record.note : null
+  return {
+    facet,
+    path,
+    message,
+    severity,
+    resolution,
+    timestamp,
+    author,
+    note
+  }
+}
+
 function pointerForFacet(task: FlexTaskRecord, facetName: string, direction: 'input' | 'output'): string {
   const provenanceEntries =
     direction === 'output' ? task.facetProvenance?.output : task.facetProvenance?.input
@@ -392,13 +433,112 @@ const inputFacetBindings = computed<InputFacetBinding[]>(() => {
     .filter((entry): entry is InputFacetBinding => Boolean(entry))
 })
 
-const customInputFacetBindings = computed(() =>
-  inputFacetBindings.value.filter((binding) => Boolean(binding.component))
+const inputDecoratorEntries = computed<InputFacetDecoratorEntry[]>(() => {
+  const facets = outputFacetBindings.value.map((binding) => binding.name)
+  return getInputFacetDecorators(facets)
+})
+
+const feedbackDecoratorComponent = computed<Component | null>(() => {
+  const decorator = inputDecoratorEntries.value.find((entry) => entry.id === 'feedback.inline')
+  return decorator?.component ?? null
+})
+
+const feedbackFacetPointer = computed(() => {
+  const task = activeTask.value
+  if (!task) return null
+  const hasFeedbackFacet = outputFacetBindings.value.some((binding) => binding.name === 'feedback')
+  if (!hasFeedbackFacet) return null
+  return pointerForFacet(task, 'feedback', 'output')
+})
+
+const feedbackDraftEntries = computed<unknown[]>(() => {
+  const pointer = feedbackFacetPointer.value
+  if (!pointer) return []
+  const value = draftValues.value.get(pointer)
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  return [value]
+})
+
+const feedbackDisplayEntries = computed<FeedbackEntryDisplay[]>(() =>
+  feedbackDraftEntries.value
+    .map((entry, index) => {
+      const normalized = normalizeFeedbackDisplayEntry(entry)
+      return normalized ? { ...normalized, sourceIndex: index } : null
+    })
+    .filter((entry): entry is FeedbackEntryDisplay => Boolean(entry))
 )
 
-const fallbackInputFacetBindings = computed(() =>
-  inputFacetBindings.value.filter((binding) => !binding.component)
+watch(
+  inputFacetBindings,
+  (bindings) => {
+    if (!bindings.length) {
+      inputFacetPanels.value = []
+      return
+    }
+    if (!inputFacetPanels.value.length) {
+      inputFacetPanels.value = [0]
+    }
+  },
+  { immediate: true }
 )
+
+function entriesForInputBinding(binding: InputFacetBinding): FeedbackEntryDisplay[] {
+  return feedbackDisplayEntries.value.filter((entry) => {
+    if (entry.facet !== binding.name) return false
+    if (entry.path && entry.path.length > 0) {
+      return entry.path === binding.pointer
+    }
+    return true
+  })
+}
+
+function feedbackCountForBinding(binding: InputFacetBinding): number {
+  return entriesForInputBinding(binding).length
+}
+
+const operatorDisplayName = computed(() => {
+  const profile = hitlStore.operatorProfile?.value ?? null
+  return (
+    toStringOrNull(profile?.displayName) ??
+    toStringOrNull(profile?.email) ??
+    toStringOrNull(profile?.id) ??
+    'Operator'
+  )
+})
+
+function appendFeedbackEntry(payload: FeedbackComposerPayload) {
+  const pointer = feedbackFacetPointer.value
+  if (!pointer) return
+  const current = feedbackDraftEntries.value.map((entry) => cloneValue(entry))
+  current.push({
+    facet: payload.facet,
+    path: payload.path ?? null,
+    message: payload.message,
+    severity: payload.severity,
+    timestamp: payload.timestamp,
+    resolution: 'open',
+    author: operatorDisplayName.value
+  })
+  updateFacetValue(pointer, current)
+}
+
+function handleFeedbackComposerSubmit(payload: FeedbackComposerPayload) {
+  appendFeedbackEntry(payload)
+}
+
+function handleFeedbackEntryRemove(sourceIndex: number) {
+  const pointer = feedbackFacetPointer.value
+  if (!pointer) return
+  const current = feedbackDraftEntries.value.map((entry) => cloneValue(entry))
+  if (sourceIndex < 0 || sourceIndex >= current.length) return
+  current.splice(sourceIndex, 1)
+  if (!current.length) {
+    updateFacetValue(pointer, null)
+    return
+  }
+  updateFacetValue(pointer, current)
+}
 
 const submissionDisabled = computed(() => {
   const task = activeTask.value
@@ -751,6 +891,14 @@ function priorityColor(priority: FlexTaskRecord['priority']): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
+
+function toStringOrNull(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length ? trimmed : null
+  }
+  return null
+}
 </script>
 
 <template>
@@ -877,37 +1025,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
             <div v-if="inputFacetBindings.length" class="input-facets">
               <h4 class="section-title">Input Facets</h4>
-              <div
-                v-if="customInputFacetBindings.length"
-                class="custom-input-widgets"
-              >
-                <component
-                  v-for="binding in customInputFacetBindings"
-                  :key="binding.pointer"
-                  :is="binding.component"
-                  :definition="binding.definition"
-                  :schema="binding.schema"
-                  :model-value="binding.value"
-                  :readonly="true"
-                  :task-context="binding.context"
-                  data-test="input-facet-widget"
-                />
-              </div>
               <v-expansion-panels
-                v-if="fallbackInputFacetBindings.length"
                 v-model="inputFacetPanels"
                 multiple
                 density="compact"
                 class="facet-panels"
               >
                 <v-expansion-panel
-                  v-for="(binding, index) in fallbackInputFacetBindings"
+                  v-for="(binding, index) in inputFacetBindings"
                   :key="binding.pointer"
                   :value="index"
                   data-test="input-facet-panel"
                 >
                   <v-expansion-panel-title>
                     {{ binding.definition.title }}
+                    <template #actions>
+                      <v-chip
+                        v-if="feedbackCountForBinding(binding) > 0"
+                        size="x-small"
+                        color="primary"
+                        variant="tonal"
+                        data-test="feedback-inline-facet-chip"
+                      >
+                        {{ feedbackCountForBinding(binding) }}
+                      </v-chip>
+                    </template>
                   </v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <p
@@ -916,7 +1058,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
                     >
                       {{ binding.definition.description }}
                     </p>
-                    <pre class="facet-json" data-test="input-facet-json">{{ inputFacetValueJson(binding) }}</pre>
+                    <component
+                      v-if="binding.component"
+                      :is="binding.component"
+                      :definition="binding.definition"
+                      :schema="binding.schema"
+                      :model-value="binding.value"
+                      :readonly="true"
+                      :task-context="binding.context"
+                      data-test="input-facet-widget"
+                    />
+                    <pre
+                      v-else
+                      class="facet-json"
+                      data-test="input-facet-json"
+                    >
+                      {{ inputFacetValueJson(binding) }}
+                    </pre>
+                    <component
+                      v-if="feedbackDecoratorComponent"
+                      class="mt-2"
+                      :is="feedbackDecoratorComponent"
+                      :facet-key="binding.name"
+                      :facet-title="binding.definition.title || binding.name"
+                      :path="binding.pointer"
+                      :entries="entriesForInputBinding(binding)"
+                      :readonly="submissionDisabled"
+                      :current-author="operatorDisplayName"
+                      :show-badge="false"
+                      @submit="handleFeedbackComposerSubmit"
+                      @remove="handleFeedbackEntryRemove"
+                    />
                   </v-expansion-panel-text>
                 </v-expansion-panel>
               </v-expansion-panels>
@@ -1017,6 +1189,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
                       {{ binding.definition.description }}
                     </p>
                     <component
+                      v-if="binding.name !== 'feedback'"
                       :is="binding.component"
                       :definition="binding.definition"
                       :schema="binding.schema"
@@ -1025,6 +1198,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
                       :task-context="binding.context"
                       @update:model-value="updateFacetValue(binding.pointer, $event)"
                     />
+                    <p
+                      v-else
+                      class="text-body-2 text-medium-emphasis mb-0"
+                      data-test="feedback-inline-instructions"
+                    >
+                      Provide feedback in context on the input facets.
+                    </p>
                   </v-expansion-panel-text>
                 </v-expansion-panel>
               </v-expansion-panels>
@@ -1187,13 +1367,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-}
-
-.custom-input-widgets {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 0.75rem;
 }
 
 .custom-widgets {

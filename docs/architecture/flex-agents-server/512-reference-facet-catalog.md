@@ -483,6 +483,15 @@ Each entry references the facet affected so the planner can map feedback to prod
 * requiredByDefault: true
 * catalogTags: ["marketing-agency", "sandbox"]
 
+**inline decorator behaviour**
+
+When a capability advertises the `feedback` facet (direction: output), the facet widget registry auto-loads the `feedback.inline` decorator. Every rendered input facet provides `facetKey` + JSON pointer metadata, so the decorator can:
+
+* Surface a badge showing unresolved feedback counts and preview the latest open message inline.
+* Launch a lightweight composer that is pre-filled with the facet key and pointer for the targeted field.
+* Append structured entries (message, severity, path, timestamp) via the existing facet mutation pipeline with no bespoke wiring inside generic widgets.
+
+Removing the facet from the contract immediately disables the decorator, keeping the UI purely driven by facet metadata.
 Understood — keeping post\_copy as a single, minimal text field makes it clean and consistent with how you simplified strategic\_rationale.
 
 Here’s the revised definition.

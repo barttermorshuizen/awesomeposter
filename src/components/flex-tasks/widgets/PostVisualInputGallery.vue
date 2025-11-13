@@ -20,8 +20,6 @@ const hydratedById = ref<Map<string, PostVisualAssetRecord>>(new Map())
 const hydratedByUrl = ref<Map<string, PostVisualAssetRecord>>(new Map())
 const isHydrating = ref(false)
 const lastHydrationSignature = ref<string | null>(null)
-const panelState = ref<number[]>([])
-panelState.value = [0]
 
 const activeTaskId = computed(() => flexTasksStore.activeTask?.taskId ?? null)
 
@@ -400,128 +398,113 @@ function markThumbnailFailure(asset: GalleryAsset) {
 </script>
 
 <template>
-  <v-expansion-panels
-    v-model="panelState"
-    class="post-visual-input-panels"
-    multiple
-    density="compact"
-    data-test="post-visual-input-panels"
-  >
-    <v-expansion-panel :value="0" elevation="0" border>
-      <v-expansion-panel-title data-test="post-visual-input-panel-title">
-        {{ definition.title ?? 'Visual assets' }}
-      </v-expansion-panel-title>
-      <v-expansion-panel-text data-test="post-visual-input-gallery">
-        <section class="post-visual-input">
-          <header class="gallery-header">
-            <p
-              v-if="definition.description"
-              class="gallery-description text-body-2 text-medium-emphasis"
-            >
-              {{ definition.description }}
-            </p>
-          </header>
+  <section class="post-visual-input" data-test="post-visual-input-gallery">
+    <header class="gallery-header">
+      <p
+        v-if="definition.description"
+        class="gallery-description text-body-2 text-medium-emphasis"
+      >
+        {{ definition.description }}
+      </p>
+    </header>
 
-          <v-alert
-            v-if="hydrationError"
-            type="warning"
-            variant="tonal"
-            border="start"
-            class="mb-4"
-            data-test="post-visual-input-alert"
-          >
-            {{ hydrationError }}
-          </v-alert>
+    <v-alert
+      v-if="hydrationError"
+      type="warning"
+      variant="tonal"
+      border="start"
+      class="mb-4"
+      data-test="post-visual-input-alert"
+    >
+      {{ hydrationError }}
+    </v-alert>
 
-          <v-progress-linear
-            v-if="isHydrating"
-            indeterminate
-            color="primary"
-            class="mb-4"
-            data-test="post-visual-input-loading"
+    <v-progress-linear
+      v-if="isHydrating"
+      indeterminate
+      color="primary"
+      class="mb-4"
+      data-test="post-visual-input-loading"
+    />
+
+    <div v-if="galleryAssets.length" class="gallery-grid">
+      <article
+        v-for="asset in galleryAssets"
+        :key="asset.key"
+        class="gallery-card"
+        :aria-label="`${asset.name}${asset.isFeatured ? ' (Featured)' : ''}`"
+        data-test="post-visual-input-card"
+      >
+        <div class="card-media">
+          <img
+            v-if="asset.isImage"
+            :src="asset.downloadUrl"
+            :alt="`Preview of ${asset.name}`"
+            loading="lazy"
+            decoding="async"
+            @error="markThumbnailFailure(asset)"
+            data-test="post-visual-input-thumb"
           />
-
-          <div v-if="galleryAssets.length" class="gallery-grid">
-            <article
-              v-for="asset in galleryAssets"
-              :key="asset.key"
-              class="gallery-card"
-              :aria-label="`${asset.name}${asset.isFeatured ? ' (Featured)' : ''}`"
-              data-test="post-visual-input-card"
-            >
-              <div class="card-media">
-                <img
-                  v-if="asset.isImage"
-                  :src="asset.downloadUrl"
-                  :alt="`Preview of ${asset.name}`"
-                  loading="lazy"
-                  decoding="async"
-                  @error="markThumbnailFailure(asset)"
-                  data-test="post-visual-input-thumb"
-                />
-                <div v-else class="card-media__placeholder" data-test="post-visual-input-placeholder">
-                  <v-icon :icon="asset.badgeIcon" size="32" />
-                </div>
-                <v-chip
-                  v-if="asset.isFeatured"
-                  size="small"
-                  color="primary"
-                  label
-                  class="featured-chip"
-                  data-test="post-visual-input-featured"
-                >
-                  Featured
-                </v-chip>
-              </div>
-              <div class="card-body">
-                <div class="card-title" :title="asset.name">
-                  <span class="asset-name">{{ asset.name }}</span>
-                </div>
-                <div class="card-meta">
-                  <v-chip
-                    v-if="asset.badgeLabel"
-                    size="x-small"
-                    variant="outlined"
-                    class="mr-2"
-                    data-test="post-visual-input-badge"
-                  >
-                    {{ asset.badgeLabel }}
-                  </v-chip>
-                  <span v-if="asset.isExternal" class="asset-source text-caption text-medium-emphasis">
-                    External link
-                  </span>
-                  <span v-else class="asset-source text-caption text-medium-emphasis">
-                    Flex asset
-                  </span>
-                </div>
-                <div class="card-actions">
-                  <v-btn
-                    variant="text"
-                    color="primary"
-                    :href="asset.downloadUrl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    :aria-label="`Open ${asset.name} in new tab`"
-                    prepend-icon="mdi-open-in-new"
-                    data-test="post-visual-input-download"
-                  >
-                    View asset
-                  </v-btn>
-                </div>
-              </div>
-            </article>
+          <div v-else class="card-media__placeholder" data-test="post-visual-input-placeholder">
+            <v-icon :icon="asset.badgeIcon" size="32" />
           </div>
-          <p
-            v-else
-            class="gallery-empty text-body-2 text-medium-emphasis"
-            data-test="post-visual-input-empty"
+          <v-chip
+            v-if="asset.isFeatured"
+            size="small"
+            color="primary"
+            label
+            class="featured-chip"
+            data-test="post-visual-input-featured"
           >
-            No visual assets supplied for this assignment.
-          </p>
-        </section>
-      </v-expansion-panel-text>
-    </v-expansion-panel>
-  </v-expansion-panels>
+            Featured
+          </v-chip>
+        </div>
+        <div class="card-body">
+          <div class="card-title" :title="asset.name">
+            <span class="asset-name">{{ asset.name }}</span>
+          </div>
+          <div class="card-meta">
+            <v-chip
+              v-if="asset.badgeLabel"
+              size="x-small"
+              variant="outlined"
+              class="mr-2"
+              data-test="post-visual-input-badge"
+            >
+              {{ asset.badgeLabel }}
+            </v-chip>
+            <span v-if="asset.isExternal" class="asset-source text-caption text-medium-emphasis">
+              External link
+            </span>
+            <span v-else class="asset-source text-caption text-medium-emphasis">
+              Flex asset
+            </span>
+          </div>
+          <div class="card-actions">
+            <v-btn
+              variant="text"
+              color="primary"
+              :href="asset.downloadUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              :aria-label="`Open ${asset.name} in new tab`"
+              prepend-icon="mdi-open-in-new"
+              data-test="post-visual-input-download"
+            >
+              View asset
+            </v-btn>
+          </div>
+        </div>
+      </article>
+    </div>
+    <p
+      v-else
+      class="gallery-empty text-body-2 text-medium-emphasis"
+      data-test="post-visual-input-empty"
+    >
+      No visual assets supplied for this assignment.
+    </p>
+  </section>
 </template>
 
 <style scoped>

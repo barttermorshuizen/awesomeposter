@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import CompanyInformationWidget from '@/components/flex-tasks/widgets/CompanyInformationWidget.vue'
 import vuetify from '@/plugins/vuetify'
@@ -28,12 +28,6 @@ describe('CompanyInformationWidget', () => {
     })
   }
 
-  async function expandPanel(wrapper: VueWrapper) {
-    const header = wrapper.get('[data-test="company-info-panel-title"]')
-    await header.trigger('click')
-    await wrapper.vm.$nextTick()
-  }
-
   it('renders populated company information with website and assets', async () => {
     const wrapper = mountWidget({
       name: 'Acme Analytics',
@@ -54,10 +48,6 @@ describe('CompanyInformationWidget', () => {
         }
       ]
     })
-
-    expect(wrapper.get('[data-test="company-info-panel-title"]').text()).toBe('Company information')
-
-    await expandPanel(wrapper)
 
     expect(wrapper.get('[data-test="company-info-name"]').text()).toBe('Acme Analytics')
     expect(wrapper.get('[data-test="company-info-website"]').attributes('href')).toBe(
@@ -103,8 +93,6 @@ describe('CompanyInformationWidget', () => {
       brandAssets: []
     })
 
-    await expandPanel(wrapper)
-
     expect(wrapper.get('[data-test="company-info-name"]').text()).toBe('Company name unavailable')
     expect(wrapper.find('[data-test="company-info-website"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="company-info-field-industry"]').text()).toContain('Industry not provided')
@@ -133,8 +121,6 @@ describe('CompanyInformationWidget', () => {
         }
       ]
     })
-
-    await expandPanel(wrapper)
 
     const thumb = wrapper.get('[data-test="company-info-asset-thumb"]')
     await thumb.trigger('error')
