@@ -1076,8 +1076,13 @@ function derivePlannerContext(envelope: TaskEnvelope, policies: TaskPolicies, va
   }
 }
 
-function deriveAvailableEnvelopeFacets(envelope: TaskEnvelope): Set<string> {
+export function deriveAvailableEnvelopeFacets(envelope: TaskEnvelope): Set<string> {
   const facets = new Set<string>()
+  Object.keys(envelope.inputs ?? {}).forEach((facet) => {
+    if (typeof facet === 'string' && facet.trim().length) {
+      facets.add(facet)
+    }
+  })
   if (envelope.outputContract?.mode === 'facets') {
     for (const facet of envelope.outputContract.facets ?? []) {
       facets.add(facet)
