@@ -119,6 +119,13 @@ export class PlannerDraftRejectedError extends Error {
   }
 }
 
+export class MissingPinnedCapabilitiesError extends Error {
+  constructor(public readonly capabilityIds: string[]) {
+    super(`Pinned capabilities missing from CRCS: ${capabilityIds.join(', ')}`)
+    this.name = 'MissingPinnedCapabilitiesError'
+  }
+}
+
 type FlexPlannerDependencies = {
   capabilityRegistry?: FlexCapabilityRegistryService
   plannerService?: PlannerServiceInterface
@@ -400,6 +407,15 @@ export class FlexPlanner {
       capabilities: capabilitySnapshot.active,
       crcs
     })
+    if (crcs.missingPinnedCapabilityIds.length) {
+      try {
+        getLogger().warn('flex_planner_missing_pinned_capabilities', {
+          runId,
+          missingPinnedCapabilityIds: crcs.missingPinnedCapabilityIds
+        })
+      } catch {}
+      throw new MissingPinnedCapabilitiesError(crcs.missingPinnedCapabilityIds)
+    }
     const plannerDraft = await this.plannerService.proposePlan({
       envelope: envelopeForPlanner,
       context: plannerContext,

@@ -26,6 +26,7 @@ import {
 import {
   FlexPlanner,
   PlannerDraftRejectedError,
+  MissingPinnedCapabilitiesError,
   type FlexPlan,
   type FlexPlanNode,
   type FlexPlanNodeContracts,
@@ -976,6 +977,20 @@ export class FlexRunCoordinator {
               throw error
             }
             continue
+          } else if (error instanceof MissingPinnedCapabilitiesError) {
+            await emitEvent({
+              type: 'plan_rejected',
+              timestamp: new Date().toISOString(),
+              runId,
+              payload: {
+                runId,
+                attempt: attemptNumber,
+                phase,
+                reason: 'missing_pinned_capabilities',
+                missingPinnedCapabilityIds: error.capabilityIds
+              }
+            })
+            throw error
           }
           throw error
         }

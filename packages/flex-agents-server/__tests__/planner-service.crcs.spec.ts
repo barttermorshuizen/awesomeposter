@@ -152,6 +152,41 @@ describe('FlexCapabilityRegistryService.computeCrcsSnapshot', () => {
     expect(snapshot.missingPinnedCapabilityIds).toContain('facet:nonexistent_facet')
   })
 
+  it('only treats selection.require entries as pinned requirements', async () => {
+    const rows = [
+      buildRow({
+        capabilityId: 'writer.primary',
+        displayName: 'Writer',
+        inputFacets: ['creative_brief'],
+        outputFacets: ['final_copy']
+      })
+    ]
+    const service = new FlexCapabilityRegistryService(new StubCapabilityRepository(rows))
+    const activeCapabilities = (await service.getSnapshot()).active
+    const snapshot = await service.computeCrcsSnapshot({
+      envelope: {
+        objective: 'Test run',
+        inputs: { creative_brief: { summary: 'test' } },
+        outputContract: { mode: 'facets', facets: ['final_copy'] }
+      } as any,
+      policies: {
+        planner: {
+          selection: {
+            require: ['policy.required'],
+            avoid: ['policy.avoid'],
+            forbid: ['policy.forbid']
+          }
+        },
+        runtime: []
+      },
+      capabilities: activeCapabilities,
+      graphContext: undefined
+    })
+    expect(snapshot.missingPinnedCapabilityIds).toContain('policy.required')
+    expect(snapshot.missingPinnedCapabilityIds).not.toContain('policy.avoid')
+    expect(snapshot.missingPinnedCapabilityIds).not.toContain('policy.forbid')
+  })
+
   it('excludes multi-input capabilities until all required input facets are reachable', async () => {
     const rows = [
       buildRow({

@@ -1,0 +1,36 @@
+schema: 1
+story: '8.38'
+story_title: 'Flex Planner Comprehensive Relevant Capability Set (CRCS)'
+gate: PASS
+status_reason: 'Missing pinned capabilities now block planning, and policy pins only include true requirements.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-14T13:38:12Z'
+top_issues:
+  []
+waiver:
+  active: false
+quality_score: 100
+evidence:
+  tests_reviewed: 4
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Planner-only logic; no new auth or data-safety exposure identified.'
+  performance:
+    status: PASS
+    notes: 'Row-cap telemetry works as expected; no prompt-size regressions observed.'
+  reliability:
+    status: PASS
+    notes: 'Planner now aborts immediately when CRCS reports missing pinned capabilities.'
+  maintainability:
+    status: PASS
+    notes: 'Selection semantics differentiate required vs avoid/forbid and regression tests lock behavior.'
+recommendations:
+  immediate:
+    []
+  future:
+    []

@@ -613,11 +613,8 @@ export class FlexCapabilityRegistryService {
   } {
     const pinnedFromPolicies = new Set<string>()
     const plannerSelection = params.policies.planner?.selection
-    if (plannerSelection) {
-      const { require, prefer, avoid, forbid } = plannerSelection
-      ;[require, prefer, avoid, forbid].forEach((bucket) => {
-        bucket?.forEach((capabilityId) => pinnedFromPolicies.add(capabilityId))
-      })
+    if (plannerSelection?.require?.length) {
+      plannerSelection.require.forEach((capabilityId) => pinnedFromPolicies.add(capabilityId))
     }
     params.policies.runtime.forEach((policy) => {
       const capabilityId = policy.trigger?.selector?.capabilityId

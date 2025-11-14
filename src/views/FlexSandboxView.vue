@@ -16,7 +16,8 @@ import {
   type FacetDirection,
   type HitlOriginAgent,
   type HitlRequestPayload,
-  type HitlContractSummary
+  type HitlContractSummary,
+  type TaskPolicies
 } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import { addFlexEventListener } from '@/lib/flex-event-bus'
@@ -62,8 +63,32 @@ type TemplateDescriptor = {
   filename: string
   modifiedAt: string
   size: number
-  envelope?: TaskEnvelope
+  envelope?: Record<string, unknown>
   error?: string
+}
+
+type CapabilitySummary = {
+  capabilityId?: string | null
+  displayName?: string | null
+  version?: string | number | null
+  status?: string | null
+}
+
+type RuntimePolicyAction = {
+  type: string
+  next?: string
+  event?: string
+  [key: string]: unknown
+}
+
+type RuntimePolicy = {
+  id?: string
+  trigger: {
+    kind: string
+    selector?: Record<string, unknown> | null
+    condition?: unknown
+  }
+  action?: RuntimePolicyAction | null
 }
 
 type SandboxMetadata = {
@@ -106,13 +131,13 @@ type EventFrame = FlexEventWithId & { __key: string }
 
 type RuntimePolicyDraft = {
   index: number
-  id: string
+  id: string | null
   triggerKind: string
   selector: Record<string, unknown> | null
   actionSummary: string
   dsl: string
   canonicalDsl: string | null
-  jsonLogic: JsonLogicExpression | null
+  jsonLogic: unknown
   warnings: ConditionDslWarning[]
   variables: string[]
   error: string | null
@@ -124,10 +149,16 @@ type GoalConditionDraft = {
   path: string
   dsl: string
   canonicalDsl: string | null
-  jsonLogic: JsonLogicExpression | null
+  jsonLogic: unknown
   warnings: ConditionDslWarning[]
   variables: string[]
   error: string | null
+}
+
+type GoalConditionEntry = {
+  facet?: string | null
+  path?: string | null
+  condition?: unknown
 }
 
 const FLEX_BASE_URL =
@@ -181,7 +212,7 @@ const parseError = ref<string | null>(null)
 const validationIssues = ref<string[]>([])
 const validationWarnings = ref<string[]>([])
 const conversationMissingFields = ref<string[]>([])
-const parsedEnvelope = ref<TaskEnvelope | null>(null)
+const parsedEnvelope = ref<Record<string, unknown> | null>(null)
 
 const eventLog = ref<EventFrame[]>([])
 const runStatus = ref<'idle' | 'running' | 'hitl' | 'completed' | 'error'>('idle')
@@ -277,9 +308,9 @@ const facetSet = computed(() => {
   return set
 })
 
-const capabilitySnapshot = computed(() => {
+const capabilitySnapshot = computed<CapabilitySummary[]>(() => {
   const all = metadata.value?.capabilities?.all ?? []
-  return [...all].sort((a, b) => a.displayName.localeCompare(b.displayName))
+  return [...all].sort((a, b) => (a.displayName ?? '').localeCompare(b.displayName ?? ''))
 })
 
 const facetCatalogEntries = computed(() => {
@@ -532,7 +563,7 @@ function resetTemplateDraft() {
 
 function formatDraft() {
   if (!parsedEnvelope.value) return
-  draftText.value = JSON.stringify(parsedEnvelope.value, null, 2)
+  draftText.value = JSON.stringify(parsedEnvelope.value as unknown, null, 2)
   updateValidation()
 }
 
@@ -571,7 +602,7 @@ function applyRawJsonEditor() {
 }
 
 async function copyEnvelopeJson() {
-  const envelope = parsedEnvelope.value
+  const envelope = parsedEnvelope.value as TaskEnvelope | null
   if (!envelope) {
     notifications.enqueue({ message: 'Nothing to copy yet — envelope is not valid.', kind: 'warning' })
     return
@@ -602,7 +633,7 @@ function fallbackCopy(text: string) {
   document.body.removeChild(textarea)
 }
 
-function formatRuntimeAction(action: NonNullable<TaskEnvelope['policies']>['runtime'][number]['action']): string {
+function formatRuntimeAction(action: RuntimePolicyAction): string {
   switch (action.type) {
     case 'replan':
       return 'Replan run'
@@ -632,7 +663,7 @@ function formatSelector(selector: Record<string, unknown> | null): string {
 function deriveConditionDraft(condition: unknown): {
   dsl: string
   canonicalDsl: string | null
-  jsonLogic: JsonLogicExpression | null
+  jsonLogic: unknown
   warnings: ConditionDslWarning[]
   variables: string[]
   error: string | null
@@ -661,13 +692,13 @@ function deriveConditionDraft(condition: unknown): {
     return { dsl, canonicalDsl, jsonLogic, warnings, variables, error: null }
   }
 
-  const jsonLogic = condition as JsonLogicExpression
-  const render = toDsl(jsonLogic, conditionVariableCatalog)
+  const jsonLogicExpression = condition as JsonLogicExpression
+  const render = toDsl(jsonLogicExpression, conditionVariableCatalog)
   if (render.ok) {
     return {
       dsl: render.expression,
       canonicalDsl: render.expression,
-      jsonLogic,
+      jsonLogic: jsonLogicExpression,
       warnings: [],
       variables: [],
       error: null
@@ -677,24 +708,24 @@ function deriveConditionDraft(condition: unknown): {
   return {
     dsl: '',
     canonicalDsl: null,
-    jsonLogic,
+    jsonLogic: jsonLogicExpression,
     warnings: [],
     variables: [],
     error: render.errors.map((issue) => issue.message).join('; ') || 'Unable to convert JSON-Logic into DSL.'
   }
 }
 
-function mapRuntimePolicyToDraft(policy: NonNullable<TaskEnvelope['policies']>['runtime'][number], index: number): RuntimePolicyDraft {
+function mapRuntimePolicyToDraft(policy: RuntimePolicy, index: number): RuntimePolicyDraft {
   const trigger = policy.trigger as Record<string, unknown>
   const selector = typeof trigger.selector === 'object' && trigger.selector !== null
     ? JSON.parse(JSON.stringify(trigger.selector))
     : null
   const draft: RuntimePolicyDraft = {
     index,
-    id: policy.id,
+    id: policy.id ?? null,
     triggerKind: policy.trigger.kind,
     selector,
-    actionSummary: formatRuntimeAction(policy.action),
+    actionSummary: formatRuntimeAction(policy.action ?? { type: 'unknown' }),
     dsl: '',
     canonicalDsl: null,
     jsonLogic: null,
@@ -751,13 +782,17 @@ function recomputeRuntimePolicyDraft(draft: RuntimePolicyDraft): void {
   draft.variables = result.variables.map((entry) => entry.path)
 }
 
-function syncRuntimePoliciesFromEnvelope(envelope: TaskEnvelope) {
+type RuntimePoliciesSnapshot = {
+  runtime?: RuntimePolicy[]
+} | null | undefined
+
+function syncRuntimePoliciesFromEnvelope(policies: RuntimePoliciesSnapshot) {
   if (!FLEX_DSL_POLICIES_ENABLED) return
-  const runtime = envelope.policies?.runtime ?? []
+  const runtime = policies?.runtime ?? []
   runtimePolicies.value = runtime.map((policy, index) => mapRuntimePolicyToDraft(policy, index))
 }
 
-function mapGoalConditionToDraft(entry: NonNullable<TaskEnvelope['goal_condition']>[number], index: number): GoalConditionDraft {
+function mapGoalConditionToDraft(entry: GoalConditionEntry, index: number): GoalConditionDraft {
   const draft: GoalConditionDraft = {
     index,
     facet: entry.facet ?? '',
@@ -822,7 +857,7 @@ function normalizeGoalConditionIndexes() {
 
 function syncGoalConditionsFromEnvelope(envelope: TaskEnvelope) {
   if (!FLEX_DSL_POLICIES_ENABLED || suppressGoalConditionSync) return
-  const goalConditions = envelope.goal_condition ?? []
+  const goalConditions = (envelope.goal_condition ?? []) as GoalConditionEntry[]
   goalConditionDrafts.value = goalConditions.map((condition, index) => mapGoalConditionToDraft(condition, index))
   normalizeGoalConditionIndexes()
 }
@@ -844,7 +879,7 @@ function handleGoalConditionFieldInput(index: number, field: 'facet' | 'path', v
   applyGoalConditionDraftsToEnvelope()
 }
 
-function serializeGoalConditionDraft(draft: GoalConditionDraft): NonNullable<TaskEnvelope['goal_condition']>[number] | null {
+function serializeGoalConditionDraft(draft: GoalConditionDraft): GoalConditionEntry | null {
   const facet = draft.facet.trim()
   if (!facet) return null
   const path = draft.path.trim().length > 0 ? draft.path.trim() : '/'
@@ -872,7 +907,7 @@ function serializeGoalConditionDraft(draft: GoalConditionDraft): NonNullable<Tas
   return {
     facet,
     path,
-    condition: conditionPayload as NonNullable<TaskEnvelope['goal_condition']>[number]['condition']
+    condition: conditionPayload
   }
 }
 
@@ -884,21 +919,21 @@ function applyGoalConditionDraftsToEnvelope() {
   const clone = JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
   const serialized = goalConditionDrafts.value
     .map((draft) => serializeGoalConditionDraft(draft))
-    .filter((entry): entry is NonNullable<TaskEnvelope['goal_condition']>[number] => entry !== null)
+    .filter((entry): entry is GoalConditionEntry => entry !== null)
 
   suppressGoalConditionSync = true
   if (serialized.length > 0) {
-    clone.goal_condition = serialized
+    clone.goal_condition = serialized as TaskEnvelope['goal_condition']
     parsedEnvelope.value = {
       ...clone,
-      goal_condition: serialized
+      goal_condition: serialized as TaskEnvelope['goal_condition']
     }
   } else {
     const { goal_condition: _removed, ...rest } = clone as TaskEnvelope & { goal_condition?: typeof serialized }
     parsedEnvelope.value = rest
     delete clone.goal_condition
   }
-  draftText.value = JSON.stringify(parsedEnvelope.value, null, 2)
+  draftText.value = JSON.stringify(parsedEnvelope.value as unknown, null, 2)
   nextTick(() => {
     suppressGoalConditionSync = false
   })
@@ -986,7 +1021,7 @@ function applyRuntimePolicyDraftsToEnvelope() {
 
 function resolveCurrentEnvelope(): TaskEnvelope | null {
   if (parsedEnvelope.value) {
-    return parsedEnvelope.value
+    return parsedEnvelope.value as TaskEnvelope
   }
   try {
     const raw = JSON.parse(draftText.value)
@@ -1103,7 +1138,7 @@ function updateValidation() {
 
   parsedEnvelope.value = parsed.data
   if (FLEX_DSL_POLICIES_ENABLED && !suppressRuntimePolicySync) {
-    syncRuntimePoliciesFromEnvelope(parsed.data)
+    syncRuntimePoliciesFromEnvelope(parsed.data.policies ?? null)
   }
   if (FLEX_DSL_POLICIES_ENABLED) {
     syncGoalConditionsFromEnvelope(parsed.data)
@@ -1605,7 +1640,7 @@ async function runEnvelope(options?: {
         updateValidation()
         if (!parsedEnvelope.value) return
       }
-      envelope = parsedEnvelope.value
+      envelope = parsedEnvelope.value as TaskEnvelope
     }
     resetRunState()
     if (options?.resumeContext) {
@@ -1734,19 +1769,20 @@ function formatTimestamp(ts: string | undefined): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function formatCapabilityName(cap: CapabilityRecord): string {
+function formatCapabilityName(cap: CapabilitySummary): string {
+  const name = cap.displayName ?? 'Unnamed capability'
   const versionSuffix = cap.version ? ` (v${cap.version})` : ''
-  return `${cap.displayName}${versionSuffix}`
+  return `${name}${versionSuffix}`
 }
 
-function formatCapabilityDetails(cap: CapabilityRecord): string {
+function formatCapabilityDetails(cap: CapabilitySummary): string {
   const parts: string[] = []
   if (cap.capabilityId) parts.push(cap.capabilityId)
   if (cap.status) parts.push(formatCapabilityStatusLabel(cap.status))
   return parts.join(' | ')
 }
 
-function formatCapabilityStatusLabel(status?: CapabilityRecord['status']): string {
+function formatCapabilityStatusLabel(status?: CapabilitySummary['status']): string {
   if (!status) return ''
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
@@ -2271,8 +2307,8 @@ watch(
                         class="registry-overview-list"
                       >
                         <v-list-item
-                          v-for="cap in capabilitySnapshot"
-                          :key="cap.capabilityId"
+                          v-for="(cap, idx) in capabilitySnapshot"
+                          :key="cap.capabilityId ?? `${cap.displayName ?? 'cap'}-${idx}`"
                           class="py-1"
                         >
                           <v-list-item-title>{{ formatCapabilityName(cap) }}</v-list-item-title>
@@ -2613,19 +2649,19 @@ watch(
                     <div v-if="policyDraft.variables.length" class="text-caption text-medium-emphasis mt-2">
                       Variables: <code>{{ policyDraft.variables.join(', ') }}</code>
                     </div>
-                <div class="runtime-policy-json mt-3">
-                  <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
-                  <VueJsonPretty
-                    v-if="policyDraft.jsonLogic"
-                    :data="policyDraft.jsonLogic"
-                    :show-length="false"
-                    :deep="2"
-                    class="font-mono runtime-policy-json__tree"
-                  />
-                  <div v-else class="text-body-2 text-disabled">
-                    JSON preview appears once the DSL expression is valid.
-                  </div>
-                </div>
+                    <div class="runtime-policy-json mt-3">
+                      <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
+                      <VueJsonPretty
+                        v-if="policyDraft.jsonLogic"
+                        :data="policyDraft.jsonLogic as any"
+                        :show-length="false"
+                        :deep="2"
+                        class="font-mono runtime-policy-json__tree"
+                      />
+                      <div v-else class="text-body-2 text-disabled">
+                        JSON preview appears once the DSL expression is valid.
+                      </div>
+                    </div>
               </div>
             </div>
             <div
@@ -2726,7 +2762,7 @@ watch(
                   <div class="text-caption text-medium-emphasis mb-1">JSON-Logic Preview</div>
                   <VueJsonPretty
                     v-if="conditionDraft.jsonLogic"
-                    :data="conditionDraft.jsonLogic"
+                    :data="conditionDraft.jsonLogic as any"
                     :show-length="false"
                     :deep="2"
                     class="font-mono goal-condition-json__tree"
