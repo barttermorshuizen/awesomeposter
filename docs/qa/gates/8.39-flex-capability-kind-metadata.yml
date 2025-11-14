@@ -1,0 +1,43 @@
+schema: 1
+story: '8.39'
+story_title: 'Flex Capability Kind Metadata'
+gate: PASS
+status_reason: 'Planner prompt regression resolved and AC6 automation in place; targeted suites all green.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-14T15:08:15Z'
+top_issues: []
+waiver:
+  active: false
+quality_score: 100
+expires: '2025-11-28T15:08:15Z'
+evidence:
+  tests_reviewed: 4
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: []
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'No new attack surface was introduced.'
+  performance:
+    status: PASS
+    notes: 'Metadata + contract updates only.'
+  reliability:
+    status: PASS
+    notes: '`planner-service.prompts.spec.ts` and `planner-service.crcs.spec.ts` now pass with persisted kinds.'
+  maintainability:
+    status: PASS
+    notes: 'Added shared/db/server tests keep capability kind contract enforced.'
+recommendations:
+  immediate:
+    - action: 'Keep running the focused unit suite before release to preserve signal'
+      refs:
+        - packages/shared/__tests__/flex/capability-registration.spec.ts
+        - packages/db/__tests__/flex-capabilities-kind-migration.spec.ts
+        - packages/flex-agents-server/__tests__/planner-service.crcs.spec.ts
+        - packages/flex-agents-server/__tests__/planner-service.prompts.spec.ts
+  future:
+    - action: 'Introduce a regression suite that loads historical capability rows to confirm persisted kinds survive planner/CRCS rendering'
+      refs:
+        - packages/flex-agents-server/__tests__/planner-service.crcs.spec.ts

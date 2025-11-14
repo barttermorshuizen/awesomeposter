@@ -45,6 +45,7 @@ export const HUMAN_CLARIFY_CAPABILITY: CapabilityRegistration = {
   displayName: 'Human Operator – Brief Clarification',
   summary:
     'Collects structured clarifications from a human strategist to unblock flex planning when automated context is insufficient.',
+  kind: 'structuring',
   agentType: 'human',
   inputTraits: {
     languages: ['en'],

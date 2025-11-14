@@ -1,6 +1,7 @@
 import {
   buildPostConditionDslSnapshot,
   buildPostConditionMetadata,
+  type CapabilityKind,
   type CapabilityPostConditionDslEntry,
   type CapabilityPostConditionMetadata,
   type CapabilityRegistration
@@ -13,6 +14,7 @@ export type FlexCapabilityRow = {
   version: string
   displayName: string
   summary: string
+  kind: CapabilityKind
   agentType: 'ai' | 'human'
   inputTraits: Record<string, unknown> | null
   inputContract: Record<string, unknown> | null
@@ -57,6 +59,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      kind: payload.kind,
       agentType: payload.agentType ?? 'ai',
       inputTraitsJson: (payload.inputTraits ?? null) as any,
       inputContractJson: (payload.inputContract ?? null) as any,
@@ -86,6 +89,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           version: payload.version,
           displayName: payload.displayName,
           summary: payload.summary,
+          kind: payload.kind,
           agentType: payload.agentType ?? 'ai',
           inputTraitsJson: (payload.inputTraits ?? null) as any,
           inputContractJson: (payload.inputContract ?? null) as any,
@@ -114,6 +118,7 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       version: row.version,
       displayName: row.displayName,
       summary: row.summary,
+      kind: (row.kind ?? 'execution') as CapabilityKind,
       agentType: (row.agentType ?? 'ai') as 'ai' | 'human',
       inputTraits: (row.inputTraitsJson ?? null) as any,
       inputContract: (row.inputContractJson ?? null) as any,

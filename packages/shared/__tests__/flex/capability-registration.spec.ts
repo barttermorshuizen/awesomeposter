@@ -7,6 +7,7 @@ const baseRegistration = {
   version: '1.0.0',
   displayName: 'Copywriter Capability',
   summary: 'Writes compelling post copy',
+  kind: 'execution' as const,
   outputContract: {
     mode: 'freeform',
     instructions: 'Return the final copy block.'
@@ -69,5 +70,22 @@ describe('CapabilityRegistrationSchema postConditions', () => {
         ]
       })
     ).toThrow(/JSON-pointer path must be provided/)
+  })
+
+  it('requires a valid capability kind value', () => {
+    expect(() =>
+      CapabilityRegistrationSchema.parse({
+        ...baseRegistration,
+        // @ts-expect-error intentional invalid union entry for test coverage
+        kind: 'strategy'
+      })
+    ).toThrow(/Invalid enum value/)
+  })
+
+  it('rejects registrations that omit the kind property', () => {
+    const { kind, ...withoutKind } = baseRegistration
+    expect(() => CapabilityRegistrationSchema.parse(withoutKind as unknown as typeof baseRegistration)).toThrow(
+      /Required/
+    )
   })
 })

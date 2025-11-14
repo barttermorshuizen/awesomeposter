@@ -22,6 +22,7 @@ function buildRow(overrides: Partial<FlexCapabilityRow>): FlexCapabilityRow {
     version: '1.0.0',
     displayName: 'Writer',
     summary: 'Test capability',
+    kind: 'execution',
     agentType: 'ai',
     inputTraits: null,
     inputContract: null,
@@ -260,5 +261,40 @@ describe('FlexCapabilityRegistryService.computeCrcsSnapshot', () => {
     expect(snapshot.rows[0]?.postConditions).toEqual([
       { facet: 'final_copy', path: '/status', expression: 'status == "ready"' }
     ])
+  })
+
+  it('propagates the stored capability kind without heuristic inference', async () => {
+    const rows = [
+      buildRow({
+        capabilityId: 'strategist.explicit',
+        displayName: 'Strategist – Explicit Kind',
+        kind: 'structuring',
+        inputFacets: ['company_information'],
+        outputFacets: ['creative_brief']
+      }),
+      buildRow({
+        capabilityId: 'qa.explicit',
+        displayName: 'QA – Explicit Kind',
+        kind: 'validation',
+        inputFacets: ['creative_brief'],
+        outputFacets: ['feedback']
+      })
+    ]
+
+    const service = new FlexCapabilityRegistryService(new StubCapabilityRepository(rows))
+    const snapshot = await service.computeCrcsSnapshot({
+      envelope: {
+        objective: 'Ensure QA rows surface persisted kinds',
+        inputs: { company_information: { summary: 'Brand info' } },
+        outputContract: { mode: 'facets', facets: ['feedback'] }
+      } as any,
+      policies: { runtime: [], planner: undefined },
+      capabilities: (await service.getSnapshot()).active
+    })
+
+    const strategistRow = snapshot.rows.find((row) => row.capabilityId === 'strategist.explicit')
+    const qaRow = snapshot.rows.find((row) => row.capabilityId === 'qa.explicit')
+    expect(strategistRow?.kind).toBe('structuring')
+    expect(qaRow?.kind).toBe('validation')
   })
 })

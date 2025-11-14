@@ -148,8 +148,6 @@ const INTERNAL_CHECKLIST_LINES = [
 export function buildPlannerSystemPrompt(params: { facetTable: string; capabilityTable: string }): PlannerPromptMessage {
   const { facetTable, capabilityTable } = params
   const content = [
-    'SYSTEM:',
-    '',
     'You are the **Flex PlannerService**.  ',
     'Your job is to produce a **valid JSON plan** that exactly matches the following Zod schema.  ',
     'Do not include markdown, explanations, or comments—only the JSON object.',
@@ -371,34 +369,6 @@ function resolveRelevantPromptContext(
   return { facets: selectedFacets, capabilities: relevantCapabilities }
 }
 
-function inferCapabilityKind(capability: CapabilityRecord): 'structuring' | 'execution' | 'validation' | 'transformation' {
-  const metadata = (capability.metadata ?? {}) as Record<string, unknown>
-  const explicitKind = typeof metadata?.plannerKind === 'string' ? metadata.plannerKind : null
-  if (
-    explicitKind === 'structuring' ||
-    explicitKind === 'execution' ||
-    explicitKind === 'validation' ||
-    explicitKind === 'transformation'
-  ) {
-    return explicitKind
-  }
-
-  const id = capability.capabilityId.toLowerCase()
-  const display = capability.displayName.toLowerCase()
-  const summary = capability.summary.toLowerCase()
-
-  if (id.includes('strategy') || id.includes('planner') || display.includes('strateg') || summary.includes('brief')) {
-    return 'structuring'
-  }
-  if (id.includes('review') || id.includes('qa') || summary.includes('review') || display.includes('review')) {
-    return 'validation'
-  }
-  if (id.includes('transform') || summary.includes('transform') || summary.includes('normalize')) {
-    return 'transformation'
-  }
-  return 'execution'
-}
-
 export function buildPlannerUserPrompt(params: {
   input: PlannerServiceInput
   capabilities: CapabilityRecord[]
@@ -467,7 +437,7 @@ export function buildPlannerUserPrompt(params: {
       return [
         escapeTableCell(capability.capabilityId),
         escapeTableCell(capability.displayName),
-        escapeTableCell(inferCapabilityKind(capability)),
+        escapeTableCell(capability.kind),
         escapeTableCell(inputFacets),
         escapeTableCell(outputFacets),
         escapeTableCell('—')

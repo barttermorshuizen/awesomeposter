@@ -40,6 +40,7 @@ class InMemoryRepository implements FlexCapabilityRepository {
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      kind: payload.kind,
       agentType: payload.agentType ?? 'ai',
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,

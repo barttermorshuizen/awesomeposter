@@ -511,6 +511,9 @@ export const flexCapabilities = pgTable('flex_capabilities', {
   version: text('version').notNull(),
   displayName: text('display_name').notNull(),
   summary: text('summary').notNull(),
+  kind: text('kind')
+    .$type<'structuring' | 'execution' | 'validation' | 'transformation' | 'routing'>()
+    .notNull(),
   agentType: text('agent_type').$type<'ai' | 'human'>().notNull().default('ai'),
   inputTraitsJson: jsonb('input_traits_json').$type<Record<string, unknown> | null>().default(null),
   inputContractJson: jsonb('input_contract_json').$type<Record<string, unknown> | null>().default(null),

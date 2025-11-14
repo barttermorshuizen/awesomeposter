@@ -23,6 +23,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Strategist – Social Posting',
       summary: 'Plans social campaign briefs, rationale, and handoff notes so downstream roles stay aligned.',
+      kind: 'structuring',
       agentType: 'ai',
       inputTraits: {
         languages: ['en'],
@@ -78,6 +79,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Strategist – Positioning',
       summary: 'Translates market and competitive inputs into positioning canvases and opportunity maps.',
+      kind: 'structuring',
       agentType: 'ai',
       inputTraits: {
         languages: ['en'],
@@ -133,6 +135,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Copywriter – Social Drafting',
       summary: 'Produces social post copy variants that follow strategist direction and reviewer feedback.',
+      kind: 'execution',
       agentType: 'ai',
       inputTraits: {
         languages: ['en'],
@@ -188,6 +191,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Copywriter – Messaging Stack',
       summary: 'Converts positioning recommendations into message pillars and supporting copy guidance.',
+      kind: 'execution',
       agentType: 'ai',
       inputTraits: {
         languages: ['en'],
@@ -242,6 +246,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Designer – Visual Design',
       summary: 'Creates or sources campaign visuals aligned with the strategist brief and ongoing revisions.',
+      kind: 'execution',
       agentType: 'human',
       inputTraits: undefined,
       inputContract: {
@@ -286,6 +291,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Director – Social Review',
       summary: 'Reviews campaign assets, approves final posts, or routes feedback for targeted revisions.',
+      kind: 'validation',
       agentType: 'human',
       inputTraits: undefined,
       inputContract: {
@@ -330,6 +336,7 @@ const marketingCapabilities: MarketingCapabilityEntry[] = [
       version: '1.0.0',
       displayName: 'Director – Positioning Review',
       summary: 'Approves positioning recommendations and messaging stacks or returns targeted feedback for revisions.',
+      kind: 'validation',
       agentType: 'human',
       inputTraits: undefined,
       inputContract: {

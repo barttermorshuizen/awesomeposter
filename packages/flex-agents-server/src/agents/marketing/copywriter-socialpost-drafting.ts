@@ -41,6 +41,7 @@ export const COPYWRITER_SOCIAL_DRAFTING_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Copywriter – Social Drafting',
   summary: 'Generates or revises campaign copy using strategist output and reviewer feedback.',
+  kind: 'execution',
   inputTraits: {
     languages: ['en'],
     formats: ['linkedin_post'],

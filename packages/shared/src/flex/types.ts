@@ -110,6 +110,9 @@ export type LooseRecord = z.infer<typeof LooseRecordSchema>
 export const AgentTypeSchema = z.enum(['ai', 'human'])
 export type AgentType = z.infer<typeof AgentTypeSchema>
 
+export const CapabilityKindSchema = z.enum(['structuring', 'execution', 'validation', 'transformation', 'routing'])
+export type CapabilityKind = z.infer<typeof CapabilityKindSchema>
+
 export const ContextKnowledgeSnippetSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
@@ -711,6 +714,7 @@ const CapabilityRegistrationCoreSchema = z.object({
   version: z.string().min(1),
   displayName: z.string().min(1),
   summary: z.string().min(1),
+  kind: CapabilityKindSchema,
   agentType: AgentTypeSchema.default('ai'),
   inputTraits: InputTraitsSchema,
   inputContract: CapabilityContractSchema.optional(),
@@ -754,7 +758,7 @@ export type FlexCrcsReasonCode = z.infer<typeof FlexCrcsReasonCodeSchema>
 export const FlexCrcsCapabilityEntrySchema = z.object({
   capabilityId: z.string().min(1),
   displayName: z.string().min(1),
-  kind: z.enum(['structuring', 'execution', 'validation', 'transformation', 'routing']).default('execution'),
+  kind: CapabilityKindSchema.default('execution'),
   inputFacets: z.array(z.string().min(1)).default([]),
   outputFacets: z.array(z.string().min(1)).default([]),
   postConditions: z

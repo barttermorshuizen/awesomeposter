@@ -10,6 +10,7 @@ const capability: CapabilityRecord = {
   version: '1.0',
   displayName: 'Writer',
   summary: 'Writes content',
+  kind: 'execution',
   status: 'active',
   agentType: 'ai',
   preferredModels: [],
@@ -87,7 +88,8 @@ describe('FlexSandboxPlanInspector', () => {
     const qaCapability: CapabilityRecord = {
       ...capability,
       capabilityId: 'qa.v1',
-      displayName: 'QA Agent'
+      displayName: 'QA Agent',
+      kind: 'validation'
     }
 
     const wrapper = mount(FlexSandboxPlanInspector, {

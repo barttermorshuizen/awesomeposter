@@ -1,5 +1,6 @@
 # 11. Capability Registry & Agent Contracts
 - Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts`); the module exports the capability payload with facet-based `inputContract` / `outputContract` arrays alongside prompt assets.
+- Every registration must include an explicit `kind` drawn from `{ structuring, execution, validation, transformation, routing }`. The registry persists this value (`flex_capabilities.kind`), CRCS rows and planner prompts echo it verbatim, and heuristic inference has been removed to prevent domain-leaking guesses based on names or summaries.
 - A Nitro startup plugin consumes these exports and POSTs them to `/api/v1/flex/capabilities/register`, exercising the same validation/logging path as external registrants, and re-registers on an interval (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active.
 - `PlannerService` uses the registry to resolve capabilities by matching facet coverage alongside envelope-driven channel/format hints surfaced from TaskEnvelope inputs and planner policies.
 - `ContextBuilder` translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.

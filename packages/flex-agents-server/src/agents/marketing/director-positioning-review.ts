@@ -22,6 +22,7 @@ export const DIRECTOR_POSITIONING_REVIEW_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Director – Positioning Review',
   summary: 'Approves positioning recommendations and messaging stacks or records actionable feedback.',
+  kind: 'validation',
   inputContract: {
     mode: 'facets',
     facets: [...INPUT_FACETS]

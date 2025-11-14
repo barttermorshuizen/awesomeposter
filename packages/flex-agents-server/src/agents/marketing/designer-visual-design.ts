@@ -15,6 +15,7 @@ export const DESIGNER_VISUAL_DESIGN_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Designer – Visual Design',
   summary: 'Creates or sources campaign visuals aligned with strategist guidance and reviewer feedback.',
+  kind: 'execution',
   inputContract: {
     mode: 'facets',
     facets: [...INPUT_FACETS]

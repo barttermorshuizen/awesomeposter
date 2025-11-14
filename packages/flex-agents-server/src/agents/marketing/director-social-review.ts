@@ -15,6 +15,7 @@ export const DIRECTOR_SOCIAL_REVIEW_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Director – Social Review',
   summary: 'Reviews campaign deliverables, approves final social posts, or records structured feedback.',
+  kind: 'validation',
   inputContract: {
     mode: 'facets',
     facets: [...INPUT_FACETS]

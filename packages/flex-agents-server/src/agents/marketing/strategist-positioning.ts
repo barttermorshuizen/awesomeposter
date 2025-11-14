@@ -39,6 +39,7 @@ export const STRATEGIST_POSITIONING_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Strategist – Positioning',
   summary: 'Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation.',
+  kind: 'structuring',
   inputTraits: {
     languages: ['en'],
     strengths: ['competitive_analysis', 'market_synthesis'],

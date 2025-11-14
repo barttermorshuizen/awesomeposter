@@ -7,6 +7,7 @@ const baseCapability: CapabilityRecord = {
   version: '1.0.0',
   displayName: 'Writer',
   summary: 'Writes copy',
+  kind: 'execution',
   agentType: 'ai',
   inputContract: { mode: 'facets', facets: ['brief'] },
   outputContract: { mode: 'facets', facets: ['final_copy'] },

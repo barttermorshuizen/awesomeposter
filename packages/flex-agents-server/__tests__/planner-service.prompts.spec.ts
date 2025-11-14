@@ -43,6 +43,7 @@ function buildCapability(overrides: Partial<CapabilityRecord>): CapabilityRecord
     version: '1.0.0',
     displayName: 'Copywriter – Social Post Drafting',
     summary: 'Generates social post copy variants.',
+    kind: 'execution' as const,
     agentType: 'ai' as const,
     inputContract: {
       mode: 'facets' as const,
@@ -52,9 +53,7 @@ function buildCapability(overrides: Partial<CapabilityRecord>): CapabilityRecord
       mode: 'facets' as const,
       facets: ['post_copy']
     },
-    metadata: {
-      plannerKind: 'execution'
-    },
+    metadata: {},
     status: 'active' as const,
     registeredAt: '2024-01-01T00:00:00.000Z',
     lastSeenAt: '2024-01-01T00:00:00.000Z',
@@ -156,7 +155,7 @@ describe('planner prompt builders', () => {
     const message = buildPlannerSystemPrompt({ facetTable, capabilityTable })
     expect(message.role).toBe('system')
     const content = message.content
-    expect(content).toContain('SYSTEM:')
+    expect(content.startsWith('You are the **Flex PlannerService**.')).toBe(true)
     expect(content).toContain('### SCHEMA DEFINITION')
     expect(content).toContain('### FACET CATALOG SUMMARY')
     expect(content).toContain(facetTable)
@@ -188,7 +187,7 @@ describe('planner prompt builders', () => {
         capabilityId: 'diagnostics.RunSummary',
         displayName: 'Diagnostics – Run Summary',
         summary: 'Provides diagnostic notes when required facets are unavailable.',
-        metadata: { plannerKind: 'validation' },
+        kind: 'validation',
         inputContract: {
           mode: 'facets',
           facets: ['diagnostic_input']
@@ -276,6 +275,59 @@ describe('planner prompt builders', () => {
     expect(content).toContain('### INTERNAL CHECKLIST REMINDER')
     expect(content).toContain('Return only the final JSON object')
     expect(content).toContain('### CURRENT GRAPH CONTEXT')
+  })
+
+  it('renders capability kinds exactly as provided by the CRCS snapshot', () => {
+    const facets = [
+      buildFacet('creative_brief', 'output', 'Brief details.'),
+      buildFacet('feedback', 'output', 'QA feedback notes.')
+    ]
+    const capabilities = [
+      buildCapability({
+        capabilityId: 'strategist.Structuring',
+        displayName: 'Strategist Structuring',
+        kind: 'structuring',
+        outputFacets: ['creative_brief']
+      }),
+      buildCapability({
+        capabilityId: 'qa.Validation',
+        displayName: 'QA Validation',
+        kind: 'validation',
+        inputFacets: ['creative_brief'],
+        outputFacets: ['feedback']
+      })
+    ]
+    const crcs = buildCrcsSnapshot([
+      {
+        capabilityId: 'strategist.Structuring',
+        displayName: 'Strategist Structuring',
+        kind: 'structuring',
+        outputFacets: ['creative_brief']
+      },
+      {
+        capabilityId: 'qa.Validation',
+        displayName: 'QA Validation',
+        kind: 'validation',
+        inputFacets: ['creative_brief'],
+        outputFacets: ['feedback']
+      }
+    ])
+
+    const result = buildPlannerUserPrompt({
+      input: {
+        envelope: buildEnvelope(),
+        context: buildContext(),
+        capabilities,
+        policies: { planner: undefined, runtime: [] },
+        crcs
+      },
+      capabilities,
+      facets,
+      crcs
+    })
+
+    expect(result.capabilityTable).toContain('| strategist.Structuring | Strategist Structuring | structuring |')
+    expect(result.capabilityTable).toContain('| qa.Validation | QA Validation | validation |')
   })
 
   it('records telemetry for prompt sizes when proposing a plan', async () => {

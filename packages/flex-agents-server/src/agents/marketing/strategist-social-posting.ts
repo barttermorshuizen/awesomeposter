@@ -17,7 +17,8 @@ facetCatalog.resolveMany([...OUTPUT_FACETS], 'output')
 
 const FEEDBACK_DIRECTIVE = [
   'Review existing `feedback` entries targeting `creative_brief` or `strategic_rationale` (facet, path, message, resolution).',
-  'Carry unresolved items forward, update the referenced deliverable, then edit the matching entry (same facet/path) by setting `resolution = "addressed"` and adding a short `note` describing what changed instead of appending a duplicate.'
+  'Carry unresolved items forward, update the referenced deliverable, then edit the matching entry (same facet/path) by setting `resolution = "addressed"` and adding a short `note` describing what changed instead of appending a duplicate.',
+  'Only resolve the feedback items that target `creative_brief` or `strategic_rationale`, do not create new feedback entries.'
 ].join(' ')
 
 export const STRATEGIST_SOCIAL_POSTING_TOOLS = [HITL_TOOL_NAME, STRATEGIST_KNOWLEDGE_TOOL_NAME] as const
@@ -48,6 +49,7 @@ export const STRATEGIST_SOCIAL_POSTING_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Strategist – Social Posting',
   summary: 'Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs.',
+  kind: 'structuring',
   inputTraits: {
     languages: ['en'],
     strengths: ['campaign_planning', 'audience_strategy'],

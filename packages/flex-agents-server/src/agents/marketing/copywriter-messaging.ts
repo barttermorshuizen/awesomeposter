@@ -38,6 +38,7 @@ export const COPYWRITER_MESSAGING_CAPABILITY: CapabilityRegistration = {
   version: '1.0.0',
   displayName: 'Copywriter – Messaging Stack',
   summary: 'Converts positioning recommendations into a structured messaging hierarchy.',
+  kind: 'execution',
   inputTraits: {
     languages: ['en'],
     strengths: ['messaging_frameworks', 'tone_alignment'],

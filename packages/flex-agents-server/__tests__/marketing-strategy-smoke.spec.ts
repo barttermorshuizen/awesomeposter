@@ -27,7 +27,7 @@ class MarketingRegistryStub implements FlexCapabilityRegistryService {
     const rows = this.snapshot.active.map((capability, index) => ({
       capabilityId: capability.capabilityId,
       displayName: capability.displayName,
-      kind: 'execution' as const,
+      kind: capability.kind,
       inputFacets: capability.inputFacets ?? [],
       outputFacets: capability.outputFacets ?? [],
       reasonCodes: ['path'] as const,

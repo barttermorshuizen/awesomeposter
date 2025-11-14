@@ -34,6 +34,7 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
       version: payload.version,
       displayName: payload.displayName,
       summary: payload.summary,
+      kind: payload.kind,
       agentType: payload.agentType ?? 'ai',
       inputTraits: (payload.inputTraits ?? null) as any,
       inputContract: (payload.inputContract ?? null) as any,
@@ -86,6 +87,7 @@ describe('FlexCapabilityRegistryService', () => {
     version: '1.0.0',
     displayName: 'English Writer',
     summary: 'Writes marketing copy in English.',
+    kind: 'execution',
     agentType: 'ai',
     inputTraits: { languages: ['en'] },
     inputContract: {

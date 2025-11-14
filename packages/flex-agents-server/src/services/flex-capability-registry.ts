@@ -292,6 +292,7 @@ export class FlexCapabilityRegistryService {
       version: row.version,
       displayName: row.displayName,
       summary: row.summary,
+      kind: row.kind ?? 'execution',
       inputTraits: (row.inputTraits ?? undefined) as CapabilityRecord['inputTraits'],
       inputContract,
       outputContract,
@@ -656,7 +657,7 @@ export class FlexCapabilityRegistryService {
       rows.push({
         capabilityId: entry.capability.capabilityId,
         displayName: entry.capability.displayName,
-        kind: inferCapabilityKind(entry.capability),
+        kind: entry.capability.kind,
         inputFacets: this.getCapabilityFacets(entry.capability, 'input'),
         outputFacets: this.getCapabilityFacets(entry.capability, 'output'),
         postConditions: this.summarizePostConditions(entry.capability),
@@ -719,35 +720,6 @@ export class FlexCapabilityRegistryService {
     }))
   }
 
-}
-
-function inferCapabilityKind(capability: CapabilityRecord): 'structuring' | 'execution' | 'validation' | 'transformation' | 'routing' {
-  const metadata = (capability.metadata ?? {}) as Record<string, unknown>
-  const explicitKind = typeof metadata?.plannerKind === 'string' ? metadata.plannerKind : null
-  if (
-    explicitKind === 'structuring' ||
-    explicitKind === 'execution' ||
-    explicitKind === 'validation' ||
-    explicitKind === 'transformation' ||
-    explicitKind === 'routing'
-  ) {
-    return explicitKind
-  }
-
-  const id = capability.capabilityId.toLowerCase()
-  const display = capability.displayName.toLowerCase()
-  const summary = capability.summary.toLowerCase()
-
-  if (id.includes('strategy') || id.includes('planner') || display.includes('strateg') || summary.includes('brief')) {
-    return 'structuring'
-  }
-  if (id.includes('review') || id.includes('qa') || summary.includes('review') || display.includes('review')) {
-    return 'validation'
-  }
-  if (id.includes('transform') || summary.includes('transform') || summary.includes('normalize')) {
-    return 'transformation'
-  }
-  return 'execution'
 }
 
 let singleton: FlexCapabilityRegistryService | null = null
