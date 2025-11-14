@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { CapabilityRegistration } from '@awesomeposter/shared'
+import {
+  buildPostConditionMetadata,
+  buildPostConditionDslSnapshot,
+  type CapabilityRegistration
+} from '@awesomeposter/shared'
 
 import { STRATEGIST_SOCIAL_POSTING_CAPABILITY } from '../src/agents/marketing/strategist-social-posting'
 import { COPYWRITER_SOCIAL_DRAFTING_CAPABILITY } from '../src/agents/marketing/copywriter-socialpost-drafting'
@@ -28,6 +32,9 @@ class InMemoryRepository implements FlexCapabilityRepository {
     const existing = this.store.get(payload.capabilityId)
     const registeredAt = existing?.registeredAt ?? now
     const createdAt = existing?.createdAt ?? now
+    const postConditions = payload.postConditions && payload.postConditions.length ? payload.postConditions : null
+    const postConditionsDsl = postConditions ? buildPostConditionDslSnapshot(postConditions) : null
+    const postConditionMetadata = postConditions ? buildPostConditionMetadata(postConditions) : null
     const row: FlexCapabilityRow = {
       capabilityId: payload.capabilityId,
       version: payload.version,
@@ -45,6 +52,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       instructionTemplates: (payload.instructionTemplates ?? null) as any,
       assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
+      postConditionsDsl,
+      postConditionMetadata,
       status: 'active',
       lastSeenAt: now,
       registeredAt,

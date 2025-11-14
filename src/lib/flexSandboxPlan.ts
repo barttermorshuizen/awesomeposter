@@ -110,20 +110,25 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
   const edgesRaw = Array.isArray((planRecord as Record<string, unknown>).edges)
     ? ((planRecord as Record<string, unknown>).edges as unknown[])
     : []
-  const edges: FlexSandboxPlanEdge[] = edgesRaw
-    .filter((edge): edge is { from: unknown; to: unknown; reason?: unknown } => !!edge && typeof edge === 'object')
-    .map((edge) => {
-      const record = edge as { from?: unknown; to?: unknown; reason?: unknown }
-      const from = typeof record.from === 'string' ? record.from : ''
-      const to = typeof record.to === 'string' ? record.to : ''
-      if (!from || !to) return null
-      return {
-        from,
-        to,
-        reason: typeof record.reason === 'string' ? record.reason : undefined
-      }
+  const edges: FlexSandboxPlanEdge[] = []
+  for (const edge of edgesRaw) {
+    if (!edge || typeof edge !== 'object') continue
+    const record = edge as { from?: unknown; to?: unknown; reason?: unknown }
+    const from = typeof record.from === 'string' ? record.from : ''
+    const to = typeof record.to === 'string' ? record.to : ''
+    if (!from || !to) continue
+    const reason =
+      typeof record.reason === 'string'
+        ? record.reason
+        : record.reason === null
+          ? null
+          : undefined
+    edges.push({
+      from,
+      to,
+      ...(reason !== undefined ? { reason } : {})
     })
-    .filter((edge): edge is FlexSandboxPlanEdge => Boolean(edge))
+  }
 
   return {
     runId: typeof planRecord.runId === 'string' ? planRecord.runId : null,

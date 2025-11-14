@@ -431,7 +431,6 @@ const parseHitlRequestPayload = (payload: unknown): HitlRequestEventPayload | nu
   const parsedPayload: HitlRequestPayload = {
     question,
     kind,
-    options: [],
     allowFreeForm,
     urgency,
     ...(additionalContext ? { additionalContext } : {})

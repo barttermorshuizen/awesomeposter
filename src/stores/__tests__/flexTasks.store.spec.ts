@@ -100,7 +100,7 @@ describe('useFlexTasksStore', () => {
 
   it('hydrates tasks from backlog endpoint', async () => {
     const store = useFlexTasksStore()
-    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch).mockResolvedValue({
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({
         ok: true,
@@ -127,7 +127,7 @@ describe('useFlexTasksStore', () => {
   it('submits resume payload to flex run.resume endpoint', async () => {
     const store = useFlexTasksStore()
     store.handleNodeStart(buildNodeStartEvent())
-    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ ok: true, tasks: [] })
@@ -173,7 +173,7 @@ describe('useFlexTasksStore', () => {
     const store = useFlexTasksStore()
     store.handleNodeStart(buildNodeStartEvent())
 
-    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch).mockRejectedValue(new Error('network failure'))
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network failure'))
     vi.mocked(postFlexEventStream).mockReturnValue({
       abort: vi.fn(),
       done: Promise.resolve()
@@ -193,7 +193,7 @@ describe('useFlexTasksStore', () => {
   it('declines tasks via flex tasks decline endpoint', async () => {
     const store = useFlexTasksStore()
     store.handleNodeStart(buildNodeStartEvent())
-    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ ok: true, tasks: [] })
@@ -252,7 +252,10 @@ describe('useFlexTasksStore', () => {
   it('preserves colon-delimited identifiers when declining tasks', async () => {
     const store = useFlexTasksStore()
     const nodeStart = buildNodeStartEvent()
-    nodeStart.payload.assignment.assignmentId = 'flex_task_alpha:HumanAgent_clarifyBrief_1'
+    const nodeStartPayload = nodeStart.payload as {
+      assignment: { assignmentId: string }
+    }
+    nodeStartPayload.assignment.assignmentId = 'flex_task_alpha:HumanAgent_clarifyBrief_1'
     store.handleNodeStart(nodeStart)
 
     vi.mocked(postFlexEventStream).mockImplementation((options) => {
@@ -283,7 +286,7 @@ describe('useFlexTasksStore', () => {
         done: Promise.resolve()
       }
     })
-    const fetchMock = vi.spyOn(global, 'fetch' as typeof fetch).mockResolvedValue({
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({ ok: true, tasks: [] })
     } as unknown as Response)

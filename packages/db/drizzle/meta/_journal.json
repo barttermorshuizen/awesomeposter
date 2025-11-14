@@ -92,6 +92,13 @@
       "when": 1776000000000,
       "tag": "0013_flex_hitl_operator_prompts",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1763118447916,
+      "tag": "0013_charming_star_brand",
+      "breakpoints": true
     }
   ]
 }

@@ -64,11 +64,18 @@ function derivePlaceholderLabel(label: string): string {
   return `${label} not provided`
 }
 
+function lastPathSegment(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0)
+  if (!segments.length) return ''
+  return segments[segments.length - 1] ?? ''
+}
+
 function extractExtension(uri: string): string | null {
   const cleaned = uri.split(/[?#]/)[0] ?? uri
-  const lastSegment = cleaned.split('/').at(-1) ?? ''
+  const lastSegment = lastPathSegment(cleaned)
   if (!lastSegment.includes('.')) return null
-  const ext = lastSegment.split('.').at(-1)
+  const parts = lastSegment.split('.')
+  const ext = parts.length ? parts[parts.length - 1] : null
   return ext ? ext.toLowerCase() : null
 }
 

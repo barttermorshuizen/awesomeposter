@@ -7,7 +7,7 @@ import { useFlexTasksStore } from '@/stores/flexTasks'
 import type { FlexEventWithId } from '@/lib/flex-sse'
 
 const BASE_TIMESTAMP = '2025-01-01T00:00:00.000Z'
-let listFlexAssetsSpy: ReturnType<typeof vi.spyOn>
+let listFlexAssetsSpy: ReturnType<typeof vi.spyOn<any, any>>
 
 function createPostVisualTaskEvent(): FlexEventWithId {
   return {

@@ -523,6 +523,8 @@ export const flexCapabilities = pgTable('flex_capabilities', {
   instructionTemplatesJson: jsonb('instruction_templates_json').$type<Record<string, unknown> | null>().default(null),
   assignmentDefaultsJson: jsonb('assignment_defaults_json').$type<Record<string, unknown> | null>().default(null),
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown> | null>().default(null),
+  postConditionsDslJson: jsonb('post_conditions_dsl_json').$type<Record<string, unknown>[] | null>().default(null),
+  postConditionsCompiledJson: jsonb('post_conditions_compiled_json').$type<Record<string, unknown> | null>().default(null),
   status: text('status').$type<'active' | 'inactive'>().notNull().default('active'),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   registeredAt: timestamp('registered_at', { withTimezone: true }).defaultNow(),

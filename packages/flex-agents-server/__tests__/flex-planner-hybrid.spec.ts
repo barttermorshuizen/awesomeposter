@@ -24,6 +24,19 @@ function buildPlanner(plannerService: PlannerServiceInterface) {
   const capabilityRegistry = {
     async getSnapshot() {
       return { active: [ACTIVE_CAPABILITY], all: [ACTIVE_CAPABILITY] }
+    },
+    async computeCrcsSnapshot() {
+      return {
+        rows: [],
+        totalRows: 0,
+        mrcsSize: 0,
+        reasonCounts: {},
+        rowCap: undefined,
+        truncated: false,
+        pinnedCapabilityIds: [],
+        mrcsCapabilityIds: [],
+        missingPinnedCapabilityIds: []
+      }
     }
   }
 

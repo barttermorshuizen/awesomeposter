@@ -1,4 +1,6 @@
 import { ZodError, z, type ZodTypeAny } from 'zod'
+import type { JsonLogicExpression } from '../condition-dsl/types.js'
+import { JsonLogicExpressionSchema } from '../condition-dsl/json-logic-schema.js'
 
 const LooseRecordSchema = z.record(z.unknown())
 
@@ -21,7 +23,7 @@ export const ConditionDslWarningSchema = z.object({
 
 export const RuntimeConditionDslSchema = z.object({
   dsl: z.string().min(1),
-  jsonLogic: LooseRecordSchema.optional(),
+  jsonLogic: JsonLogicExpressionSchema.optional(),
   canonicalDsl: z.string().min(1).optional(),
   warnings: z.array(ConditionDslWarningSchema).optional(),
   variables: z.array(z.string().min(1)).optional()

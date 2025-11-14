@@ -129,8 +129,28 @@ describe('FlexSandboxPlanInspector', () => {
           derivedFrom: null,
           routing: {
             routes: [
-              { to: 'node-a', label: 'High score', condition: { dsl: 'score > 0.8', jsonLogic: { '>': [{ var: 'score' }, 0.8] } } },
-              { to: 'node-b', label: 'Fallback', condition: { dsl: 'score <= 0.8', jsonLogic: { '<=': [{ var: 'score' }, 0.8] } } }
+              {
+                to: 'node-a',
+                label: 'High score',
+                condition: {
+                  dsl: 'score > 0.8',
+                  jsonLogic: { '>': [{ var: 'score' }, 0.8] },
+                  warnings: [],
+                  canonicalDsl: null,
+                  variables: []
+                }
+              },
+              {
+                to: 'node-b',
+                label: 'Fallback',
+                condition: {
+                  dsl: 'score <= 0.8',
+                  jsonLogic: { '<=': [{ var: 'score' }, 0.8] },
+                  warnings: [],
+                  canonicalDsl: null,
+                  variables: []
+                }
+              }
             ],
             elseTo: 'node-c'
           },

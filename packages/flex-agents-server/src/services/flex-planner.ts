@@ -3,15 +3,20 @@ import type {
   AssignmentSnapshot,
   CapabilityRecord,
   ContextBundle,
+  FlexPlanNodeContracts,
+  FlexPlanNodeFacets,
+  FlexPlanNodeProvenance,
+  GoalConditionResult,
   JsonSchemaContract,
   NodeContract,
   OutputContract,
   TaskEnvelope,
   TaskPolicies,
   ConditionalRoutingNode,
-  GoalConditionResult,
   FlexCrcsSnapshot
 } from '@awesomeposter/shared'
+
+export type { FlexPlanNodeContracts, FlexPlanNodeFacets, FlexPlanNodeProvenance } from '@awesomeposter/shared'
 import {
   FacetContractCompiler,
   type FacetCatalog,
@@ -52,21 +57,6 @@ export type FlexPlanEdge = {
   from: string
   to: string
   reason?: string
-}
-
-export type FlexPlanNodeContracts = {
-  input?: JsonSchemaContract
-  output: OutputContract
-}
-
-export type FlexPlanNodeFacets = {
-  input: string[]
-  output: string[]
-}
-
-export type FlexPlanNodeProvenance = {
-  input?: FacetProvenance[]
-  output?: FacetProvenance[]
 }
 
 export type FlexPlanExecutor = {
@@ -573,7 +563,17 @@ export class FlexPlanner {
       mrcsSize: crcs.mrcsSize,
       reasonCounts: crcs.reasonCounts,
       rowCap: crcs.rowCap,
-      missingPinnedCapabilities: crcs.missingPinnedCapabilityIds.length
+      missingPinnedCapabilities: crcs.missingPinnedCapabilityIds.length,
+      rows: crcs.rows.map((row) => ({
+        capabilityId: row.capabilityId,
+        displayName: row.displayName,
+        kind: row.kind,
+        inputFacets: row.inputFacets,
+        outputFacets: row.outputFacets,
+        postConditions: row.postConditions,
+        reasonCodes: row.reasonCodes,
+        source: row.source
+      }))
     }
 
     return {

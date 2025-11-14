@@ -178,7 +178,32 @@ describe('FlexRunCoordinator sandbox emission', () => {
           tags: [],
           specialInstructions: []
         },
-        plannerAttempts: 1
+        plannerAttempts: 1,
+        crcs: {
+          totalRows: 1,
+          mrcsSize: 1,
+          reasonCounts: { path: 1 },
+          rowCap: 50,
+          missingPinnedCapabilities: 0,
+          rows: [
+            {
+              capabilityId: 'writer.conditions',
+              displayName: 'Writer With Conditions',
+              kind: 'execution',
+              inputFacets: ['objectiveBrief'],
+              outputFacets: ['copyVariants'],
+              postConditions: [
+                {
+                  facet: 'copyVariants',
+                  path: '/status',
+                  expression: 'status == "ready"'
+                }
+              ],
+              reasonCodes: ['path'],
+              source: 'expansion'
+            }
+          ]
+        }
       }
     }
 
@@ -220,6 +245,11 @@ describe('FlexRunCoordinator sandbox emission', () => {
           metadata: expect.objectContaining({ derived: true })
         })
       ]
+    })
+    expect((generated?.payload as any)?.crcs?.rows[0]?.postConditions?.[0]).toMatchObject({
+      facet: 'copyVariants',
+      path: '/status',
+      expression: 'status == "ready"'
     })
   })
 

@@ -146,11 +146,18 @@ const NON_IMAGE_EXTENSIONS = new Set([
   'csv'
 ])
 
+function lastPathSegment(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0)
+  if (!segments.length) return ''
+  return segments[segments.length - 1] ?? ''
+}
+
 function extractExtension(url: string): string | null {
   const trimmed = url.split(/[?#]/)[0] ?? url
-  const lastSegment = trimmed.split('/').at(-1) ?? ''
+  const lastSegment = lastPathSegment(trimmed)
   if (!lastSegment.includes('.')) return null
-  const extension = lastSegment.split('.').at(-1)
+  const parts = lastSegment.split('.')
+  const extension = parts.length ? parts[parts.length - 1] : null
   return extension ? extension.toLowerCase() : null
 }
 

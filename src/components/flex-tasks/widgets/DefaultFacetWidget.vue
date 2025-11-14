@@ -88,7 +88,11 @@ function onUpdateNumber(value: string | number | null) {
   emit('update:modelValue', Number.isNaN(numeric) ? null : numeric)
 }
 
-function onUpdateBoolean(value: boolean) {
+function onUpdateBoolean(value: boolean | null) {
+  if (value === null) {
+    emit('update:modelValue', null)
+    return
+  }
   emit('update:modelValue', value)
 }
 

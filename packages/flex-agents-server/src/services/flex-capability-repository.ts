@@ -1,4 +1,10 @@
-import { type CapabilityRegistration } from '@awesomeposter/shared'
+import {
+  buildPostConditionDslSnapshot,
+  buildPostConditionMetadata,
+  type CapabilityPostConditionDslEntry,
+  type CapabilityPostConditionMetadata,
+  type CapabilityRegistration
+} from '@awesomeposter/shared'
 import { getDb, flexCapabilities } from '@awesomeposter/db'
 import { inArray } from 'drizzle-orm'
 
@@ -19,6 +25,8 @@ export type FlexCapabilityRow = {
   instructionTemplates: Record<string, unknown> | null
   assignmentDefaults: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
+  postConditionsDsl: CapabilityPostConditionDslEntry[] | null
+  postConditionMetadata: CapabilityPostConditionMetadata | null
   status: 'active' | 'inactive'
   lastSeenAt: Date | null
   registeredAt: Date | null
@@ -40,6 +48,10 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
     { now }: { now: Date },
     facets: { input: string[]; output: string[] }
   ): Promise<void> {
+    const postConditions = payload.postConditions && payload.postConditions.length ? payload.postConditions : null
+    const postConditionsDsl = postConditions ? buildPostConditionDslSnapshot(postConditions) : null
+    const postConditionMetadata = postConditions ? buildPostConditionMetadata(postConditions) : null
+
     const base = {
       capabilityId: payload.capabilityId,
       version: payload.version,
@@ -57,6 +69,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       instructionTemplatesJson: (payload.instructionTemplates ?? null) as any,
       assignmentDefaultsJson: (payload.assignmentDefaults ?? null) as any,
       metadataJson: (payload.metadata ?? null) as any,
+      postConditionsDslJson: (postConditionsDsl ?? null) as any,
+      postConditionsCompiledJson: (postConditionMetadata ?? null) as any,
       status: 'active' as const,
       lastSeenAt: now,
       updatedAt: now,
@@ -84,6 +98,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
           instructionTemplatesJson: (payload.instructionTemplates ?? null) as any,
           assignmentDefaultsJson: (payload.assignmentDefaults ?? null) as any,
           metadataJson: (payload.metadata ?? null) as any,
+          postConditionsDslJson: (postConditionsDsl ?? null) as any,
+          postConditionsCompiledJson: (postConditionMetadata ?? null) as any,
           status: 'active',
           lastSeenAt: now,
           updatedAt: now
@@ -110,6 +126,8 @@ export class DatabaseFlexCapabilityRepository implements FlexCapabilityRepositor
       instructionTemplates: (row.instructionTemplatesJson ?? null) as any,
       assignmentDefaults: (row.assignmentDefaultsJson ?? null) as any,
       metadata: (row.metadataJson ?? null) as any,
+      postConditionsDsl: (row.postConditionsDslJson ?? null) as any,
+      postConditionMetadata: (row.postConditionsCompiledJson ?? null) as any,
       status: (row.status as 'active' | 'inactive') ?? 'inactive',
       lastSeenAt: row.lastSeenAt ?? null,
       registeredAt: row.registeredAt ?? null,

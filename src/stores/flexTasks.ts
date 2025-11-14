@@ -1,9 +1,12 @@
-import { computed, ref } from 'vue'
+import { computed, ref, unref } from 'vue'
 import { defineStore } from 'pinia'
 import type {
+  FacetProvenance,
   FlexFacetProvenanceMap,
   FlexPlanNodeContracts,
-  FlexPlanNodeFacets
+  FlexPlanNodeFacets,
+  JsonSchemaContract,
+  OutputContract
 } from '@awesomeposter/shared'
 import { useHitlStore } from '@/stores/hitl'
 import { useNotificationsStore } from '@/stores/notifications'
@@ -72,6 +75,7 @@ export interface PostVisualAssetRecord {
   ordering: number
   originalName?: string | null
   mimeType?: string | null
+  filename?: string | null
 }
 
 export interface PostVisualInputFacetAssetRecord {
@@ -342,15 +346,40 @@ function cloneIfObject<T>(value: T): T {
   }
 }
 
+function normalizeFacetProvenanceEntry(entry: unknown): FacetProvenance | null {
+  if (!isRecord(entry)) return null
+  const facet = toStringOrNull(entry.facet)
+  const title = toStringOrNull(entry.title)
+  const pointer = toStringOrNull(entry.pointer)
+  const direction = entry.direction === 'input' || entry.direction === 'output' ? entry.direction : null
+  if (!facet || !title || !pointer || !direction) return null
+  return {
+    facet,
+    title,
+    pointer,
+    direction
+  }
+}
+
+function normalizeFacetProvenanceList(value: unknown): FacetProvenance[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const normalized: FacetProvenance[] = []
+  for (const entry of value) {
+    const parsed = normalizeFacetProvenanceEntry(entry)
+    if (parsed) normalized.push(parsed)
+  }
+  return normalized.length ? normalized : undefined
+}
+
 function parseContracts(input: unknown): FlexPlanNodeContracts | null {
   if (!isRecord(input)) return null
   const output = input.output
   if (!output || typeof output !== 'object') return null
   const parsed: FlexPlanNodeContracts = {
-    output: cloneIfObject(output)
+    output: cloneIfObject(output) as OutputContract
   }
   if (input.input && typeof input.input === 'object') {
-    parsed.input = cloneIfObject(input.input)
+    parsed.input = cloneIfObject(input.input) as JsonSchemaContract
   }
   return parsed
 }
@@ -369,16 +398,10 @@ function parseFacets(input: unknown): FlexPlanNodeFacets | null {
 function parseFacetProvenance(input: unknown): FlexFacetProvenanceMap | null {
   if (!isRecord(input)) return null
   const map: FlexFacetProvenanceMap = {}
-  if (Array.isArray(input.input)) {
-    map.input = input.input
-      .filter((entry) => isRecord(entry))
-      .map((entry) => cloneIfObject(entry))
-  }
-  if (Array.isArray(input.output)) {
-    map.output = input.output
-      .filter((entry) => isRecord(entry))
-      .map((entry) => cloneIfObject(entry))
-  }
+  const inputProvenance = normalizeFacetProvenanceList(input.input)
+  if (inputProvenance) map.input = inputProvenance
+  const outputProvenance = normalizeFacetProvenanceList(input.output)
+  if (outputProvenance) map.output = outputProvenance
   if (!map.input?.length && !map.output?.length) return null
   return map
 }
@@ -652,10 +675,14 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
     updateTaskMap((map) => {
       const current = map.get(taskId)
       if (!current) return
-      const message =
-        toStringOrNull(event.message) ??
-        (isRecord(event.payload) && isRecord(event.payload.error) && toStringOrNull(event.payload.error.message)) ??
-        'Submission failed.'
+      let payloadErrorMessage: string | null = null
+      if (isRecord(event.payload)) {
+        const payloadError = (event.payload as Record<string, unknown>).error
+        if (isRecord(payloadError)) {
+          payloadErrorMessage = toStringOrNull(payloadError.message)
+        }
+      }
+      const message = toStringOrNull(event.message) ?? payloadErrorMessage ?? 'Submission failed.'
       map.set(taskId, {
         ...current,
         status: 'awaiting_submission',
@@ -747,7 +774,7 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
   }
 
   function serializeOperator() {
-    const profile = hitlStore.operatorProfile?.value ?? null
+    const profile = unref(hitlStore.operatorProfile) ?? null
     if (!profile) return null
     const id = toStringOrNull(profile.id)
     const displayName = toStringOrNull(profile.displayName)
@@ -964,10 +991,11 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
       })
       const body = await res.json().catch(() => null)
       if (!res.ok || !isRecord(body) || !isRecord(body.asset)) {
-        const message =
-          (isRecord(body) && (toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error))) ||
-          `Failed to upload asset (${res.status})`
-        throw new Error(message ?? 'Failed to upload asset.')
+        const statusMessage = isRecord(body)
+          ? toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error)
+          : null
+        const message = statusMessage ?? `Failed to upload asset (${res.status})`
+        throw new Error(message)
       }
 
       const assetRecord = body.asset as Record<string, unknown>
@@ -989,13 +1017,15 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
         toStringOrNull(assetRecord.mimeType) ??
         (isRecord(assetRecord.meta) ? toStringOrNull((assetRecord.meta as Record<string, unknown>).mimeType) : null) ??
         file.type ?? null
+      const filename = toStringOrNull(assetRecord.filename) ?? null
 
       return {
         assetId,
         url,
         ordering,
         originalName,
-        mimeType
+        mimeType,
+        filename
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Asset upload failed.'
@@ -1018,10 +1048,11 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
       })
       const body = await res.json().catch(() => null)
       if (!res.ok || !isRecord(body)) {
-        const message =
-          (isRecord(body) && (toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error))) ??
-          `Failed to load flex assets (${res.status})`
-        throw new Error(message ?? 'Failed to load flex assets.')
+        const statusMessage = isRecord(body)
+          ? toStringOrNull(body.statusMessage) ?? toStringOrNull(body.error)
+          : null
+        const message = statusMessage ?? `Failed to load flex assets (${res.status})`
+        throw new Error(message)
       }
       const items = Array.isArray(body.assets) ? body.assets : []
       const results: PostVisualAssetRecord[] = []
@@ -1035,7 +1066,8 @@ export const useFlexTasksStore = defineStore('flexTasks', () => {
           url,
           ordering: toNumberOrNull(entry.ordering) ?? results.length,
           originalName: toStringOrNull(entry.originalName),
-          mimeType: toStringOrNull(entry.mimeType)
+          mimeType: toStringOrNull(entry.mimeType),
+          filename: toStringOrNull(entry.filename)
         })
       }
       return results

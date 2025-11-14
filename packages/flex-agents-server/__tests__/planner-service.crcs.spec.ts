@@ -34,6 +34,8 @@ function buildRow(overrides: Partial<FlexCapabilityRow>): FlexCapabilityRow {
     instructionTemplates: null,
     assignmentDefaults: null,
     metadata: null,
+    postConditionsDsl: null,
+    postConditionMetadata: null,
     status: 'active',
     lastSeenAt: now,
     registeredAt: now,
@@ -148,5 +150,80 @@ describe('FlexCapabilityRegistryService.computeCrcsSnapshot', () => {
       ]
     })
     expect(snapshot.missingPinnedCapabilityIds).toContain('facet:nonexistent_facet')
+  })
+
+  it('excludes multi-input capabilities until all required input facets are reachable', async () => {
+    const rows = [
+      buildRow({
+        capabilityId: 'writer.single_input',
+        displayName: 'Single Input Writer',
+        inputFacets: ['post_context'],
+        outputFacets: ['post_copy']
+      }),
+      buildRow({
+        capabilityId: 'writer.multi_input',
+        displayName: 'Multi Input Writer',
+        inputFacets: ['post_context', 'company_information'],
+        outputFacets: ['post_copy']
+      })
+    ]
+    const service = new FlexCapabilityRegistryService(new StubCapabilityRepository(rows))
+    const activeCapabilities = (await service.getSnapshot()).active
+    const snapshot = await service.computeCrcsSnapshot({
+      envelope: {
+        objective: 'Announce new hire',
+        inputs: {
+          post_context: {
+            summary: 'Introductory copy'
+          }
+        },
+        outputContract: { mode: 'facets', facets: ['post_copy'] }
+      } as any,
+      policies: { runtime: [], planner: undefined },
+      capabilities: activeCapabilities,
+      graphContext: undefined
+    })
+    const capabilityIds = snapshot.rows.map((row) => row.capabilityId)
+    expect(capabilityIds).toContain('writer.single_input')
+    expect(capabilityIds).not.toContain('writer.multi_input')
+  })
+
+  it('includes post-condition summaries in CRCS rows', async () => {
+    const rows = [
+      buildRow({
+        capabilityId: 'writer.conditions',
+        displayName: 'Writer With Conditions',
+        inputFacets: ['brief'],
+        outputFacets: ['final_copy'],
+        postConditionMetadata: {
+          conditions: [
+            {
+              facet: 'final_copy',
+              path: '/status',
+              condition: {
+                dsl: 'status == "ready"',
+                canonicalDsl: 'status == "ready"',
+                jsonLogic: { '==': [{ var: 'status' }, 'ready'] }
+              }
+            }
+          ],
+          guards: [{ facet: 'final_copy', paths: ['/status'] }]
+        }
+      })
+    ]
+    const service = new FlexCapabilityRegistryService(new StubCapabilityRepository(rows))
+    const activeCapabilities = (await service.getSnapshot()).active
+    const snapshot = await service.computeCrcsSnapshot({
+      envelope: {
+        objective: 'Test',
+        inputs: { brief: { summary: 'test' } },
+        outputContract: { mode: 'facets', facets: ['final_copy'] }
+      } as any,
+      policies: { runtime: [], planner: undefined },
+      capabilities: activeCapabilities
+    })
+    expect(snapshot.rows[0]?.postConditions).toEqual([
+      { facet: 'final_copy', path: '/status', expression: 'status == "ready"' }
+    ])
   })
 })

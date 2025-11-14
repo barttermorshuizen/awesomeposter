@@ -1,6 +1,20 @@
-import { z } from 'zod'
+import { ZodError, z } from 'zod'
 import { RuntimeConditionDslSchema, TaskPoliciesSchema } from './policies.js'
-import type { JsonLogicExpression } from '../condition-dsl/types.js'
+import { JsonSchemaShapeSchema, type JsonSchemaShape } from './json-schema.js'
+import { JsonLogicExpressionSchema } from '../condition-dsl/json-logic-schema.js'
+export { JsonSchemaShapeSchema } from './json-schema.js'
+export type { JsonSchemaShape } from './json-schema.js'
+import {
+  ConditionDslValidationError,
+  normalizeConditionInput,
+  type ConditionValidationResult
+} from '../condition-dsl/validation.js'
+import type {
+  ConditionComparisonOperator,
+  ConditionDslError,
+  ConditionVariableCatalog,
+  JsonLogicExpression
+} from '../condition-dsl/types.js'
 
 import type { RuntimePolicyConditionDsl } from './policies.js'
 
@@ -10,13 +24,6 @@ import type { RuntimePolicyConditionDsl } from './policies.js'
  * TypeScript type via `z.infer` so downstream packages can leverage
  * the same runtime validation and static typing.
  */
-
-/**
- * Generic JSON Schema placeholder (accept any valid JSON object) used when
- * callers supply arbitrary structured output expectations.
- */
-export const JsonSchemaShapeSchema = z.object({}).passthrough()
-export type JsonSchemaShape = z.infer<typeof JsonSchemaShapeSchema>
 
 const JsonSchemaContractCore = z.object({
   /**
@@ -214,6 +221,27 @@ export type FlexFacetProvenanceMap = {
 }
 
 /**
+ * Canonical contracts persisted on each flex plan node.
+ */
+export type FlexPlanNodeContracts = {
+  input?: JsonSchemaContract | null
+  output: OutputContract
+}
+
+/**
+ * Normalized facet lists advertised by a flex plan node.
+ */
+export type FlexPlanNodeFacets = {
+  input: string[]
+  output: string[]
+}
+
+/**
+ * Provenance metadata describing how a node's facet schema was composed.
+ */
+export type FlexPlanNodeProvenance = FlexFacetProvenanceMap
+
+/**
  * Contract describing expectations attached to a specific plan node.
  */
 export const NodeContractSchema = z.object({
@@ -255,6 +283,52 @@ export const FacetConditionSchema = z
   .strict()
 export type FacetCondition = z.infer<typeof FacetConditionSchema>
 
+export type CapabilityPostConditionDslEntry = {
+  facet: string
+  path: string
+  condition: {
+    dsl: string
+  }
+}
+
+export type CapabilityPostConditionGuard = {
+  facet: string
+  paths: string[]
+}
+
+export type CapabilityPostConditionMetadata = {
+  conditions: FacetCondition[]
+  guards: CapabilityPostConditionGuard[]
+}
+
+export function buildPostConditionDslSnapshot(conditions: FacetCondition[]): CapabilityPostConditionDslEntry[] {
+  if (!conditions.length) return []
+  return conditions.map((condition) => ({
+    facet: condition.facet,
+    path: condition.path,
+    condition: {
+      dsl: condition.condition.dsl
+    }
+  }))
+}
+
+export function buildPostConditionMetadata(conditions: FacetCondition[]): CapabilityPostConditionMetadata {
+  const guardMap = new Map<string, Set<string>>()
+  for (const entry of conditions) {
+    const paths = guardMap.get(entry.facet) ?? new Set<string>()
+    paths.add(entry.path)
+    guardMap.set(entry.facet, paths)
+  }
+  const guards: CapabilityPostConditionGuard[] = Array.from(guardMap.entries()).map(([facet, paths]) => ({
+    facet,
+    paths: Array.from(paths)
+  }))
+  return {
+    conditions,
+    guards
+  }
+}
+
 /**
  * Helper type for consumers who only require direct access to the DSL payload.
  * Exposed to avoid re-importing the policies module in downstream packages.
@@ -264,8 +338,6 @@ export type FacetConditionDsl = RuntimePolicyConditionDsl
 /**
  * Result payload emitted after evaluating a single goal condition.
  */
-const JsonLogicExpressionSchema = z.custom<JsonLogicExpression>(() => true)
-
 export const GoalConditionResultSchema = z
   .object({
     facet: z.string().min(1),
@@ -376,7 +448,6 @@ export const FlexEventTypeSchema = z.enum([
   'validation_error',
   'policy_triggered',
   'policy_update',
-  'feedback_resolution',
   'goal_condition_failed',
   'log',
   'complete'
@@ -447,6 +518,10 @@ type ContractCarrier = {
   outputContract?: CapabilityContract | null
 }
 
+type PostConditionCarrier = {
+  postConditions?: FacetCondition[] | null
+}
+
 function normalizeCapabilityContracts<T extends ContractCarrier>(value: T) {
   const inputContract = value.inputContract ?? null
   const outputContract = value.outputContract ?? null
@@ -457,6 +532,11 @@ function normalizeCapabilityContracts<T extends ContractCarrier>(value: T) {
   }
 }
 
+function normalizeCapabilityPayload<T extends ContractCarrier & PostConditionCarrier>(value: T) {
+  const contracts = normalizeCapabilityContracts(value)
+  return normalizePostConditions(contracts)
+}
+
 function ensureCapabilityContracts(value: ContractCarrier, ctx: z.RefinementCtx) {
   if (!value.outputContract) {
     ctx.addIssue({
@@ -465,6 +545,165 @@ function ensureCapabilityContracts(value: ContractCarrier, ctx: z.RefinementCtx)
       message: 'Capability registrations must include an `outputContract`.'
     })
   }
+}
+
+function normalizePostConditions<T extends PostConditionCarrier>(value: T) {
+  if (!value.postConditions) {
+    if (value.postConditions === undefined) {
+      return value
+    }
+    const clone = { ...value }
+    delete (clone as PostConditionCarrier).postConditions
+    return clone
+  }
+  if (!value.postConditions.length) {
+    return {
+      ...value,
+      postConditions: []
+    }
+  }
+  const compiled = compileCapabilityPostConditions(value.postConditions)
+  return {
+    ...value,
+    postConditions: compiled
+  }
+}
+
+function compileCapabilityPostConditions(conditions: FacetCondition[]): FacetCondition[] {
+  const results: FacetCondition[] = []
+  const seen = new Set<string>()
+
+  conditions.forEach((entry, index) => {
+    const facet = entry.facet?.trim()
+    if (!facet) {
+      buildPostConditionError('Facet name must be provided for each post-condition.', index, ['facet'])
+    }
+
+    const path = entry.path?.trim()
+    if (!path) {
+      buildPostConditionError('JSON-pointer path must be provided for each post-condition.', index, ['path'])
+    }
+
+    const key = `${facet}::${path}`
+    if (seen.has(key)) {
+      buildPostConditionError(`Duplicate post-condition for facet "${facet}" at path "${path}".`, index)
+    }
+    seen.add(key)
+
+    const dsl = entry.condition.dsl?.trim()
+    if (!dsl?.length) {
+      buildPostConditionError('Condition `dsl` must be a non-empty string.', index, ['condition', 'dsl'])
+    }
+
+    let normalized: ConditionValidationResult
+    try {
+      normalized = normalizeFacetConditionExpression(dsl, entry.condition.jsonLogic)
+    } catch (error) {
+      if (error instanceof ConditionDslValidationError) {
+        const detail = error.errors.map((item) => item.message).join('; ')
+        buildPostConditionError(`Invalid condition DSL: ${detail}`, index, ['condition', 'dsl'])
+      }
+      const message = error instanceof Error ? error.message : 'Invalid condition DSL payload.'
+      buildPostConditionError(message, index, ['condition', 'dsl'])
+    }
+
+    const warnings = normalized.warnings.length ? normalized.warnings.map((warning) => ({ ...warning })) : undefined
+    const variables = normalized.variables.length ? [...normalized.variables] : undefined
+    const canonicalDsl = normalized.canonicalDsl ?? entry.condition.canonicalDsl ?? dsl
+
+    results.push({
+      facet,
+      path,
+      condition: {
+        dsl,
+        canonicalDsl,
+        jsonLogic: normalized.jsonLogic,
+        ...(warnings ? { warnings } : {}),
+        ...(variables ? { variables } : {})
+      }
+    })
+  })
+
+  return results
+}
+
+const FALLBACK_OPERATORS: ConditionComparisonOperator[] = ['==', '!=', '>', '>=', '<', '<=']
+const BOOLEAN_OPERATORS: ConditionComparisonOperator[] = ['==', '!=']
+
+function normalizeFacetConditionExpression(dsl: string, jsonLogic?: JsonLogicExpression): ConditionValidationResult {
+  try {
+    return normalizeConditionInput({ dsl, jsonLogic })
+  } catch (error) {
+    if (!(error instanceof ConditionDslValidationError)) {
+      throw error
+    }
+    const fallbackCatalog = buildFallbackCatalog(dsl, error.errors)
+    if (!fallbackCatalog) {
+      throw error
+    }
+    return normalizeConditionInput({ dsl, jsonLogic }, { catalog: fallbackCatalog })
+  }
+}
+
+function buildFallbackCatalog(
+  dsl: string,
+  errors: readonly ConditionDslError[]
+): ConditionVariableCatalog | null {
+  if (!errors.length) return null
+  const missing = new Set<string>()
+  for (const error of errors) {
+    if (error.code !== 'unknown_variable') {
+      return null
+    }
+    const match = error.message.match(/Variable\s+[`'"]?([A-Za-z0-9_.]+)[`'"]?\s+is\s+not\s+registered/i)
+    if (!match) {
+      return null
+    }
+    missing.add(match[1])
+  }
+  if (!missing.size) {
+    return null
+  }
+  const variables = Array.from(missing).map((name) => {
+    const type = inferFallbackVariableType(name, dsl)
+    const allowedOperators = type === 'boolean' ? BOOLEAN_OPERATORS : FALLBACK_OPERATORS
+    return {
+      id: `post_condition:${name}`,
+      path: name,
+      dslPath: name,
+      label: name,
+      type,
+      allowedOperators
+    }
+  })
+  return { variables }
+}
+
+function inferFallbackVariableType(variable: string, dsl: string): 'string' | 'number' | 'boolean' {
+  const identifier = escapeRegExp(variable)
+  const numericPattern = new RegExp(`${identifier}\\s*(?:>=|<=|>|<)`, 'i')
+  if (numericPattern.test(dsl)) {
+    return 'number'
+  }
+  const booleanPattern = new RegExp(`${identifier}\\s*(?:==|!=)\\s*(true|false)`, 'i')
+  if (booleanPattern.test(dsl)) {
+    return 'boolean'
+  }
+  return 'string'
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildPostConditionError(message: string, index: number, subPath: (string | number)[] = []): never {
+  throw new ZodError([
+    {
+      code: 'custom',
+      message,
+      path: ['postConditions', index, ...subPath]
+    }
+  ])
 }
 
 const CapabilityRegistrationCoreSchema = z.object({
@@ -481,14 +720,15 @@ const CapabilityRegistrationCoreSchema = z.object({
   heartbeat: HeartbeatSchema,
   instructionTemplates: InstructionTemplatesSchema.optional(),
   assignmentDefaults: AssignmentDefaultsSchema.optional(),
-  metadata: LooseRecordSchema.optional()
+  metadata: LooseRecordSchema.optional(),
+  postConditions: z.array(FacetConditionSchema).optional()
 })
 
 /**
  * Payload agents submit during registration to advertise their capabilities.
  */
 export const CapabilityRegistrationSchema = CapabilityRegistrationCoreSchema.superRefine(ensureCapabilityContracts).transform(
-  (value) => normalizeCapabilityContracts(value)
+  (value) => normalizeCapabilityPayload(value)
 )
 export type CapabilityRegistration = z.infer<typeof CapabilityRegistrationSchema>
 
@@ -504,7 +744,7 @@ const CapabilityRecordCoreSchema = CapabilityRegistrationCoreSchema.extend({
   outputFacets: z.array(z.string().min(1)).optional()
 })
 export const CapabilityRecordSchema = CapabilityRecordCoreSchema.superRefine(ensureCapabilityContracts).transform(
-  (value) => normalizeCapabilityContracts(value)
+  (value) => normalizeCapabilityPayload(value)
 )
 export type CapabilityRecord = z.infer<typeof CapabilityRecordSchema>
 
@@ -517,6 +757,15 @@ export const FlexCrcsCapabilityEntrySchema = z.object({
   kind: z.enum(['structuring', 'execution', 'validation', 'transformation', 'routing']).default('execution'),
   inputFacets: z.array(z.string().min(1)).default([]),
   outputFacets: z.array(z.string().min(1)).default([]),
+  postConditions: z
+    .array(
+      z.object({
+        facet: z.string().min(1),
+        path: z.string().min(1),
+        expression: z.string().min(1)
+      })
+    )
+    .default([]),
   reasonCodes: z.array(FlexCrcsReasonCodeSchema).nonempty(),
   source: z.enum(['mrcs', 'expansion']).default('expansion')
 })

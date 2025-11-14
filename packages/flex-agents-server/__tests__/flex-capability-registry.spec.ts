@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach } from 'vitest'
-import type { CapabilityRegistration } from '@awesomeposter/shared'
+import {
+  CapabilityRegistrationSchema,
+  buildPostConditionMetadata,
+  buildPostConditionDslSnapshot,
+  type CapabilityRegistration
+} from '@awesomeposter/shared'
 
 import {
   FlexCapabilityRegistryService
@@ -21,6 +26,9 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
     const existing = this.store.get(payload.capabilityId)
     const registeredAt = existing?.registeredAt ?? now
     const createdAt = existing?.createdAt ?? now
+    const postConditions = payload.postConditions && payload.postConditions.length ? payload.postConditions : null
+    const postConditionsDsl = postConditions ? buildPostConditionDslSnapshot(postConditions) : null
+    const postConditionMetadata = postConditions ? buildPostConditionMetadata(postConditions) : null
     const row: FlexCapabilityRow = {
       capabilityId: payload.capabilityId,
       version: payload.version,
@@ -38,6 +46,8 @@ class InMemoryFlexCapabilityRepository implements FlexCapabilityRepository {
       instructionTemplates: (payload.instructionTemplates ?? null) as any,
       assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
+      postConditionsDsl,
+      postConditionMetadata,
       status: 'active',
       lastSeenAt: now,
       registeredAt,
@@ -154,5 +164,25 @@ describe('FlexCapabilityRegistryService', () => {
 
     const stored = repo.getRow('writer.en')
     expect(stored?.status).toBe('inactive')
+  })
+
+  it('persists postConditions metadata and surfaces guard summaries', async () => {
+    const payload = CapabilityRegistrationSchema.parse({
+      ...basePayload,
+      postConditions: [
+        {
+          facet: 'post_copy',
+          path: '/status',
+          condition: { dsl: 'status == "ready"' }
+        }
+      ]
+    })
+
+    await service.register(payload)
+    const record = await service.getCapabilityById('writer.en')
+    expect(record?.postConditions).toHaveLength(1)
+    expect(record?.postConditions?.[0].condition.jsonLogic).toBeDefined()
+    const guards = (record?.metadata as Record<string, unknown> | undefined)?.postConditionGuards
+    expect(guards).toEqual([{ facet: 'post_copy', paths: ['/status'] }])
   })
 })

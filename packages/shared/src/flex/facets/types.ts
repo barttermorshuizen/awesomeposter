@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { JsonSchemaShapeSchema } from '../types.js'
+import { JsonSchemaShapeSchema } from '../json-schema.js'
 
 export const FacetDirectionSchema = z
   .enum(['input', 'output', 'bidirectional', 'both'])

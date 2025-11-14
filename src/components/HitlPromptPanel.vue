@@ -14,19 +14,14 @@ const {
 } = storeToRefs(hitlStore)
 
 const approvalDecision = ref<'approve' | 'reject' | null>(null)
-const selectedOptionId = ref<string | null>(null)
 const freeformText = ref('')
 const validationError = ref<string | null>(null)
 
-const hasOptions = computed(() => Boolean(activeRequest.value?.options?.length))
 const showApprovalControls = computed(() => activeRequest.value?.kind === 'approval')
-const showOptionsControls = computed(() => hasOptions.value)
 const showFreeform = computed(() => {
   if (!activeRequest.value) return false
   if (activeRequest.value.kind === 'approval') return true
-  if (activeRequest.value.allowFreeForm) return true
-  if (!hasOptions.value) return true
-  return false
+  return activeRequest.value.allowFreeForm
 })
 
 const operatorPrompt = computed(() => {
@@ -78,14 +73,10 @@ const emit = defineEmits<{
   (e: 'resume', payload: ResumeEventPayload): void
 }>()
 
-watch(activeRequest, (req) => {
+watch(activeRequest, () => {
   approvalDecision.value = null
-  selectedOptionId.value = null
   freeformText.value = ''
   validationError.value = null
-  if (req?.options?.length === 1 && !req.allowFreeForm && req.kind !== 'approval') {
-    selectedOptionId.value = req.options[0].id
-  }
 }, { immediate: true })
 
 function ensureValid(): boolean {
@@ -130,7 +121,6 @@ async function submit() {
   await hitlStore.submitResponse({
     responseType: computeResponseType(),
     approved: request.kind === 'approval' ? approvalDecision.value === 'approve' : undefined,
-    selectedOptionId: selectedOptionId.value ?? undefined,
     freeformText: freeformText.value.trim().length > 0 ? freeformText.value.trim() : undefined
   })
 
@@ -139,7 +129,7 @@ async function submit() {
       nodeId: resolvedNodeId.value,
       responseType: computeResponseType(),
       approved: request.kind === 'approval' ? approvalDecision.value === 'approve' : undefined,
-      selectedOptionId: selectedOptionId.value,
+      selectedOptionId: null,
       freeformText: freeformText.value.trim().length > 0 ? freeformText.value.trim() : null
     })
   }
@@ -281,23 +271,6 @@ function urgencyColor(urgency: string) {
           <v-radio-group v-model="approvalDecision" :disabled="submitting || submissionState === 'success'">
             <v-radio label="Approve" value="approve" color="success" />
             <v-radio label="Reject" value="reject" color="error" />
-          </v-radio-group>
-        </div>
-
-        <div v-else-if="showOptionsControls" class="mb-2">
-          <div class="text-subtitle-2 mb-1">Select an option</div>
-          <v-radio-group v-model="selectedOptionId" :disabled="submitting || submissionState === 'success'">
-            <v-radio
-              v-for="option in activeRequest.options"
-              :key="option.id"
-              :label="option.label"
-              :value="option.id"
-            />
-            <template v-for="option in activeRequest.options" :key="option.id + '-hint'">
-              <div v-if="option.description" class="text-caption text-medium-emphasis ms-10 mb-2">
-                {{ option.description }}
-              </div>
-            </template>
           </v-radio-group>
         </div>
 

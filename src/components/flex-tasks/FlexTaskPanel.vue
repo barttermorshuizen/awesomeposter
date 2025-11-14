@@ -460,14 +460,19 @@ const feedbackDraftEntries = computed<unknown[]>(() => {
   return [value]
 })
 
-const feedbackDisplayEntries = computed<FeedbackEntryDisplay[]>(() =>
-  feedbackDraftEntries.value
-    .map((entry, index) => {
-      const normalized = normalizeFeedbackDisplayEntry(entry)
-      return normalized ? { ...normalized, sourceIndex: index } : null
-    })
-    .filter((entry): entry is FeedbackEntryDisplay => Boolean(entry))
-)
+const feedbackDisplayEntries = computed<FeedbackEntryDisplay[]>(() => {
+  const entries: FeedbackEntryDisplay[] = []
+  feedbackDraftEntries.value.forEach((entry, index) => {
+    const normalized = normalizeFeedbackDisplayEntry(entry)
+    if (normalized) {
+      entries.push({
+        ...normalized,
+        sourceIndex: index
+      })
+    }
+  })
+  return entries
+})
 
 watch(
   inputFacetBindings,
@@ -498,7 +503,7 @@ function feedbackCountForBinding(binding: InputFacetBinding): number {
 }
 
 const operatorDisplayName = computed(() => {
-  const profile = hitlStore.operatorProfile?.value ?? null
+  const profile = hitlStore.operatorProfile ?? null
   return (
     toStringOrNull(profile?.displayName) ??
     toStringOrNull(profile?.email) ??

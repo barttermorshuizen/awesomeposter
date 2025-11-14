@@ -12,7 +12,11 @@ import {
   type FlexCapabilityRepository,
   type FlexCapabilityRow
 } from '../src/services/flex-capability-repository'
-import type { CapabilityRegistration } from '@awesomeposter/shared'
+import {
+  buildPostConditionMetadata,
+  buildPostConditionDslSnapshot,
+  type CapabilityRegistration
+} from '@awesomeposter/shared'
 
 class InMemoryRepository implements FlexCapabilityRepository {
   private store = new Map<string, FlexCapabilityRow>()
@@ -25,6 +29,9 @@ class InMemoryRepository implements FlexCapabilityRepository {
     const existing = this.store.get(payload.capabilityId)
     const registeredAt = existing?.registeredAt ?? now
     const createdAt = existing?.createdAt ?? now
+    const postConditions = payload.postConditions && payload.postConditions.length ? payload.postConditions : null
+    const postConditionsDsl = postConditions ? buildPostConditionDslSnapshot(postConditions) : null
+    const postConditionMetadata = postConditions ? buildPostConditionMetadata(postConditions) : null
     const row: FlexCapabilityRow = {
       capabilityId: payload.capabilityId,
       version: payload.version,
@@ -42,6 +49,8 @@ class InMemoryRepository implements FlexCapabilityRepository {
       instructionTemplates: (payload.instructionTemplates ?? null) as any,
       assignmentDefaults: (payload.assignmentDefaults ?? null) as any,
       metadata: (payload.metadata ?? null) as any,
+      postConditionsDsl,
+      postConditionMetadata,
       status: 'active',
       lastSeenAt: now,
       registeredAt,

@@ -11,7 +11,9 @@ import type {
   TaskMetadata,
   ConditionalRoutingNode,
   RoutingEvaluationResult,
-  GoalConditionResult
+  GoalConditionResult,
+  FlexCrcsCapabilityEntry,
+  FlexCrcsSnapshot
 } from '@awesomeposter/shared'
 import { genCorrelationId, getLogger } from './logger'
 import {
@@ -199,28 +201,38 @@ const normalizeFacetEntriesFromSource = (
   return entries
 }
 
+type PlannerCrcsCapabilityRow = Pick<
+  FlexCrcsCapabilityEntry,
+  'capabilityId' | 'displayName' | 'kind' | 'inputFacets' | 'outputFacets' | 'postConditions' | 'reasonCodes' | 'source'
+>
+
 type PlannerCrcsPayload = {
   totalRows: number
   mrcsSize: number
   reasonCounts: Record<string, number>
   rowCap?: number
   missingPinnedCapabilities?: number
+  rows: PlannerCrcsCapabilityRow[]
 }
 
-function buildCrcsPayload(summary?: {
-  totalRows: number
-  mrcsSize: number
-  reasonCounts: Record<string, number>
-  rowCap?: number
-  missingPinnedCapabilities?: number
-}): PlannerCrcsPayload | undefined {
+function buildCrcsPayload(summary?: FlexCrcsSnapshot): PlannerCrcsPayload | undefined {
   if (!summary) return undefined
   return {
     totalRows: summary.totalRows,
     mrcsSize: summary.mrcsSize,
     reasonCounts: summary.reasonCounts,
     rowCap: summary.rowCap,
-    missingPinnedCapabilities: summary.missingPinnedCapabilities
+    missingPinnedCapabilities: summary.missingPinnedCapabilityIds.length,
+    rows: summary.rows.map((row) => ({
+      capabilityId: row.capabilityId,
+      displayName: row.displayName,
+      kind: row.kind,
+      inputFacets: row.inputFacets,
+      outputFacets: row.outputFacets,
+      postConditions: row.postConditions,
+      reasonCodes: row.reasonCodes,
+      source: row.source
+    }))
   }
 }
 
@@ -240,8 +252,82 @@ function extractCrcsPayloadFromMetadata(metadata: Record<string, unknown> | unde
     reasonCounts,
     rowCap: typeof data.rowCap === 'number' ? data.rowCap : undefined,
     missingPinnedCapabilities:
-      typeof data.missingPinnedCapabilities === 'number' ? data.missingPinnedCapabilities : undefined
+      typeof data.missingPinnedCapabilities === 'number' ? data.missingPinnedCapabilities : undefined,
+    rows: normalizePlannerCrcsRows(data.rows)
   }
+}
+
+const VALID_CRCS_KINDS: PlannerCrcsCapabilityRow['kind'][] = [
+  'structuring',
+  'execution',
+  'validation',
+  'transformation',
+  'routing'
+]
+
+const VALID_CRCS_REASONS: PlannerCrcsCapabilityRow['reasonCodes'][number][] = [
+  'path',
+  'policy_reference',
+  'goal_condition'
+]
+
+function normalizePlannerCrcsRows(value: unknown): PlannerCrcsCapabilityRow[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null
+      }
+      const source = entry as Record<string, unknown>
+      const capabilityId = typeof source.capabilityId === 'string' ? source.capabilityId : null
+      const displayName = typeof source.displayName === 'string' ? source.displayName : null
+      const kind =
+        typeof source.kind === 'string' && VALID_CRCS_KINDS.includes(source.kind as PlannerCrcsCapabilityRow['kind'])
+          ? (source.kind as PlannerCrcsCapabilityRow['kind'])
+          : null
+      if (!capabilityId || !displayName || !kind) {
+        return null
+      }
+      const inputFacets = Array.isArray(source.inputFacets)
+        ? source.inputFacets.filter((facet): facet is string => typeof facet === 'string')
+        : []
+      const outputFacets = Array.isArray(source.outputFacets)
+        ? source.outputFacets.filter((facet): facet is string => typeof facet === 'string')
+        : []
+      const postConditions = Array.isArray(source.postConditions)
+        ? source.postConditions
+            .map((condition) => {
+              if (!condition || typeof condition !== 'object') return null
+              const detail = condition as Record<string, unknown>
+              const facet = typeof detail.facet === 'string' ? detail.facet : null
+              const path = typeof detail.path === 'string' ? detail.path : null
+              const expression = typeof detail.expression === 'string' ? detail.expression : null
+              if (!facet || !path || !expression) return null
+              return { facet, path, expression }
+            })
+            .filter((entry): entry is PlannerCrcsCapabilityRow['postConditions'][number] => Boolean(entry))
+        : []
+      const reasonCodes = Array.isArray(source.reasonCodes)
+        ? source.reasonCodes
+            .map((reason) => (typeof reason === 'string' ? reason : null))
+            .filter(
+              (reason): reason is PlannerCrcsCapabilityRow['reasonCodes'][number] =>
+                Boolean(reason) && VALID_CRCS_REASONS.includes(reason as PlannerCrcsCapabilityRow['reasonCodes'][number])
+            )
+        : []
+      const crcsSource = source.source === 'mrcs' ? 'mrcs' : 'expansion'
+      return {
+        capabilityId,
+        displayName,
+        kind,
+        inputFacets,
+        outputFacets,
+        postConditions,
+        reasonCodes,
+        source: crcsSource
+      }
+    })
+    .filter((row): row is PlannerCrcsCapabilityRow => Boolean(row))
 }
 
 const normalizeFacetMap = (value: unknown): FacetProvenanceMap | undefined => {
@@ -824,13 +910,7 @@ export class FlexRunCoordinator {
                       failedGoalConditions: requestOptions.replanContext?.failedGoalConditions
                     }
                   : undefined
-              const crcsPayload = buildCrcsPayload({
-                totalRows: requestContext.crcs.totalRows,
-                mrcsSize: requestContext.crcs.mrcsSize,
-                reasonCounts: requestContext.crcs.reasonCounts,
-                rowCap: requestContext.crcs.rowCap,
-                missingPinnedCapabilities: requestContext.crcs.missingPinnedCapabilityIds.length
-              })
+              const crcsPayload = buildCrcsPayload(requestContext.crcs)
               await emitEvent({
                 type: 'plan_requested',
                 timestamp: new Date().toISOString(),

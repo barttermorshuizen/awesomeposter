@@ -1,5 +1,6 @@
 import {
   CapabilityContract,
+  CapabilityPostConditionMetadata,
   CapabilityRecord,
   CapabilityRegistration,
   FacetContractCompiler,
@@ -265,6 +266,7 @@ export class FlexCapabilityRegistryService {
     const inputFacets = row.inputFacets ?? []
     const outputFacets = row.outputFacets ?? []
     const metadata = this.mergeMetadata(row.metadata, inputFacets, outputFacets)
+    const metadataWithGuards = this.appendPostConditionMetadata(metadata, row.postConditionMetadata)
 
     const instructionTemplates =
       row.instructionTemplates && Object.keys(row.instructionTemplates).length
@@ -281,6 +283,10 @@ export class FlexCapabilityRegistryService {
     const preferredModels = row.preferredModels && row.preferredModels.length ? row.preferredModels : undefined
     const inputContract = (row.inputContract ?? undefined) as CapabilityRecord['inputContract']
     const outputContract = (row.outputContract ?? undefined) as CapabilityRecord['outputContract']
+    const postConditions =
+      row.postConditionMetadata && row.postConditionMetadata.conditions.length
+        ? (row.postConditionMetadata.conditions as CapabilityRecord['postConditions'])
+        : undefined
     return {
       capabilityId: row.capabilityId,
       version: row.version,
@@ -295,7 +301,8 @@ export class FlexCapabilityRegistryService {
       agentType: row.agentType ?? 'ai',
       instructionTemplates,
       assignmentDefaults,
-      metadata: metadata as CapabilityRecord['metadata'],
+      metadata: metadataWithGuards as CapabilityRecord['metadata'],
+      postConditions,
       status: row.status,
       lastSeenAt: lastSeen,
       registeredAt,
@@ -459,6 +466,21 @@ export class FlexCapabilityRegistryService {
     return Object.keys(base).length ? base : undefined
   }
 
+  private appendPostConditionMetadata(
+    metadata: CapabilityRecord['metadata'],
+    postConditionMetadata: CapabilityPostConditionMetadata | null
+  ): CapabilityRecord['metadata'] {
+    if (!postConditionMetadata || !postConditionMetadata.guards.length) {
+      return metadata
+    }
+    const base =
+      metadata && typeof metadata === 'object'
+        ? { ...(metadata as Record<string, unknown>) }
+        : ({} as Record<string, unknown>)
+    base.postConditionGuards = postConditionMetadata.guards
+    return base
+  }
+
   private resolveStartFacets(
     envelope: TaskEnvelope,
     graphContext?: CrcsGraphContext,
@@ -505,20 +527,45 @@ export class FlexCapabilityRegistryService {
     const visitedFacets = new Set(queue)
     const reachableCaps = new Set<string>()
     const capabilityMap = new Map(capabilityEntries.map((entry) => [entry.capability.capabilityId, entry]))
+    const remainingInputs = new Map<string, number>()
+
+    const activateCapability = (capabilityId: string) => {
+      if (reachableCaps.has(capabilityId)) {
+        return
+      }
+      const entry = capabilityMap.get(capabilityId)
+      if (!entry) return
+      reachableCaps.add(capabilityId)
+      entry.outputs.forEach((nextFacet) => {
+        if (!visitedFacets.has(nextFacet)) {
+          visitedFacets.add(nextFacet)
+          queue.push(nextFacet)
+        }
+      })
+    }
+
+    capabilityEntries.forEach((entry) => {
+      const uniqueInputs = Array.from(new Set(entry.inputs))
+      remainingInputs.set(entry.capability.capabilityId, uniqueInputs.length)
+      if (uniqueInputs.length === 0) {
+        activateCapability(entry.capability.capabilityId)
+      }
+    })
 
     while (queue.length) {
       const facet = queue.shift()!
       const consumers = facetToConsumers.get(facet) ?? []
       for (const capabilityId of consumers) {
-        if (reachableCaps.has(capabilityId)) continue
-        reachableCaps.add(capabilityId)
-        const entry = capabilityMap.get(capabilityId)
-        if (!entry) continue
-        for (const nextFacet of entry.outputs) {
-          if (!visitedFacets.has(nextFacet)) {
-            visitedFacets.add(nextFacet)
-            queue.push(nextFacet)
-          }
+        const remaining = remainingInputs.get(capabilityId)
+        if (remaining === undefined) continue
+        if (remaining <= 0) {
+          activateCapability(capabilityId)
+          continue
+        }
+        const nextRemaining = remaining - 1
+        remainingInputs.set(capabilityId, nextRemaining)
+        if (nextRemaining <= 0) {
+          activateCapability(capabilityId)
         }
       }
     }
@@ -615,6 +662,7 @@ export class FlexCapabilityRegistryService {
         kind: inferCapabilityKind(entry.capability),
         inputFacets: this.getCapabilityFacets(entry.capability, 'input'),
         outputFacets: this.getCapabilityFacets(entry.capability, 'output'),
+        postConditions: this.summarizePostConditions(entry.capability),
         reasonCodes: Array.from(reasons),
         source: 'mrcs'
       })
@@ -656,6 +704,22 @@ export class FlexCapabilityRegistryService {
       return Array.from(new Set(contract.facets ?? []))
     }
     return []
+  }
+
+  private summarizePostConditions(
+    capability: CapabilityRecord
+  ): Array<{ facet: string; path: string; expression: string }> {
+    if (!capability.postConditions || capability.postConditions.length === 0) {
+      return []
+    }
+    return capability.postConditions.map((condition) => ({
+      facet: condition.facet,
+      path: condition.path,
+      expression:
+        typeof condition.condition.canonicalDsl === 'string' && condition.condition.canonicalDsl.length
+          ? condition.condition.canonicalDsl
+          : condition.condition.dsl
+    }))
   }
 
 }

@@ -1,6 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
-import type { FlexPlan, FlexEvent, TaskEnvelope, GoalConditionResult, OutputContract } from '@awesomeposter/shared'
+import type {
+  FlexPlan,
+  FlexEvent,
+  TaskEnvelope,
+  GoalConditionResult,
+  OutputContract,
+  FlexCrcsCapabilityEntry,
+  FlexCrcsSnapshot
+} from '@awesomeposter/shared'
 import { FlexRunCoordinator } from '../src/services/flex-run-coordinator'
 import { GoalConditionFailedError } from '../src/services/flex-execution-engine'
 
@@ -22,6 +30,34 @@ const failureResults: GoalConditionResult[] = [
     observedValue: 'draft'
   }
 ]
+
+const SAMPLE_CRCS_ROW: FlexCrcsCapabilityEntry = {
+  capabilityId: 'writer.conditions',
+  displayName: 'Writer With Conditions',
+  kind: 'execution',
+  inputFacets: ['brief'],
+  outputFacets: ['final_copy'],
+  postConditions: [
+    {
+      facet: 'final_copy',
+      path: '/status',
+      expression: 'status == "ready"'
+    }
+  ],
+  reasonCodes: ['path'],
+  source: 'expansion'
+}
+
+const SAMPLE_CRCS_SNAPSHOT: FlexCrcsSnapshot = {
+  rows: [SAMPLE_CRCS_ROW],
+  totalRows: 1,
+  mrcsSize: 1,
+  reasonCounts: { path: 1 },
+  rowCap: 50,
+  pinnedCapabilityIds: [],
+  mrcsCapabilityIds: [],
+  missingPinnedCapabilityIds: []
+}
 
 class PersistenceStub {
   createOrUpdateRun = vi.fn().mockResolvedValue(undefined)
@@ -67,16 +103,7 @@ class PlannerStub {
       policies: (options?.policies ?? envelope.policies) ?? { planner: undefined, runtime: [] },
       policyMetadata: options?.policyMetadata ?? { legacyNotes: [], legacyFields: [] },
       capabilities: [],
-      crcs: {
-        rows: [],
-        totalRows: 0,
-        mrcsSize: 0,
-        reasonCounts: {},
-        rowCap: 0,
-        pinnedCapabilityIds: [],
-        mrcsCapabilityIds: [],
-        missingPinnedCapabilityIds: []
-      }
+      crcs: SAMPLE_CRCS_SNAPSHOT
     })
     return {
       ...this.template,
@@ -88,7 +115,26 @@ class PlannerStub {
         facets: node.facets ? { input: [...node.facets.input], output: [...node.facets.output] } : undefined,
         metadata: { ...(node.metadata ?? {}) }
       })),
-      metadata: { ...(this.template.metadata ?? {}) }
+      metadata: {
+        ...(this.template.metadata ?? {}),
+        crcs: {
+          totalRows: SAMPLE_CRCS_SNAPSHOT.totalRows,
+          mrcsSize: SAMPLE_CRCS_SNAPSHOT.mrcsSize,
+          reasonCounts: SAMPLE_CRCS_SNAPSHOT.reasonCounts,
+          rowCap: SAMPLE_CRCS_SNAPSHOT.rowCap,
+          missingPinnedCapabilities: 0,
+          rows: SAMPLE_CRCS_SNAPSHOT.rows.map((row) => ({
+            capabilityId: row.capabilityId,
+            displayName: row.displayName,
+            kind: row.kind,
+            inputFacets: row.inputFacets,
+            outputFacets: row.outputFacets,
+            postConditions: row.postConditions,
+            reasonCodes: row.reasonCodes,
+            source: row.source
+          }))
+        }
+      }
     }
   }
 }
@@ -249,10 +295,28 @@ describe('FlexRunCoordinator goal-condition replans', () => {
       reason: 'goal_condition_failed'
     })
     expect((replanRequest.payload as any).replan.failedGoalConditions).toHaveLength(1)
+    const initialRequestCrcs = (planRequested[0].payload as any).crcs
+    expect(initialRequestCrcs.rows).toEqual([
+      expect.objectContaining({
+        capabilityId: 'writer.conditions',
+        postConditions: [
+          expect.objectContaining({
+            facet: 'final_copy',
+            path: '/status',
+            expression: 'status == "ready"'
+          })
+        ]
+      })
+    ])
 
     const planGenerated = events.filter((evt) => evt.type === 'plan_generated')
     expect(planGenerated).toHaveLength(2)
     expect((planGenerated[1].payload as any).replan?.reason).toBe('goal_condition_failed')
+    expect((planGenerated[0].payload as any).crcs.rows[0].postConditions[0]).toMatchObject({
+      facet: 'final_copy',
+      path: '/status',
+      expression: 'status == "ready"'
+    })
 
     const planUpdated = events.find((evt) => evt.type === 'plan_updated')
     expect(planUpdated).toBeTruthy()

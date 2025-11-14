@@ -115,6 +115,12 @@ function extractAssetMeta(asset: PostVisualInputFacetAssetRecord) {
   return { meta, metaAssetId, metaUrls, previewCandidate }
 }
 
+function lastPathSegment(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0)
+  if (!segments.length) return ''
+  return segments[segments.length - 1] ?? ''
+}
+
 function findManagedRecord(
   asset: PostVisualInputFacetAssetRecord,
   metaAssetId: string | null,
@@ -144,9 +150,10 @@ function findManagedRecord(
 
 function extractExtension(url: string): string | null {
   const cleaned = url.split(/[?#]/)[0] ?? url
-  const lastSegment = cleaned.split('/').at(-1) ?? ''
+  const lastSegment = lastPathSegment(cleaned)
   if (!lastSegment.includes('.')) return null
-  const ext = lastSegment.split('.').at(-1)
+  const parts = lastSegment.split('.')
+  const ext = parts.length ? parts[parts.length - 1] : null
   return ext ? ext.toLowerCase() : null
 }
 

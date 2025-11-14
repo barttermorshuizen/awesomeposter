@@ -141,7 +141,7 @@ describe('PostVisualInputGallery', () => {
 
     await flushPromises()
 
-    const placeholder = wrapper.get('[data-test="post-visual-input-placeholder"]')
+    const placeholder = wrapper.find('[data-test="post-visual-input-placeholder"]')
     expect(placeholder.exists()).toBe(true)
 
     const download = wrapper.get('[data-test="post-visual-input-download"]')

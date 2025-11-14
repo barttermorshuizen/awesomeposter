@@ -1,0 +1,40 @@
+schema: 1
+story: '13.1'
+story_title: 'Capability Post-Condition Metadata & Persistence'
+gate: PASS
+status_reason: 'Planner metadata and SSE scaffolds now stream CRCS capability rows (including `{ facet, path, expression }` guards), so operator tooling receives the same provenance the planner prompt consumes.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-14T12:38:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 95
+expires: '2025-11-28T12:38:00Z'
+
+evidence:
+  tests_reviewed: 4
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Schema + metadata updates stay inside existing registration flows; no new external attack surface.'
+  performance:
+    status: PASS
+    notes: 'DSL compilation still runs only during registration; no runtime loops added.'
+  reliability:
+    status: PASS
+    notes: 'CRCS payloads, planner metadata, and SSE streams all carry the same provenance rows; regression tests guard the behavior.'
+  maintainability:
+    status: PASS
+    notes: 'Shared schema/repository patterns are consistent and documented.'
+
+recommendations:
+  immediate: []
+  future: []

@@ -3,7 +3,6 @@ import {
   TaskEnvelopeSchema,
   type TaskEnvelope,
   type FlexEnvelopeConversationMessage,
-  type FlexEnvelopeConversationDelta,
   type FlexEnvelopeConversationResponse
 } from '@awesomeposter/shared'
 
@@ -31,8 +30,33 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
-function cloneEnvelope(envelope: TaskEnvelope): TaskEnvelope {
-  return JSON.parse(JSON.stringify(envelope)) as TaskEnvelope
+function cloneEnvelope<T extends object>(envelope: T): T {
+  return JSON.parse(JSON.stringify(envelope ?? null)) as T
+}
+
+type EnvelopeSnapshot = Record<string, unknown>
+
+type FlexEnvelopeBuilderState = {
+  conversationId: string | null
+  messages: ConversationLogMessage[]
+  pending: boolean
+  error: string | null
+  lastDeltaSummary: string[]
+  lastMissingFields: string[]
+  lastWarnings: string[]
+  lastEnvelopeSnapshot: EnvelopeSnapshot | null
+}
+
+type EnvelopeDeltaPayload = {
+  summary?: string[]
+  missingFields?: string[]
+  warnings?: string[]
+  envelope?: TaskEnvelope | null
+}
+
+function cloneSnapshot(value: TaskEnvelope | EnvelopeSnapshot | null | undefined): EnvelopeSnapshot | null {
+  if (!value) return null
+  return cloneEnvelope(value) as EnvelopeSnapshot
 }
 
 function buildRequestInit(body: unknown, token?: string): RequestInit {
@@ -51,15 +75,15 @@ function buildRequestInit(body: unknown, token?: string): RequestInit {
 }
 
 export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
-  state: () => ({
-    conversationId: null as string | null,
-    messages: [] as ConversationLogMessage[],
+  state: (): FlexEnvelopeBuilderState => ({
+    conversationId: null,
+    messages: [],
     pending: false,
-    error: null as string | null,
-    lastDeltaSummary: [] as string[],
-    lastMissingFields: [] as string[],
-    lastWarnings: [] as string[],
-    lastEnvelopeSnapshot: null as TaskEnvelope | null
+    error: null,
+    lastDeltaSummary: [],
+    lastMissingFields: [],
+    lastWarnings: [],
+    lastEnvelopeSnapshot: null
   }),
   getters: {
     hasConversation(state): boolean {
@@ -98,7 +122,7 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
       this.messages.push(message)
       return message
     },
-    appendServerMessages(messages: FlexEnvelopeConversationResponse['messages']) {
+    appendServerMessages(messages?: FlexEnvelopeConversationMessage[] | null) {
       if (!messages?.length) return
       for (const entry of messages) {
         const role: ConversationMessageRole =
@@ -112,7 +136,7 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
         this.messages.push(entryMessage)
       }
     },
-    applyDelta(delta: FlexEnvelopeConversationDelta | null, snapshot?: TaskEnvelope | null) {
+    applyDelta(delta: EnvelopeDeltaPayload | null, snapshot?: EnvelopeSnapshot | null) {
       if (!delta) {
         this.lastDeltaSummary = []
         this.lastMissingFields = []
@@ -156,11 +180,20 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
               missingFields: payload.delta.missingFields ?? [],
               warnings: payload.delta.warnings ?? []
             },
-            options.envelope ? cloneEnvelope(options.envelope) : null
+            cloneSnapshot(options.envelope)
           )
           return parsed
         }
-        this.applyDelta(null)
+        this.applyDelta(
+          payload.delta
+            ? {
+                summary: payload.delta.summary ?? [],
+                missingFields: payload.delta.missingFields ?? [],
+                warnings: payload.delta.warnings ?? []
+              }
+            : null,
+          cloneSnapshot(options.envelope)
+        )
         return null
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Failed to start conversation'
@@ -170,11 +203,11 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
         this.pending = false
       }
     },
-    async sendOperatorResponse(options: SendConversationOptions): Promise<FlexEnvelopeConversationDelta | null> {
+    async sendOperatorResponse(options: SendConversationOptions): Promise<EnvelopeDeltaPayload | null> {
       if (!this.conversationId) {
         throw new Error('Conversation has not been started yet.')
       }
-      const snapshot = options.envelope ? cloneEnvelope(options.envelope) : null
+      const snapshot = cloneSnapshot(options.envelope)
       const userMessage = this.appendUserMessage(options.message)
       this.pending = true
       this.error = null
@@ -200,7 +233,7 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
         this.appendServerMessages(payload.messages)
         if (payload.delta?.envelope) {
           const parsed = TaskEnvelopeSchema.parse(payload.delta.envelope)
-          const delta: FlexEnvelopeConversationDelta = {
+          const delta: EnvelopeDeltaPayload = {
             envelope: parsed,
             summary: payload.delta.summary ?? [],
             missingFields: payload.delta.missingFields ?? [],
@@ -209,8 +242,15 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
           this.applyDelta(delta, snapshot)
           return delta
         }
-        this.applyDelta(null, previousSnapshot)
-        return null
+        const summaryOnly = payload.delta
+          ? {
+              summary: payload.delta.summary ?? [],
+              missingFields: payload.delta.missingFields ?? [],
+              warnings: payload.delta.warnings ?? []
+            }
+          : null
+        this.applyDelta(summaryOnly, previousSnapshot)
+        return summaryOnly
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Conversation request failed'
         this.error = message
@@ -229,7 +269,7 @@ export const useFlexEnvelopeBuilderStore = defineStore('flexEnvelopeBuilder', {
       this.lastMissingFields = []
       this.lastWarnings = []
       this.appendSystemMessage('Reverted the last assistant update.')
-      return snapshot
+      return snapshot as TaskEnvelope
     }
   }
 })

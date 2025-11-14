@@ -259,14 +259,17 @@ function parseModelValue(value: unknown): VisualAsset[] {
 
 function normalizeAssets(list: VisualAsset[]): VisualAsset[] {
   return list.map((asset, index) => {
-    const nextMeta =
-      asset.meta && isRecord(asset.meta)
-        ? { ...asset.meta, ordering: index }
-        : asset.meta
-          ? { ordering: index, url: asset.url, ...asset.meta }
-          : outputMode.value === 'object'
-            ? { url: asset.url, ordering: index }
-            : null
+    let nextMeta: Record<string, unknown> | null = null
+    if (asset.meta) {
+      if (isRecord(asset.meta)) {
+        nextMeta = { ...asset.meta, ordering: index }
+      } else {
+        nextMeta = { ordering: index, url: asset.url }
+      }
+    } else if (outputMode.value === 'object') {
+      nextMeta = { url: asset.url, ordering: index }
+    }
+
     return {
       ...asset,
       ordering: index,
