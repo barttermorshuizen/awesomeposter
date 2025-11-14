@@ -66,7 +66,17 @@ class PlannerStub {
       context: { objective: envelope.objective },
       policies: (options?.policies ?? envelope.policies) ?? { planner: undefined, runtime: [] },
       policyMetadata: options?.policyMetadata ?? { legacyNotes: [], legacyFields: [] },
-      capabilities: []
+      capabilities: [],
+      crcs: {
+        rows: [],
+        totalRows: 0,
+        mrcsSize: 0,
+        reasonCounts: {},
+        rowCap: 0,
+        pinnedCapabilityIds: [],
+        mrcsCapabilityIds: [],
+        missingPinnedCapabilityIds: []
+      }
     })
     return {
       ...this.template,

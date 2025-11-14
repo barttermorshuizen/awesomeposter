@@ -15,6 +15,7 @@ import {
   type PlannerServiceInput,
   PlannerService
 } from '../src/services/planner-service'
+import type { FlexCrcsReasonCode, FlexCrcsSnapshot } from '@awesomeposter/shared'
 
 function buildFacet(name: string, direction: FacetDefinition['metadata']['direction'], description: string): FacetDefinition {
   return FacetDefinitionSchema.parse({
@@ -100,12 +101,58 @@ function buildContext(): PlannerContextHints {
   }
 }
 
+function buildCrcsSnapshot(rows: Array<{
+  capabilityId: string
+  displayName: string
+  kind?: 'structuring' | 'execution' | 'validation' | 'transformation' | 'routing'
+  inputFacets?: string[]
+  outputFacets?: string[]
+  reasonCodes?: FlexCrcsReasonCode[]
+}>): FlexCrcsSnapshot {
+  const normalizedRows = rows.map((row, index) => ({
+    capabilityId: row.capabilityId,
+    displayName: row.displayName,
+    kind: row.kind ?? 'execution',
+    inputFacets: row.inputFacets ?? [],
+    outputFacets: row.outputFacets ?? [],
+    reasonCodes: row.reasonCodes ?? ['path'],
+    source: 'mrcs'
+  }))
+  const reasonCounts: Record<string, number> = {}
+  normalizedRows.forEach((row) => {
+    row.reasonCodes.forEach((reason) => {
+      reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1
+    })
+  })
+  return {
+    rows: normalizedRows,
+    totalRows: normalizedRows.length,
+    mrcsSize: normalizedRows.filter((row) => row.source === 'mrcs').length,
+    reasonCounts,
+    rowCap: 40,
+    truncated: false,
+    pinnedCapabilityIds: [],
+    mrcsCapabilityIds: normalizedRows.filter((row) => row.source === 'mrcs').map((row) => row.capabilityId),
+    missingPinnedCapabilityIds: []
+  }
+}
+
+const DEFAULT_CRCS = buildCrcsSnapshot([
+  {
+    capabilityId: 'copywriter.SocialpostDrafting',
+    displayName: 'Copywriter – Social Post Drafting',
+    inputFacets: ['creative_brief'],
+    outputFacets: ['post_copy'],
+    reasonCodes: ['path']
+  }
+])
+
 describe('planner prompt builders', () => {
   it('builds the system prompt with blueprint sections', () => {
     const facetTable =
       '| Facet | Direction | Description |\n| --- | --- | --- |\n| post_copy | output | Rendered social post copy. |'
     const capabilityTable =
-      '| Capability ID | Display Name | Kind | Input Facets | Output Facets | Summary |\n| --- | --- | --- | --- | --- | --- |\n| copywriter.SocialpostDrafting | Copywriter – Social Post Drafting | execution | creative_brief | post_copy | Generates social post copy variants. |'
+      '| Capability ID | Display Name | Kind | Input Facets | Output Facets | Reason Codes |\n| --- | --- | --- | --- | --- | --- |\n| copywriter.SocialpostDrafting | Copywriter – Social Post Drafting | execution | creative_brief | post_copy | path |'
     const message = buildPlannerSystemPrompt({ facetTable, capabilityTable })
     expect(message.role).toBe('system')
     const content = message.content
@@ -204,16 +251,17 @@ describe('planner prompt builders', () => {
       policyMetadata: {
         legacyNotes: ['Legacy policy applies'],
         legacyFields: ['toneProfile']
-      }
+      },
+      crcs: DEFAULT_CRCS
     }
 
-  const result = buildPlannerUserPrompt({ input, capabilities, facets })
+  const result = buildPlannerUserPrompt({ input, capabilities, facets, crcs: DEFAULT_CRCS })
   const content = result.message.content
 
   expect(result.facetRowCount).toBeGreaterThan(0)
   expect(result.capabilityRowCount).toBeGreaterThan(0)
   expect(result.facetTable).toContain('| Facet | Direction | Description |')
-  expect(result.capabilityTable).toContain('| Capability ID | Display Name | Kind | Input Facets | Output Facets | Summary |')
+  expect(result.capabilityTable).toContain('| Capability ID | Display Name | Kind | Input Facets | Output Facets | Reason Codes |')
   expect(content).not.toContain('### FACET CATALOG SUMMARY')
   expect(content).not.toContain('| Facet | Direction | Description |')
   expect(content).toContain('### EXISTING PLAN SNAPSHOT')
@@ -223,7 +271,7 @@ describe('planner prompt builders', () => {
   expect(content).toContain('post_copy')
   expect(content).not.toContain('irrelevant_facet')
   expect(content).not.toContain('### CAPABILITY REGISTRY SUMMARY')
-  expect(content).not.toContain('| Capability ID | Display Name | Kind | Input Facets | Output Facets | Summary |')
+  expect(content).not.toContain('| Capability ID | Display Name | Kind | Input Facets | Output Facets | Reason Codes |')
   expect(content).not.toContain('Diagnostics – Run Summary') // trimmed because not relevant to selected facets
     expect(content).toContain('### INTERNAL CHECKLIST REMINDER')
     expect(content).toContain('Return only the final JSON object')
@@ -232,7 +280,7 @@ describe('planner prompt builders', () => {
 
   it('records telemetry for prompt sizes when proposing a plan', async () => {
     const capabilities = [buildCapability({})]
-    const telemetry = { recordPlannerPromptSize: vi.fn() }
+    const telemetry = { recordPlannerPromptSize: vi.fn(), recordPlannerCrcsStats: vi.fn() }
     const responses = {
       create: vi.fn().mockResolvedValue({
         output_text: JSON.stringify({
@@ -259,7 +307,8 @@ describe('planner prompt builders', () => {
       envelope: buildEnvelope(),
       context: buildContext(),
       capabilities,
-      policies: { planner: undefined, runtime: [] }
+      policies: { planner: undefined, runtime: [] },
+      crcs: DEFAULT_CRCS
     }
 
     await planner.proposePlan(input)
@@ -271,11 +320,30 @@ describe('planner prompt builders', () => {
     expect(telemetryPayload.userCharacters).toBeGreaterThan(0)
     expect(telemetryPayload.facetRows).toBeGreaterThan(0)
     expect(telemetryPayload.capabilityRows).toBeGreaterThan(0)
+    expect(telemetry.recordPlannerCrcsStats).toHaveBeenCalledTimes(1)
+    expect(telemetry.recordPlannerCrcsStats.mock.calls[0][0].totalRows).toBeGreaterThan(0)
   })
 
   it('adds GOAL CONDITION REPAIR details when failures exist', () => {
     const facets = [buildFacet('summary', 'output', 'Summarized status.')]
     const capabilities = [buildCapability({ capabilityId: 'summary.Writer' })]
+    const crcs = buildCrcsSnapshot([
+      {
+        capabilityId: 'copywriter.SocialpostDrafting',
+        displayName: 'Copywriter – Social Post Drafting',
+        inputFacets: ['creative_brief'],
+        outputFacets: ['post_copy'],
+        reasonCodes: ['path']
+      },
+      {
+        capabilityId: 'diagnostics.RunSummary',
+        displayName: 'Diagnostics – Run Summary',
+        kind: 'validation',
+        inputFacets: ['diagnostic_input'],
+        outputFacets: ['diagnostic_notes'],
+        reasonCodes: ['path']
+      }
+    ])
     const input: PlannerServiceInput = {
       envelope: buildEnvelope(),
       context: buildContext(),
@@ -293,10 +361,11 @@ describe('planner prompt builders', () => {
           observedValue: 'draft',
           error: 'Condition evaluation failed.'
         }
-      ]
+      ],
+      crcs
     }
 
-    const result = buildPlannerUserPrompt({ input, capabilities, facets })
+    const result = buildPlannerUserPrompt({ input, capabilities, facets, crcs })
     expect(result.message.content).toContain('### GOAL CONDITION REPAIR')
     expect(result.message.content).toContain('Facet "summary" @ path "/status"')
     expect(result.message.content).toContain('Canonical DSL')

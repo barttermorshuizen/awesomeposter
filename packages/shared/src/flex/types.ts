@@ -507,3 +507,35 @@ export const CapabilityRecordSchema = CapabilityRecordCoreSchema.superRefine(ens
   (value) => normalizeCapabilityContracts(value)
 )
 export type CapabilityRecord = z.infer<typeof CapabilityRecordSchema>
+
+export const FlexCrcsReasonCodeSchema = z.enum(['path', 'policy_reference', 'goal_condition'])
+export type FlexCrcsReasonCode = z.infer<typeof FlexCrcsReasonCodeSchema>
+
+export const FlexCrcsCapabilityEntrySchema = z.object({
+  capabilityId: z.string().min(1),
+  displayName: z.string().min(1),
+  kind: z.enum(['structuring', 'execution', 'validation', 'transformation', 'routing']).default('execution'),
+  inputFacets: z.array(z.string().min(1)).default([]),
+  outputFacets: z.array(z.string().min(1)).default([]),
+  reasonCodes: z.array(FlexCrcsReasonCodeSchema).nonempty(),
+  source: z.enum(['mrcs', 'expansion']).default('expansion')
+})
+export type FlexCrcsCapabilityEntry = z.infer<typeof FlexCrcsCapabilityEntrySchema>
+
+export const FlexCrcsSummarySchema = z.object({
+  totalRows: z.number().int().nonnegative(),
+  mrcsSize: z.number().int().nonnegative(),
+  reasonCounts: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  rowCap: z.number().int().positive().optional(),
+  missingPinnedCapabilities: z.number().int().nonnegative().optional()
+})
+export type FlexCrcsSummary = z.infer<typeof FlexCrcsSummarySchema>
+
+export const FlexCrcsSnapshotSchema = FlexCrcsSummarySchema.extend({
+  rows: z.array(FlexCrcsCapabilityEntrySchema),
+  truncated: z.boolean().optional(),
+  pinnedCapabilityIds: z.array(z.string().min(1)).default([]),
+  mrcsCapabilityIds: z.array(z.string().min(1)).default([]),
+  missingPinnedCapabilityIds: z.array(z.string().min(1)).default([])
+})
+export type FlexCrcsSnapshot = z.infer<typeof FlexCrcsSnapshotSchema>

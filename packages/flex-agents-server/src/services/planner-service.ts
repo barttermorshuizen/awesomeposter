@@ -5,7 +5,8 @@ import type {
   CapabilityRecord,
   FacetDefinition,
   TaskPolicies,
-  GoalConditionResult
+  GoalConditionResult,
+  FlexCrcsSnapshot
 } from '@awesomeposter/shared'
 import { getFacetCatalog } from '@awesomeposter/shared'
 import { getFlexCapabilityRegistryService, type FlexCapabilityRegistryService } from './flex-capability-registry'
@@ -120,6 +121,7 @@ export type PlannerServiceInput = {
     legacyFields: string[]
   }
   goalConditionFailures?: GoalConditionResult[]
+  crcs: FlexCrcsSnapshot
 }
 
 type PlannerPromptMessage = { role: 'system' | 'user'; content: string }
@@ -406,8 +408,9 @@ export function buildPlannerUserPrompt(params: {
   input: PlannerServiceInput
   capabilities: CapabilityRecord[]
   facets: FacetDefinition[]
+  crcs: FlexCrcsSnapshot
 }): PlannerUserPromptResult {
-  const { input, capabilities, facets } = params
+  const { input, capabilities, facets, crcs } = params
   const context = input.context
   const planningHints = [`Variant count: ${context.variantCount}`]
 
@@ -441,27 +444,44 @@ export function buildPlannerUserPrompt(params: {
 
   const facetTable = formatMarkdownTable(['Facet', 'Direction', 'Description'], facetRows)
 
-  const capabilityRowsTotal = relevantCapabilities.length || capabilities.length
-  const capabilityDefinitionsToUse = (relevantCapabilities.length ? relevantCapabilities : capabilities).slice(
-    0,
-    MAX_CAPABILITY_ROWS
-  )
+  let capabilityRows: string[][] = []
 
-  const capabilityRows = capabilityDefinitionsToUse.map((capability) => {
-    const inputFacets = capability.inputFacets?.length ? capability.inputFacets.join(', ') : '—'
-    const outputFacets = capability.outputFacets?.length ? capability.outputFacets.join(', ') : '—'
-    return [
-      escapeTableCell(capability.capabilityId),
-      escapeTableCell(capability.displayName),
-      escapeTableCell(inferCapabilityKind(capability)),
-      escapeTableCell(inputFacets),
-      escapeTableCell(outputFacets),
-      escapeTableCell(capability.summary)
-    ]
-  })
+  if (crcs.rows.length) {
+    const limitedRows = crcs.rows.slice(0, MAX_CAPABILITY_ROWS)
+    capabilityRows = limitedRows.map((entry) => {
+      const inputFacets = entry.inputFacets.length ? entry.inputFacets.join(', ') : '—'
+      const outputFacets = entry.outputFacets.length ? entry.outputFacets.join(', ') : '—'
+      const reasons = entry.reasonCodes.join(', ')
+      return [
+        escapeTableCell(entry.capabilityId),
+        escapeTableCell(entry.displayName),
+        escapeTableCell(entry.kind),
+        escapeTableCell(inputFacets),
+        escapeTableCell(outputFacets),
+        escapeTableCell(reasons || '—')
+      ]
+    })
+  } else {
+    const fallbackDefinitions = (relevantCapabilities.length ? relevantCapabilities : capabilities).slice(
+      0,
+      MAX_CAPABILITY_ROWS
+    )
+    capabilityRows = fallbackDefinitions.map((capability) => {
+      const inputFacets = capability.inputFacets?.length ? capability.inputFacets.join(', ') : '—'
+      const outputFacets = capability.outputFacets?.length ? capability.outputFacets.join(', ') : '—'
+      return [
+        escapeTableCell(capability.capabilityId),
+        escapeTableCell(capability.displayName),
+        escapeTableCell(inferCapabilityKind(capability)),
+        escapeTableCell(inputFacets),
+        escapeTableCell(outputFacets),
+        escapeTableCell('—')
+      ]
+    })
+  }
 
   const capabilityTable = formatMarkdownTable(
-    ['Capability ID', 'Display Name', 'Kind', 'Input Facets', 'Output Facets', 'Summary'],
+    ['Capability ID', 'Display Name', 'Kind', 'Input Facets', 'Output Facets', 'Reason Codes'],
     capabilityRows
   )
 
@@ -735,7 +755,8 @@ export class PlannerService implements PlannerServiceInterface {
     const userPrompt = buildPlannerUserPrompt({
       input,
       capabilities: capabilitySnapshot,
-      facets: facetDefinitions
+      facets: facetDefinitions,
+      crcs: input.crcs
     })
     const systemMessage = buildPlannerSystemPrompt({
       facetTable: userPrompt.facetTable,
@@ -748,6 +769,13 @@ export class PlannerService implements PlannerServiceInterface {
       userCharacters: userMessage.content.length,
       facetRows: userPrompt.facetRowCount,
       capabilityRows: userPrompt.capabilityRowCount
+    })
+    this.telemetry.recordPlannerCrcsStats({
+      totalRows: input.crcs.totalRows,
+      mrcsSize: input.crcs.mrcsSize,
+      reasonCounts: input.crcs.reasonCounts,
+      rowCap: input.crcs.rowCap,
+      missingPinnedCapabilities: input.crcs.missingPinnedCapabilityIds.length
     })
 
     const llmPromise = this.invokeResponsesApi([systemMessage, userMessage], PlannerDraftSchema)

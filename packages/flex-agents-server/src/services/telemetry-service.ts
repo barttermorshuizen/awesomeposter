@@ -208,6 +208,28 @@ class TelemetryService {
     } catch {}
   }
 
+  recordPlannerCrcsStats(context: {
+    totalRows: number
+    mrcsSize: number
+    reasonCounts: Record<string, number>
+    rowCap?: number
+    missingPinnedCapabilities?: number
+  }) {
+    this.recordHistogram('flex.planner.crcs.rows', context.totalRows, {
+      rowCap: context.rowCap ?? undefined
+    })
+    this.recordHistogram('flex.planner.crcs.mrcs', context.mrcsSize)
+    for (const [reason, count] of Object.entries(context.reasonCounts)) {
+      this.recordHistogram('flex.planner.crcs.reason', count, { reason })
+    }
+    if (typeof context.missingPinnedCapabilities === 'number') {
+      this.recordHistogram('flex.planner.crcs.missing_pinned', context.missingPinnedCapabilities)
+    }
+    try {
+      getLogger().info('flex_planner_crcs_metrics', context)
+    } catch {}
+  }
+
   getMetricsSnapshot(): TelemetryMetricsSnapshot {
     const counters: Record<string, number> = {}
     for (const [key, value] of this.counters.entries()) {

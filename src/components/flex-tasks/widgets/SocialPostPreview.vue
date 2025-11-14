@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue'
 import { resolveFlexAssetSource } from './flexAssetUtils'
 import type { FacetWidgetProps, FacetWidgetEmits } from './types'
+import { getRunContextFacetValue } from '@/lib/runContextSnapshot'
 
 const props = defineProps<FacetWidgetProps>()
 const emit = defineEmits<FacetWidgetEmits>()
@@ -40,13 +41,8 @@ function toNumberOrNull(value: unknown): number | null {
 
 function extractFacetSnapshotValue(snapshot: Record<string, unknown> | null, key: string): unknown {
   if (!snapshot) return null
-  const facets = isRecord(snapshot['facets']) ? (snapshot['facets'] as Record<string, unknown>) : null
-  if (!facets) return null
-  const entry = facets[key]
-  if (isRecord(entry) && 'value' in entry) {
-    return (entry as Record<string, unknown>).value
-  }
-  return entry ?? null
+  const value = getRunContextFacetValue(snapshot, key)
+  return value ?? null
 }
 
 function extractCopyFromModel(value: unknown): string | null {

@@ -5,6 +5,13 @@ import {
   FacetContractCompiler,
   FacetContractError,
   JsonSchemaContract,
+  TaskEnvelope,
+  TaskPolicies,
+  GoalConditionResult,
+  FacetCondition,
+  FlexCrcsSnapshot,
+  FlexCrcsCapabilityEntry,
+  FlexCrcsReasonCode,
   type CompiledFacetSchema
 } from '@awesomeposter/shared'
 import { getLogger } from './logger'
@@ -17,6 +24,23 @@ import {
 type CapabilitySnapshot = {
   active: CapabilityRecord[]
   all: CapabilityRecord[]
+}
+
+type CrcsGraphContext = {
+  completedNodes?: Array<{ outputFacets?: string[] | null }>
+  facetValues?: Array<{ facet: string }>
+}
+
+type ComputeCrcsSnapshotInput = {
+  envelope: TaskEnvelope
+  policies: TaskPolicies
+  capabilities?: CapabilityRecord[]
+  graphContext?: CrcsGraphContext
+  goalConditions?: FacetCondition[]
+  goalConditionFailures?: GoalConditionResult[]
+  availableFacetHints?: string[]
+  pinnedCapabilities?: string[]
+  maxRows?: number
 }
 
 function determineTimeoutSeconds(record: CapabilityRecord): number | null {
@@ -89,6 +113,106 @@ export class FlexCapabilityRegistryService {
 
   async getSnapshot(): Promise<CapabilitySnapshot> {
     return this.loadSnapshot()
+  }
+
+  async computeCrcsSnapshot(input: ComputeCrcsSnapshotInput): Promise<FlexCrcsSnapshot> {
+    const snapshot = input.capabilities ?? (await this.getSnapshot()).active
+    const capabilities = snapshot.slice()
+    if (capabilities.length === 0) {
+      return {
+        rows: [],
+        totalRows: 0,
+        mrcsSize: 0,
+        reasonCounts: {},
+        rowCap: input.maxRows,
+        pinnedCapabilityIds: [],
+        mrcsCapabilityIds: [],
+        missingPinnedCapabilityIds: []
+      }
+    }
+
+    const rowCapEnv = Number(process.env.FLEX_PLANNER_CRCS_MAX_ROWS ?? 80)
+    const resolvedRowCap = input.maxRows && Number.isFinite(input.maxRows) ? input.maxRows : rowCapEnv
+    const rowCap = Math.max(1, resolvedRowCap || 1)
+
+    const capabilityEntries = capabilities.map((capability, index) => {
+      const inputs = this.getCapabilityFacets(capability, 'input')
+      const outputs = this.getCapabilityFacets(capability, 'output')
+      return { capability, index, inputs, outputs }
+    })
+    const facetToConsumers = new Map<string, string[]>()
+    const facetToProducers = new Map<string, string[]>()
+    capabilityEntries.forEach((entry) => {
+      entry.inputs.forEach((facet) => {
+        const bucket = facetToConsumers.get(facet) ?? []
+        bucket.push(entry.capability.capabilityId)
+        facetToConsumers.set(facet, bucket)
+      })
+      entry.outputs.forEach((facet) => {
+        const bucket = facetToProducers.get(facet) ?? []
+        bucket.push(entry.capability.capabilityId)
+        facetToProducers.set(facet, bucket)
+      })
+    })
+
+    const { pinnedFromPolicies, pinnedFromGoalConditions, missingPinned } = this.collectPinnedCapabilities({
+      policies: input.policies,
+      goalConditions: input.goalConditions,
+      goalConditionFailures: input.goalConditionFailures,
+      facetToCapabilities: facetToProducers
+    })
+    const explicitPins = new Set<string>(input.pinnedCapabilities ?? [])
+    pinnedFromPolicies.forEach((id) => explicitPins.add(id))
+    pinnedFromGoalConditions.forEach((id) => explicitPins.add(id))
+
+    const startFacets = this.resolveStartFacets(input.envelope, input.graphContext, input.availableFacetHints)
+    const targetFacets = this.resolveTargetFacets(input.envelope, input.goalConditions)
+
+    const forwardCaps = this.resolveForwardReachableCaps(startFacets, facetToConsumers, capabilityEntries)
+    const backwardCaps = this.resolveBackwardReachableCaps(targetFacets, facetToProducers, capabilityEntries)
+    const pathCaps = new Set<string>()
+    forwardCaps.forEach((id) => {
+      if (backwardCaps.has(id)) {
+        pathCaps.add(id)
+      }
+    })
+
+    const reasonMap = new Map<string, Set<FlexCrcsReasonCode>>()
+    const addReason = (capabilityId: string, reason: FlexCrcsReasonCode) => {
+      if (!pathCaps.has(capabilityId)) return
+      const bucket = reasonMap.get(capabilityId) ?? new Set<FlexCrcsReasonCode>()
+      bucket.add(reason)
+      reasonMap.set(capabilityId, bucket)
+    }
+
+    pathCaps.forEach((capabilityId) => addReason(capabilityId, 'path'))
+
+    const pinnedCapabilityIds: string[] = []
+    const missingPinnedCapabilityIds = new Set<string>(missingPinned)
+    for (const capabilityId of explicitPins) {
+      if (pathCaps.has(capabilityId)) {
+        addReason(capabilityId, pinnedFromPolicies.has(capabilityId) ? 'policy_reference' : 'goal_condition')
+        pinnedCapabilityIds.push(capabilityId)
+      } else {
+        missingPinnedCapabilityIds.add(capabilityId)
+      }
+    }
+
+    const allRows = this.buildCrcsRows(capabilityEntries, reasonMap, pathCaps)
+    const { rows, truncated } = this.enforceRowCap(allRows, pathCaps.size, rowCap)
+    const reasonCounts = this.buildReasonCounts(rows)
+
+    return {
+      rows,
+      totalRows: rows.length,
+      mrcsSize: pathCaps.size,
+      reasonCounts,
+      rowCap,
+      truncated,
+      pinnedCapabilityIds,
+      mrcsCapabilityIds: Array.from(pathCaps),
+      missingPinnedCapabilityIds: Array.from(missingPinnedCapabilityIds)
+    }
   }
 
   private async loadSnapshot(force = false): Promise<CapabilitySnapshot> {
@@ -334,6 +458,235 @@ export class FlexCapabilityRegistryService {
 
     return Object.keys(base).length ? base : undefined
   }
+
+  private resolveStartFacets(
+    envelope: TaskEnvelope,
+    graphContext?: CrcsGraphContext,
+    hints?: string[]
+  ): Set<string> {
+    const facets = new Set<string>()
+    if (envelope.inputs && typeof envelope.inputs === 'object') {
+      Object.keys(envelope.inputs).forEach((key) => facets.add(key))
+    }
+    if (Array.isArray(hints)) {
+      hints.filter((facet): facet is string => typeof facet === 'string' && facet.length > 0).forEach((facet) => facets.add(facet))
+    }
+    if (graphContext?.completedNodes) {
+      graphContext.completedNodes.forEach((node) => {
+        const outputs = Array.isArray(node.outputFacets) ? node.outputFacets : []
+        outputs.forEach((facet) => facets.add(facet))
+      })
+    }
+    if (graphContext?.facetValues) {
+      graphContext.facetValues.forEach((entry) => {
+        if (entry?.facet) facets.add(entry.facet)
+      })
+    }
+    return facets
+  }
+
+  private resolveTargetFacets(envelope: TaskEnvelope, goalConditions?: FacetCondition[]): Set<string> {
+    const facets = new Set<string>()
+    if (envelope.outputContract?.mode === 'facets') {
+      (envelope.outputContract.facets ?? []).forEach((facet) => facets.add(facet))
+    }
+    goalConditions?.forEach((condition) => {
+      if (condition?.facet) facets.add(condition.facet)
+    })
+    return facets
+  }
+
+  private resolveForwardReachableCaps(
+    startFacets: Set<string>,
+    facetToConsumers: Map<string, string[]>,
+    capabilityEntries: Array<{ capability: CapabilityRecord; inputs: string[]; outputs: string[] }>
+  ): Set<string> {
+    const queue: string[] = Array.from(startFacets)
+    const visitedFacets = new Set(queue)
+    const reachableCaps = new Set<string>()
+    const capabilityMap = new Map(capabilityEntries.map((entry) => [entry.capability.capabilityId, entry]))
+
+    while (queue.length) {
+      const facet = queue.shift()!
+      const consumers = facetToConsumers.get(facet) ?? []
+      for (const capabilityId of consumers) {
+        if (reachableCaps.has(capabilityId)) continue
+        reachableCaps.add(capabilityId)
+        const entry = capabilityMap.get(capabilityId)
+        if (!entry) continue
+        for (const nextFacet of entry.outputs) {
+          if (!visitedFacets.has(nextFacet)) {
+            visitedFacets.add(nextFacet)
+            queue.push(nextFacet)
+          }
+        }
+      }
+    }
+    return reachableCaps
+  }
+
+  private resolveBackwardReachableCaps(
+    targetFacets: Set<string>,
+    facetToProducers: Map<string, string[]>,
+    capabilityEntries: Array<{ capability: CapabilityRecord; inputs: string[]; outputs: string[] }>
+  ): Set<string> {
+    const queue: string[] = Array.from(targetFacets)
+    const visitedFacets = new Set(queue)
+    const reachableCaps = new Set<string>()
+    const capabilityMap = new Map(capabilityEntries.map((entry) => [entry.capability.capabilityId, entry]))
+
+    while (queue.length) {
+      const facet = queue.shift()!
+      const producers = facetToProducers.get(facet) ?? []
+      for (const capabilityId of producers) {
+        if (reachableCaps.has(capabilityId)) continue
+        reachableCaps.add(capabilityId)
+        const entry = capabilityMap.get(capabilityId)
+        if (!entry) continue
+        for (const nextFacet of entry.inputs) {
+          if (!visitedFacets.has(nextFacet)) {
+            visitedFacets.add(nextFacet)
+            queue.push(nextFacet)
+          }
+        }
+      }
+    }
+    return reachableCaps
+  }
+
+  private collectPinnedCapabilities(params: {
+    policies: TaskPolicies
+    goalConditions?: FacetCondition[]
+    goalConditionFailures?: GoalConditionResult[]
+    facetToCapabilities: Map<string, string[]>
+  }): {
+    pinnedFromPolicies: Set<string>
+    pinnedFromGoalConditions: Set<string>
+    missingPinned: string[]
+  } {
+    const pinnedFromPolicies = new Set<string>()
+    const plannerSelection = params.policies.planner?.selection
+    if (plannerSelection) {
+      const { require, prefer, avoid, forbid } = plannerSelection
+      ;[require, prefer, avoid, forbid].forEach((bucket) => {
+        bucket?.forEach((capabilityId) => pinnedFromPolicies.add(capabilityId))
+      })
+    }
+    params.policies.runtime.forEach((policy) => {
+      const capabilityId = policy.trigger?.selector?.capabilityId
+      if (capabilityId) pinnedFromPolicies.add(capabilityId)
+    })
+
+    const pinnedFromGoalConditions = new Set<string>()
+    const missingPinned: string[] = []
+    const registerFacet = (facet: string | undefined) => {
+      if (!facet) return
+      const owners = params.facetToCapabilities.get(facet)
+      if (!owners || owners.length === 0) {
+        missingPinned.push(`facet:${facet}`)
+        return
+      }
+      owners.forEach((capabilityId) => pinnedFromGoalConditions.add(capabilityId))
+    }
+
+    params.goalConditions?.forEach((condition) => registerFacet(condition.facet))
+    params.goalConditionFailures?.forEach((failure) => registerFacet(failure.facet))
+
+    return {
+      pinnedFromPolicies,
+      pinnedFromGoalConditions,
+      missingPinned
+    }
+  }
+
+  private buildCrcsRows(
+    capabilityEntries: Array<{ capability: CapabilityRecord; index: number }>,
+    reasonMap: Map<string, Set<FlexCrcsReasonCode>>,
+    pathCaps: Set<string>
+  ) {
+    const rows: FlexCrcsCapabilityEntry[] = []
+    capabilityEntries.forEach((entry) => {
+      if (!pathCaps.has(entry.capability.capabilityId)) return
+      const reasons = reasonMap.get(entry.capability.capabilityId)
+      if (!reasons || reasons.size === 0) return
+      rows.push({
+        capabilityId: entry.capability.capabilityId,
+        displayName: entry.capability.displayName,
+        kind: inferCapabilityKind(entry.capability),
+        inputFacets: this.getCapabilityFacets(entry.capability, 'input'),
+        outputFacets: this.getCapabilityFacets(entry.capability, 'output'),
+        reasonCodes: Array.from(reasons),
+        source: 'mrcs'
+      })
+    })
+    return rows
+  }
+
+  private enforceRowCap(
+    rows: FlexCrcsCapabilityEntry[],
+    _mrcsSize: number,
+    rowCap: number
+  ): { rows: FlexCrcsCapabilityEntry[]; truncated: boolean } {
+    if (rows.length <= rowCap) {
+      return { rows, truncated: false }
+    }
+    return {
+      rows: rows.slice(0, rowCap),
+      truncated: true
+    }
+  }
+
+  private buildReasonCounts(rows: FlexCrcsCapabilityEntry[]): Record<string, number> {
+    const counts: Record<string, number> = {}
+    rows.forEach((row) => {
+      row.reasonCodes.forEach((reason) => {
+        counts[reason] = (counts[reason] ?? 0) + 1
+      })
+    })
+    return counts
+  }
+
+  private getCapabilityFacets(capability: CapabilityRecord, direction: 'input' | 'output'): string[] {
+    const declared = direction === 'input' ? capability.inputFacets : capability.outputFacets
+    if (declared && declared.length) {
+      return Array.from(new Set(declared))
+    }
+    const contract = direction === 'input' ? capability.inputContract : capability.outputContract
+    if (contract?.mode === 'facets') {
+      return Array.from(new Set(contract.facets ?? []))
+    }
+    return []
+  }
+
+}
+
+function inferCapabilityKind(capability: CapabilityRecord): 'structuring' | 'execution' | 'validation' | 'transformation' | 'routing' {
+  const metadata = (capability.metadata ?? {}) as Record<string, unknown>
+  const explicitKind = typeof metadata?.plannerKind === 'string' ? metadata.plannerKind : null
+  if (
+    explicitKind === 'structuring' ||
+    explicitKind === 'execution' ||
+    explicitKind === 'validation' ||
+    explicitKind === 'transformation' ||
+    explicitKind === 'routing'
+  ) {
+    return explicitKind
+  }
+
+  const id = capability.capabilityId.toLowerCase()
+  const display = capability.displayName.toLowerCase()
+  const summary = capability.summary.toLowerCase()
+
+  if (id.includes('strategy') || id.includes('planner') || display.includes('strateg') || summary.includes('brief')) {
+    return 'structuring'
+  }
+  if (id.includes('review') || id.includes('qa') || summary.includes('review') || display.includes('review')) {
+    return 'validation'
+  }
+  if (id.includes('transform') || summary.includes('transform') || summary.includes('normalize')) {
+    return 'transformation'
+  }
+  return 'execution'
 }
 
 let singleton: FlexCapabilityRegistryService | null = null

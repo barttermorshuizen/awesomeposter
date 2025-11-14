@@ -199,6 +199,51 @@ const normalizeFacetEntriesFromSource = (
   return entries
 }
 
+type PlannerCrcsPayload = {
+  totalRows: number
+  mrcsSize: number
+  reasonCounts: Record<string, number>
+  rowCap?: number
+  missingPinnedCapabilities?: number
+}
+
+function buildCrcsPayload(summary?: {
+  totalRows: number
+  mrcsSize: number
+  reasonCounts: Record<string, number>
+  rowCap?: number
+  missingPinnedCapabilities?: number
+}): PlannerCrcsPayload | undefined {
+  if (!summary) return undefined
+  return {
+    totalRows: summary.totalRows,
+    mrcsSize: summary.mrcsSize,
+    reasonCounts: summary.reasonCounts,
+    rowCap: summary.rowCap,
+    missingPinnedCapabilities: summary.missingPinnedCapabilities
+  }
+}
+
+function extractCrcsPayloadFromMetadata(metadata: Record<string, unknown> | undefined): PlannerCrcsPayload | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined
+  const candidate = (metadata as { crcs?: unknown }).crcs
+  if (!candidate || typeof candidate !== 'object') return undefined
+  const data = candidate as Record<string, unknown>
+  if (typeof data.totalRows !== 'number' || typeof data.mrcsSize !== 'number') return undefined
+  const reasonCounts =
+    data.reasonCounts && typeof data.reasonCounts === 'object'
+      ? (data.reasonCounts as Record<string, number>)
+      : {}
+  return {
+    totalRows: data.totalRows,
+    mrcsSize: data.mrcsSize,
+    reasonCounts,
+    rowCap: typeof data.rowCap === 'number' ? data.rowCap : undefined,
+    missingPinnedCapabilities:
+      typeof data.missingPinnedCapabilities === 'number' ? data.missingPinnedCapabilities : undefined
+  }
+}
+
 const normalizeFacetMap = (value: unknown): FacetProvenanceMap | undefined => {
   if (!value || typeof value !== 'object') return undefined
   const container = value as { input?: unknown; output?: unknown }
@@ -779,6 +824,13 @@ export class FlexRunCoordinator {
                       failedGoalConditions: requestOptions.replanContext?.failedGoalConditions
                     }
                   : undefined
+              const crcsPayload = buildCrcsPayload({
+                totalRows: requestContext.crcs.totalRows,
+                mrcsSize: requestContext.crcs.mrcsSize,
+                reasonCounts: requestContext.crcs.reasonCounts,
+                rowCap: requestContext.crcs.rowCap,
+                missingPinnedCapabilities: requestContext.crcs.missingPinnedCapabilityIds.length
+              })
               await emitEvent({
                 type: 'plan_requested',
                 timestamp: new Date().toISOString(),
@@ -815,6 +867,7 @@ export class FlexRunCoordinator {
                     displayName: capability.displayName,
                     status: capability.status
                   })),
+                  ...(crcsPayload ? { crcs: crcsPayload } : {}),
                   ...(replanMetadata ? { replan: replanMetadata } : {})
                 }
               })
@@ -915,6 +968,7 @@ export class FlexRunCoordinator {
         pendingFailedGoalConditions = [...resumeInitialState.goalConditionFailures]
       }
 
+      const resumedCrcsPayload = extractCrcsPayloadFromMetadata(activePlan.metadata as Record<string, unknown>)
       await emitEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -968,7 +1022,8 @@ export class FlexRunCoordinator {
               ...(edge.reason ? { reason: edge.reason } : {})
             })),
             metadata: { resumed: true }
-          }
+          },
+          ...(resumedCrcsPayload ? { crcs: resumedCrcsPayload } : {})
         }
       })
 
@@ -1520,6 +1575,9 @@ export class FlexRunCoordinator {
                     : undefined
                 }
               })
+              const replanCrcsPayload = extractCrcsPayloadFromMetadata(
+                updatedPlan.metadata as Record<string, unknown>
+              )
               const replanPlanPayload = {
                 plan: {
                   runId: updatedPlan.runId,
@@ -1572,7 +1630,8 @@ export class FlexRunCoordinator {
                         failedGoalConditions: pendingFailedGoalConditions
                       }
                     }
-                  : { replan: { reason: replanContext.reason } })
+                  : { replan: { reason: replanContext.reason } }),
+                ...(replanCrcsPayload ? { crcs: replanCrcsPayload } : {})
               }
               await emitEvent({
                 type: 'plan_generated',
@@ -1637,14 +1696,15 @@ export class FlexRunCoordinator {
                 ...(routingResult ? { routingResult } : {})
               }
             }),
-              edges: updatedPlan.edges.map((edge) => ({
-                from: edge.from,
-                to: edge.to,
-                ...(edge.reason ? { reason: edge.reason } : {})
-              })),
-              metadata: updatedPlan.metadata
-            }
-          })
+            edges: updatedPlan.edges.map((edge) => ({
+              from: edge.from,
+              to: edge.to,
+              ...(edge.reason ? { reason: edge.reason } : {})
+            })),
+            metadata: updatedPlan.metadata
+          },
+          ...(replanCrcsPayload ? { crcs: replanCrcsPayload } : {})
+        })
               executionMode = 'execute'
               finalOutputSeed = null
               continue
@@ -1752,6 +1812,7 @@ export class FlexRunCoordinator {
         policyAttempts: {}
       }
     })
+      const initialCrcsPayload = extractCrcsPayloadFromMetadata(activePlan.metadata as Record<string, unknown>)
       await emitEvent({
         type: 'plan_generated',
         timestamp: new Date().toISOString(),
@@ -1799,7 +1860,8 @@ export class FlexRunCoordinator {
               ...(edge.reason ? { reason: edge.reason } : {})
             })),
             metadata: activePlan.metadata
-          }
+          },
+          ...(initialCrcsPayload ? { crcs: initialCrcsPayload } : {})
         }
       })
 
@@ -2001,6 +2063,9 @@ export class FlexRunCoordinator {
                   : undefined
               }
             })
+            const replanCrcsPayload = extractCrcsPayloadFromMetadata(
+              updatedPlan.metadata as Record<string, unknown>
+            )
             const replanPlanPayload = {
               plan: {
                 runId: updatedPlan.runId,
@@ -2053,7 +2118,8 @@ export class FlexRunCoordinator {
                       failedGoalConditions: pendingFailedGoalConditions
                     }
                   }
-                : { replan: { reason: replanContext.reason } })
+                : { replan: { reason: replanContext.reason } }),
+              ...(replanCrcsPayload ? { crcs: replanCrcsPayload } : {})
             }
             await emitEvent({
               type: 'plan_generated',
@@ -2124,7 +2190,8 @@ export class FlexRunCoordinator {
                   ...(edge.reason ? { reason: edge.reason } : {})
                 })),
                 metadata: updatedPlan.metadata
-              }
+              },
+              ...(replanCrcsPayload ? { crcs: replanCrcsPayload } : {})
             })
             continue
           }

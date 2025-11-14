@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useFlexTasksStore, type PostVisualAssetRecord } from '@/stores/flexTasks'
 import { resolveFlexAssetSource } from './flexAssetUtils'
 import type { FacetWidgetProps, FacetWidgetEmits } from './types'
+import { getRunContextFacetValue } from '@/lib/runContextSnapshot'
 
 type VisualAsset = {
   key: string
@@ -141,9 +142,11 @@ function extractContextAssets(context: unknown): ContextAsset[] {
 
   if (isRecord(context.runContextSnapshot)) {
     const snapshot = context.runContextSnapshot as Record<string, unknown>
-    pushCandidate(snapshot.post_visual)
-    if (isRecord(snapshot.artifacts)) {
-      pushCandidate(snapshot.artifacts.post_visual)
+    const snapshotPostVisual = getRunContextFacetValue(snapshot, 'post_visual')
+    pushCandidate(snapshotPostVisual)
+    const snapshotArtifacts = getRunContextFacetValue(snapshot, 'artifacts')
+    if (isRecord(snapshotArtifacts)) {
+      pushCandidate((snapshotArtifacts as Record<string, unknown>).post_visual)
     }
   }
 

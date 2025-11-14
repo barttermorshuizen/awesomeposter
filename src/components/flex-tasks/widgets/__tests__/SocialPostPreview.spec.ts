@@ -114,4 +114,25 @@ describe('SocialPostPreview', () => {
 
     expect(wrapper.find('[data-test="social-post-preview"]').exists()).toBe(false)
   })
+
+  it('reads flattened run context snapshot entries for copy', async () => {
+    const wrapper = mount(SocialPostPreview, {
+      props: {
+        modelValue: null,
+        definition: { title: 'Preview' } as any,
+        schema: {},
+        taskContext: {
+          runContextSnapshot: {
+            post_copy: { value: 'Flattened copy value.' }
+          }
+        }
+      },
+      global: { plugins: [vuetify] }
+    })
+
+    await flushPromises()
+
+    const copy = wrapper.get('[data-test="social-post-preview-copy"]').text()
+    expect(copy).toContain('Flattened copy value.')
+  })
 })

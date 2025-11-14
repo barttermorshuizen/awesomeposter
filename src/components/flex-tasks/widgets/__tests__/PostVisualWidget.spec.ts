@@ -53,16 +53,15 @@ function createPostVisualTaskEvent(): FlexEventWithId {
 }
 
 describe('PostVisualWidget', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    const store = useFlexTasksStore()
-    store.handleNodeStart(createPostVisualTaskEvent())
-    listFlexAssetsSpy = vi.spyOn(store, 'listFlexAssets').mockResolvedValue([
-      {
-        assetId: 'asset_a',
-        url: 'https://cdn.example.com/visual-a.png',
-        ordering: 0,
-        originalName: 'visual-a.png',
+beforeEach(() => {
+  setActivePinia(createPinia())
+  const store = useFlexTasksStore()
+  listFlexAssetsSpy = vi.spyOn(store, 'listFlexAssets').mockResolvedValue([
+    {
+      assetId: 'asset_a',
+      url: 'https://cdn.example.com/visual-a.png',
+      ordering: 0,
+      originalName: 'visual-a.png',
         mimeType: 'image/png'
       },
       {
@@ -70,10 +69,11 @@ describe('PostVisualWidget', () => {
         url: 'https://cdn.example.com/visual-b.png',
         ordering: 1,
         originalName: 'visual-b.png',
-        mimeType: 'image/png'
-      }
-    ])
-  })
+      mimeType: 'image/png'
+    }
+  ])
+  store.handleNodeStart(createPostVisualTaskEvent())
+})
 
   it('renders image thumbnails for visual assets', async () => {
     const store = useFlexTasksStore()
@@ -97,6 +97,40 @@ describe('PostVisualWidget', () => {
     const thumbnails = wrapper.findAll('[data-test="post-visual-thumb"]')
     expect(thumbnails.length).toBe(2)
     expect(thumbnails[0].attributes('src')).toBe('/api/flex/assets/asset_a/download')
+  })
+
+  it('uses flattened run context snapshot values for context assets', async () => {
+    const store = useFlexTasksStore()
+    if (store.activeTask) {
+      store.activeTask.metadata = {
+        runContextSnapshot: {
+          post_visual: {
+            value: ['https://cdn.example.com/context-visual.png'],
+            updatedAt: BASE_TIMESTAMP
+          }
+        }
+      }
+    }
+    listFlexAssetsSpy.mockResolvedValueOnce([])
+
+    const wrapper = mount(PostVisualWidget, {
+      props: {
+        modelValue: [],
+        definition: {
+          title: 'Post Visual',
+          description: 'Upload visuals for the campaign.'
+        } as any,
+        schema: { type: 'array' },
+        taskContext: store.activeTask?.metadata ?? null
+      },
+      global: { plugins: [vuetify] }
+    })
+
+    await flushPromises()
+
+    const thumbnails = wrapper.findAll('[data-test="post-visual-thumb"]')
+    expect(thumbnails.length).toBe(1)
+    expect(thumbnails[0].attributes('src')).toBe('https://cdn.example.com/context-visual.png')
   })
 
   it('uploads files and emits updated URL array', async () => {

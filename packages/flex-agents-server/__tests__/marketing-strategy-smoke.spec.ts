@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import type { CapabilityRecord, TaskEnvelope } from '@awesomeposter/shared'
+import type { CapabilityRecord, TaskEnvelope, FlexCrcsSnapshot } from '@awesomeposter/shared'
 import {
   getMarketingCapabilitiesSnapshot,
   getMarketingCapabilityCatalog
@@ -22,6 +22,34 @@ class MarketingRegistryStub implements FlexCapabilityRegistryService {
   }
   async getSnapshot(): Promise<{ active: CapabilityRecord[]; all: CapabilityRecord[] }> {
     return this.snapshot
+  }
+  async computeCrcsSnapshot(): Promise<FlexCrcsSnapshot> {
+    const rows = this.snapshot.active.map((capability, index) => ({
+      capabilityId: capability.capabilityId,
+      displayName: capability.displayName,
+      kind: 'execution' as const,
+      inputFacets: capability.inputFacets ?? [],
+      outputFacets: capability.outputFacets ?? [],
+      reasonCodes: ['path'] as const,
+      source: 'mrcs' as const
+    }))
+    const reasonCounts: Record<string, number> = {}
+    rows.forEach((row) => {
+      row.reasonCodes.forEach((reason) => {
+        reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1
+      })
+    })
+    return {
+      rows,
+      totalRows: rows.length,
+      mrcsSize: rows.length,
+      reasonCounts,
+      rowCap: rows.length,
+      truncated: false,
+      pinnedCapabilityIds: [],
+      mrcsCapabilityIds: rows.map((row) => row.capabilityId),
+      missingPinnedCapabilityIds: []
+    }
   }
   invalidate(): void {}
 }

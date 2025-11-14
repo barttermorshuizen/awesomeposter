@@ -9,7 +9,8 @@ import type {
   TaskEnvelope,
   TaskPolicies,
   ConditionalRoutingNode,
-  GoalConditionResult
+  GoalConditionResult,
+  FlexCrcsSnapshot
 } from '@awesomeposter/shared'
 import {
   FacetContractCompiler,
@@ -198,6 +199,7 @@ type PlanRequestContext = {
     legacyFields: string[]
   }
   capabilities: CapabilityRecord[]
+  crcs: FlexCrcsSnapshot
 }
 
 type BuildPlanOptions = {
@@ -384,15 +386,30 @@ export class FlexPlanner {
       policies: canonicalPolicies
     }
     const plannerContext = derivePlannerContext(envelopeForPlanner, canonicalPolicies, variantCount)
+    const graphContext = this.summarizeGraphState(options?.graphState)
+    const crcsGraphContext = graphContext
+      ? {
+          completedNodes: graphContext.completedNodes?.map((node) => ({ outputFacets: node.outputFacets })),
+          facetValues: graphContext.facetValues?.map((entry) => ({ facet: entry.facet }))
+        }
+      : undefined
+    const crcs = await this.capabilityRegistry.computeCrcsSnapshot({
+      envelope: envelopeForPlanner,
+      policies: canonicalPolicies,
+      capabilities: capabilitySnapshot.active,
+      graphContext: crcsGraphContext,
+      goalConditions: envelopeForPlanner.goal_condition,
+      goalConditionFailures: options?.graphState?.goalConditionFailures
+    })
     await options?.onRequest?.({
       runId,
       variantCount,
       context: plannerContext,
       policies: canonicalPolicies,
       policyMetadata,
-      capabilities: capabilitySnapshot.active
+      capabilities: capabilitySnapshot.active,
+      crcs
     })
-    const graphContext = this.summarizeGraphState(options?.graphState)
     const plannerDraft = await this.plannerService.proposePlan({
       envelope: envelopeForPlanner,
       context: plannerContext,
@@ -400,7 +417,8 @@ export class FlexPlanner {
       graphContext,
       policies: canonicalPolicies,
       policyMetadata,
-      goalConditionFailures: options?.graphState?.goalConditionFailures
+      goalConditionFailures: options?.graphState?.goalConditionFailures,
+      crcs
     })
     try {
       const draftPretty = JSON.stringify(plannerDraft, null, 2)
@@ -550,6 +568,13 @@ export class FlexPlanner {
     const derivedNodes = nodes.filter((node) => node.derivedCapability)
 
     const planVersion = this.computePlanVersion()
+    const crcsSummary = {
+      totalRows: crcs.totalRows,
+      mrcsSize: crcs.mrcsSize,
+      reasonCounts: crcs.reasonCounts,
+      rowCap: crcs.rowCap,
+      missingPinnedCapabilities: crcs.missingPinnedCapabilityIds.length
+    }
 
     return {
       runId,
@@ -583,7 +608,8 @@ export class FlexPlanner {
         plannerDiagnostics: plannerDiagnostics.length ? plannerDiagnostics : undefined,
         planVersionTag: `v${planVersion}.0`,
         normalizationInjected: nodes.some((node) => node.kind === 'transformation'),
-        emittedAt: this.now().toISOString()
+        emittedAt: this.now().toISOString(),
+        crcs: crcsSummary
       }
     }
   }

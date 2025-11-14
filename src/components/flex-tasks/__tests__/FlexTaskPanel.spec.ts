@@ -7,6 +7,7 @@ import FlexTaskPanel from '@/components/flex-tasks/FlexTaskPanel.vue'
 import DefaultFacetWidget from '@/components/flex-tasks/widgets/DefaultFacetWidget.vue'
 import { useFlexTasksStore } from '@/stores/flexTasks'
 import type { FlexEventWithId } from '@/lib/flex-sse'
+import type { FeedbackEntryDisplay } from '@/components/flex-tasks/widgets/types'
 
 const BASE_TIMESTAMP = '2025-01-01T00:00:00.000Z'
 
@@ -540,5 +541,81 @@ describe('FlexTaskPanel', () => {
 
     const widget = fallbackPanel.findComponent(DefaultFacetWidget)
     expect(widget.props('modelValue')).toEqual(['Existing summary entry'])
+  })
+
+  it('surfaces flattened run context feedback entries inside inline decorator', async () => {
+    const store = useFlexTasksStore()
+    store.handleNodeStart({
+      type: 'node_start',
+      timestamp: BASE_TIMESTAMP,
+      runId: 'run_feedback_snapshot',
+      nodeId: 'node_feedback_snapshot',
+      payload: {
+        executorType: 'human',
+        assignment: {
+          assignmentId: 'task_feedback_snapshot',
+          runId: 'run_feedback_snapshot',
+          nodeId: 'node_feedback_snapshot',
+          label: 'Director review',
+          status: 'awaiting_submission',
+          capabilityId: 'director.SocialPostingReview',
+          metadata: {
+            currentInputs: {
+              post_copy: 'Welcome Quinn to the quality team.'
+            },
+            runContextSnapshot: {
+              feedback: {
+                value: [
+                  {
+                    facet: 'post_copy',
+                    path: '/post_copy',
+                    message: 'Swap to guru-level phrasing.',
+                    author: 'Operator',
+                    severity: 'major',
+                    resolution: 'open',
+                    timestamp: '2025-11-13T15:57:28.595Z'
+                  }
+                ],
+                updatedAt: '2025-11-13T15:57:59.020Z',
+                provenance: []
+              }
+            }
+          }
+        },
+        facets: { input: ['post_copy'], output: ['feedback'] },
+        contracts: {
+          output: { mode: 'facets', facets: ['feedback'] }
+        }
+      }
+    } as FlexEventWithId)
+
+    const wrapper = mount(FlexTaskPanel, {
+      global: { plugins: [vuetify] }
+    })
+    await nextTick()
+
+    const setupState =
+      (((wrapper.vm as unknown as { $?: { setupState?: Record<string, unknown> } }).$?.setupState) ??
+        {}) as Record<string, unknown>
+    const feedbackRaw = setupState.feedbackDraftEntries as unknown
+    const feedbackList = Array.isArray(feedbackRaw)
+      ? feedbackRaw
+      : Array.isArray((feedbackRaw as { value?: unknown[] })?.value)
+        ? ((feedbackRaw as { value?: unknown[] }).value as unknown[])
+        : []
+    expect(feedbackList.length).toBe(1)
+    const bindingsRaw = setupState.inputFacetBindings as unknown
+    const bindingList = Array.isArray(bindingsRaw)
+      ? bindingsRaw
+      : Array.isArray((bindingsRaw as { value?: unknown[] })?.value)
+        ? ((bindingsRaw as { value?: unknown[] }).value as unknown[])
+        : []
+    const binding = bindingList[0] ?? null
+    expect(binding).toBeTruthy()
+    const entries =
+      binding && typeof setupState.entriesForInputBinding === 'function'
+        ? (setupState.entriesForInputBinding as (binding: unknown) => FeedbackEntryDisplay[])(binding)
+        : []
+    expect(entries?.[0]?.message).toContain('Swap to guru-level phrasing.')
   })
 })

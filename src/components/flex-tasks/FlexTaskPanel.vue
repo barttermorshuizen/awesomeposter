@@ -13,6 +13,7 @@ import {
 } from './widgets/registry'
 import DefaultFacetWidget from './widgets/DefaultFacetWidget.vue'
 import type { FeedbackEntryDisplay, FeedbackComposerPayload, FeedbackResolution } from './widgets/types'
+import { collectRunContextFacetEntries, getRunContextFacetValue } from '@/lib/runContextSnapshot'
 
 const flexTasksStore = useFlexTasksStore()
 const hitlStore = useHitlStore()
@@ -168,8 +169,8 @@ function buildRunContextOutput(task: FlexTaskRecord): Record<string, unknown> | 
     : null
   if (!snapshot) return null
 
-  const facets = isRecord(snapshot.facets) ? (snapshot.facets as Record<string, unknown>) : null
-  if (!facets) return null
+  const entries = collectRunContextFacetEntries(snapshot)
+  if (!Object.keys(entries).length) return null
 
   const provenance = Array.isArray(task.facetProvenance?.output)
     ? (task.facetProvenance?.output as FacetProvenanceEntry[])
@@ -177,9 +178,8 @@ function buildRunContextOutput(task: FlexTaskRecord): Record<string, unknown> | 
 
   const output: Record<string, unknown> = {}
 
-  for (const [facetName, entry] of Object.entries(facets)) {
-    if (!isRecord(entry)) continue
-    const value = (entry as Record<string, unknown>).value
+  for (const [facetName, entry] of Object.entries(entries)) {
+    const value = entry.value
     if (value === undefined) continue
     const pointerCandidate =
       provenance.find((item) => item.facet === facetName)?.pointer ?? `/${facetName}`
@@ -632,19 +632,10 @@ function initializeDraft(task: FlexTaskRecord | null) {
       }
     }
 
-    if ((existing === undefined || existing === null) && metadata && isRecord(metadata.runContextSnapshot)) {
-      const snapshot = metadata.runContextSnapshot as Record<string, unknown>
-      const facets = isRecord(snapshot.facets) ? (snapshot.facets as Record<string, unknown>) : null
-      if (facets) {
-        const entry = facets[binding.name]
-        if (isRecord(entry) && 'value' in entry) {
-          const value = (entry as Record<string, unknown>).value
-          if (value !== undefined && value !== null) {
-            existing = value
-          }
-        } else if (entry !== undefined && entry !== null) {
-          existing = entry
-        }
+    if ((existing === undefined || existing === null) && metadata && metadata.runContextSnapshot) {
+      const snapshotValue = getRunContextFacetValue(metadata.runContextSnapshot, binding.name)
+      if (snapshotValue !== undefined && snapshotValue !== null) {
+        existing = snapshotValue
       }
     }
 
