@@ -9,18 +9,11 @@ import type {
 
 type SubmissionState = 'idle' | 'submitting' | 'success' | 'error'
 
-interface HitlOptionView {
-  id: string
-  label: string
-  description?: string
-}
-
 export interface HitlRequestView {
   id: string
   question: string
   kind: HitlRequestPayload['kind']
   allowFreeForm: boolean
-  options: HitlOptionView[]
   originAgent: HitlOriginAgent
   urgency: HitlRequestPayload['urgency']
   additionalContext?: string
@@ -168,13 +161,12 @@ export const useHitlStore = defineStore('hitl', () => {
     submissionNotice.value = null
     submissionState.value = 'idle'
 
-    const { options = [], allowFreeForm, question, kind, urgency, additionalContext } = input.payload
+    const { allowFreeForm, question, kind, urgency, additionalContext } = input.payload
     activeRequest.value = {
       id: input.requestId,
       question,
       kind,
       allowFreeForm,
-      options: options.map((option) => ({ ...option })),
       originAgent: input.originAgent,
       urgency,
       additionalContext,
@@ -343,11 +335,6 @@ export const useHitlStore = defineStore('hitl', () => {
         }
 
         if (!existing || !sameRequest) {
-          const payloadOptions = Array.isArray((payload as any)?.options)
-            ? ((payload as any)?.options as Array<{ id: string; label: string; description?: string }>)
-            : Array.isArray((existing as any)?.options)
-            ? ((existing as any)?.options as Array<{ id: string; label: string; description?: string }>)
-            : []
 
           activeRequest.value = {
             id: match.pendingRequest.id,
@@ -357,7 +344,6 @@ export const useHitlStore = defineStore('hitl', () => {
               payload?.allowFreeForm ??
               existing?.allowFreeForm ??
               (payload?.kind ?? existing?.kind) === 'clarify',
-            options: payloadOptions.map((option) => ({ ...option })),
             originAgent: match.pendingRequest.originAgent ?? existing?.originAgent ?? 'strategy',
             urgency: payload?.urgency ?? existing?.urgency ?? 'normal',
             additionalContext: payload?.additionalContext,
@@ -373,11 +359,7 @@ export const useHitlStore = defineStore('hitl', () => {
             existing.createdAt = createdAtValue
           }
           if (payload) {
-            const nextOptions = Array.isArray((payload as any)?.options)
-              ? ((payload as any)?.options as Array<{ id: string; label: string; description?: string }>)
-              : []
             existing.question = payload.question
-            existing.options = nextOptions.map((option) => ({ ...option }))
             existing.kind = payload.kind
             existing.allowFreeForm = Boolean(
               payload.allowFreeForm ?? (payload.kind === 'clarify')
