@@ -14,8 +14,9 @@ catalog.resolveMany([...INPUT_FACETS], 'input')
 catalog.resolveMany([...OUTPUT_FACETS], 'output')
 
 const FEEDBACK_DIRECTIVE = [
-  'Locate unresolved `feedback` entries tied to `post_copy` (facet, path, message, resolution) before drafting.',
-  'When you apply the requested revision, update that same entry (facet/path match) by setting `resolution = "addressed"` and adding a concise `note` that explains what changed—do not append duplicates.'
+  'Locate unresolved `feedback` entries tied to `post_copy` (facet, path, message, resolution) before drafting a new version.',
+  'When you apply the requested revision, update that same feedback entry (facet/path match) by setting `resolution = "addressed"` and adding a concise `note` that explains what changed—do not append duplicates.',
+  'Only resolve the feedback items that target `post_copy`. Do not create new feedback entries - your role is to address relevant feedback.'
 ].join(' ')
 
 export const COPYWRITER_SOCIAL_DRAFTING_TOOLS = [HITL_TOOL_NAME] as const
