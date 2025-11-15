@@ -1028,6 +1028,7 @@ export class FlexRunCoordinator {
             nodeOutputs: Record<string, Record<string, unknown>>
             policyActions?: PendingPolicyActionState[]
             policyAttempts?: Record<string, number>
+            postConditionAttempts?: Record<string, number>
             mode?: RuntimePolicySnapshotMode
             goalConditionFailures?: GoalConditionResult[]
           }
@@ -1048,6 +1049,11 @@ export class FlexRunCoordinator {
               (pendingStateSnapshotRaw as any).policyAttempts &&
               typeof (pendingStateSnapshotRaw as any).policyAttempts === 'object'
                 ? ((pendingStateSnapshotRaw as any).policyAttempts as Record<string, number>)
+                : {},
+            postConditionAttempts:
+              (pendingStateSnapshotRaw as any).postConditionAttempts &&
+              typeof (pendingStateSnapshotRaw as any).postConditionAttempts === 'object'
+                ? ((pendingStateSnapshotRaw as any).postConditionAttempts as Record<string, number>)
                 : {},
             mode:
               typeof (pendingStateSnapshotRaw as any).mode === 'string'
@@ -1097,6 +1103,14 @@ export class FlexRunCoordinator {
                 initialNodeOutputs && initialNodeOutputs[node.id] && typeof initialNodeOutputs[node.id] === 'object'
                   ? ((initialNodeOutputs[node.id] as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
                   : undefined
+              const postConditionGuards =
+                node.postConditionGuards && node.postConditionGuards.length
+                  ? cloneValue(node.postConditionGuards)
+                  : []
+              const postConditionResults =
+                node.postConditionResults && node.postConditionResults.length
+                  ? cloneValue(node.postConditionResults)
+                  : []
               return {
                 id: node.id,
                 capabilityId: node.capabilityId,
@@ -1107,6 +1121,8 @@ export class FlexRunCoordinator {
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
                 ...(metadata ? { metadata } : {}),
+                postConditionGuards,
+                postConditionResults,
                 ...(node.routing ? { routing: node.routing } : {}),
                 ...(routingResult ? { routingResult } : {})
               }
@@ -1129,6 +1145,7 @@ export class FlexRunCoordinator {
             facets: RunContextSnapshot
             policyActions?: PendingPolicyActionState[]
             policyAttempts?: Record<string, number>
+            postConditionAttempts?: Record<string, number>
             mode?: RuntimePolicySnapshotMode
           }
         | undefined = resumeInitialState
@@ -1141,6 +1158,9 @@ export class FlexRunCoordinator {
               : {}),
             ...(resumeInitialState.policyAttempts
               ? { policyAttempts: { ...resumeInitialState.policyAttempts } }
+              : {}),
+            ...(resumeInitialState.postConditionAttempts
+              ? { postConditionAttempts: { ...resumeInitialState.postConditionAttempts } }
               : {}),
             mode: resumeInitialState.mode
           }
@@ -1328,6 +1348,9 @@ export class FlexRunCoordinator {
             completedNodeIds: [],
             nodeOutputs: {},
             facets: runContext.snapshot(),
+            postConditionAttempts: resumeInitialState?.postConditionAttempts
+              ? { ...resumeInitialState.postConditionAttempts }
+              : undefined,
             mode: resumeInitialState?.mode ?? 'hitl'
           }
         }
@@ -1347,6 +1370,9 @@ export class FlexRunCoordinator {
           nodeOutputs: { ...state.nodeOutputs },
           policyActions: state.policyActions ? [...state.policyActions] : [],
           policyAttempts: state.policyAttempts ? { ...state.policyAttempts } : {},
+          ...(state.postConditionAttempts
+            ? { postConditionAttempts: { ...state.postConditionAttempts } }
+            : {}),
           mode: state.mode
         }
 
@@ -1479,6 +1505,7 @@ export class FlexRunCoordinator {
                       nodeOutputs: resumeInitialState.nodeOutputs,
                       policyActions: resumeInitialState.policyActions,
                       policyAttempts: resumeInitialState.policyAttempts,
+                      postConditionAttempts: resumeInitialState.postConditionAttempts,
                       mode: resumeInitialState.mode
                     }
                   : undefined
@@ -1565,7 +1592,10 @@ export class FlexRunCoordinator {
                 nodeOutputs: error.state.nodeOutputs,
                 facets: error.state.facets,
                 ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
-                ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
+                ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {}),
+                ...(error.state.postConditionAttempts
+                  ? { postConditionAttempts: error.state.postConditionAttempts }
+                  : {})
               }
               const state = pendingState
               resumeInitialState = undefined
@@ -1664,6 +1694,7 @@ export class FlexRunCoordinator {
                   nodeOutputs: state.nodeOutputs,
                   policyActions: state.policyActions ?? [],
                   policyAttempts: state.policyAttempts ?? {},
+                  ...(state.postConditionAttempts ? { postConditionAttempts: state.postConditionAttempts } : {}),
                   mode: state.mode,
                   goalConditionFailures: pendingFailedGoalConditions.length
                     ? pendingFailedGoalConditions
@@ -1772,6 +1803,14 @@ export class FlexRunCoordinator {
                         : undefined
               const metadata =
                 node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+              const postConditionGuards =
+                node.postConditionGuards && node.postConditionGuards.length
+                  ? cloneValue(node.postConditionGuards)
+                  : undefined
+              const postConditionResults =
+                node.postConditionResults && node.postConditionResults.length
+                  ? cloneValue(node.postConditionResults)
+                  : undefined
               const nodeOutput = state.nodeOutputs[node.id]
               const routingResult =
                 nodeOutput && typeof nodeOutput === 'object'
@@ -1787,6 +1826,8 @@ export class FlexRunCoordinator {
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
                 ...(metadata ? { metadata } : {}),
+                ...(postConditionGuards ? { postConditionGuards } : {}),
+                ...(postConditionResults ? { postConditionResults } : {}),
                 ...(node.routing ? { routing: node.routing } : {}),
                 ...(routingResult ? { routingResult } : {})
               }
@@ -1893,20 +1934,23 @@ export class FlexRunCoordinator {
         provenance: node.provenance,
         metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
         rationale: node.rationale && node.rationale.length ? [...node.rationale] : null,
-        routing: node.routing ?? null
+        routing: node.routing ?? null,
+        postConditionGuards: node.postConditionGuards ? cloneValue(node.postConditionGuards) : [],
+        postConditionResults: node.postConditionResults ? cloneValue(node.postConditionResults) : []
       }))
       await this.persistence.savePlanSnapshot(runId, activePlan.version, planSnapshot, {
         facets: runContext.snapshot(),
         schemaHash: schemaHashValue,
         edges: activePlan.edges,
-      planMetadata: activePlan.metadata,
-      pendingState: {
-        completedNodeIds: [],
-        nodeOutputs: {},
-        policyActions: [],
-        policyAttempts: {}
-      }
-    })
+        planMetadata: activePlan.metadata,
+        pendingState: {
+          completedNodeIds: [],
+          nodeOutputs: {},
+          policyActions: [],
+          policyAttempts: {},
+          postConditionAttempts: {}
+        }
+      })
       const initialCrcsPayload = extractCrcsPayloadFromMetadata(activePlan.metadata as Record<string, unknown>)
       await emitEvent({
         type: 'plan_generated',
@@ -1936,6 +1980,14 @@ export class FlexRunCoordinator {
                   : undefined
               const metadata =
                 node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+              const postConditionGuards =
+                node.postConditionGuards && node.postConditionGuards.length
+                  ? cloneValue(node.postConditionGuards)
+                  : undefined
+              const postConditionResults =
+                node.postConditionResults && node.postConditionResults.length
+                  ? cloneValue(node.postConditionResults)
+                  : undefined
               return {
                 id: node.id,
                 capabilityId: node.capabilityId,
@@ -1946,6 +1998,8 @@ export class FlexRunCoordinator {
                 ...(facets ? { facets } : {}),
                 ...(derived ? { derivedCapability: derived } : {}),
                 ...(metadata ? { metadata } : {}),
+                ...(postConditionGuards ? { postConditionGuards } : {}),
+                ...(postConditionResults ? { postConditionResults } : {}),
                 ...(node.routing ? { routing: node.routing } : {})
               }
             }),
@@ -2058,7 +2112,10 @@ export class FlexRunCoordinator {
               nodeOutputs: error.state.nodeOutputs,
               facets: error.state.facets,
               ...(error.state.policyActions ? { policyActions: error.state.policyActions } : {}),
-              ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {})
+              ...(error.state.policyAttempts ? { policyAttempts: error.state.policyAttempts } : {}),
+              ...(error.state.postConditionAttempts
+                ? { postConditionAttempts: error.state.postConditionAttempts }
+                : {})
             }
             const state = pendingState
             if (isGoalFailure && pendingFailedGoalConditions.length) {
@@ -2130,7 +2187,10 @@ export class FlexRunCoordinator {
                 contracts: node.contracts,
                 provenance: node.provenance,
                 metadata: node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : null,
-                rationale: node.rationale && node.rationale.length ? [...node.rationale] : null
+                rationale: node.rationale && node.rationale.length ? [...node.rationale] : null,
+                routing: node.routing ?? null,
+                postConditionGuards: node.postConditionGuards ? cloneValue(node.postConditionGuards) : [],
+                postConditionResults: node.postConditionResults ? cloneValue(node.postConditionResults) : []
               }
             })
             state.completedNodeIds = state.completedNodeIds.filter((nodeId) =>
@@ -2152,6 +2212,7 @@ export class FlexRunCoordinator {
                 nodeOutputs: state.nodeOutputs,
                 policyActions: state.policyActions ?? [],
                 policyAttempts: state.policyAttempts ?? {},
+                ...(state.postConditionAttempts ? { postConditionAttempts: state.postConditionAttempts } : {}),
                 mode: state.mode,
                 goalConditionFailures: pendingFailedGoalConditions.length
                   ? pendingFailedGoalConditions
@@ -2186,6 +2247,14 @@ export class FlexRunCoordinator {
                       : undefined
                   const metadata =
                     node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                  const postConditionGuards =
+                    node.postConditionGuards && node.postConditionGuards.length
+                      ? cloneValue(node.postConditionGuards)
+                      : undefined
+                  const postConditionResults =
+                    node.postConditionResults && node.postConditionResults.length
+                      ? cloneValue(node.postConditionResults)
+                      : undefined
                   return {
                     id: node.id,
                     capabilityId: node.capabilityId,
@@ -2196,6 +2265,8 @@ export class FlexRunCoordinator {
                     ...(facets ? { facets } : {}),
                     ...(derived ? { derivedCapability: derived } : {}),
                     ...(metadata ? { metadata } : {}),
+                    ...(postConditionGuards ? { postConditionGuards } : {}),
+                    ...(postConditionResults ? { postConditionResults } : {}),
                     ...(node.routing ? { routing: node.routing } : {})
                   }
                 }),
@@ -2258,27 +2329,37 @@ export class FlexRunCoordinator {
                     typeof node.derivedCapability.fromCapabilityId === 'string'
                       ? { fromCapabilityId: node.derivedCapability.fromCapabilityId }
                       : undefined
-                  const metadata =
-                    node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
-                  const nodeOutput = state.nodeOutputs[node.id]
-                  const routingResult =
-                    nodeOutput && typeof nodeOutput === 'object'
-                      ? ((nodeOutput as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
-                      : undefined
+                const metadata =
+                  node.metadata && Object.keys(node.metadata).length ? { ...node.metadata } : undefined
+                const postConditionGuards =
+                  node.postConditionGuards && node.postConditionGuards.length
+                    ? cloneValue(node.postConditionGuards)
+                    : undefined
+                const postConditionResults =
+                  node.postConditionResults && node.postConditionResults.length
+                    ? cloneValue(node.postConditionResults)
+                    : undefined
+                const nodeOutput = state.nodeOutputs[node.id]
+                const routingResult =
+                  nodeOutput && typeof nodeOutput === 'object'
+                    ? ((nodeOutput as Record<string, unknown>).routingResult as RoutingEvaluationResult | undefined)
+                    : undefined
                   return {
                     id: node.id,
                     capabilityId: node.capabilityId,
                     label: node.label,
                     kind: node.kind,
                     status: state.completedNodeIds.includes(node.id) ? 'completed' : node.status ?? 'pending',
-                    ...(contracts ? { contracts } : {}),
-                    ...(facets ? { facets } : {}),
-                    ...(derived ? { derivedCapability: derived } : {}),
-                    ...(metadata ? { metadata } : {}),
-                    ...(node.routing ? { routing: node.routing } : {}),
-                    ...(routingResult ? { routingResult } : {})
-                  }
-                }),
+                  ...(contracts ? { contracts } : {}),
+                  ...(facets ? { facets } : {}),
+                  ...(derived ? { derivedCapability: derived } : {}),
+                  ...(metadata ? { metadata } : {}),
+                  ...(postConditionGuards ? { postConditionGuards } : {}),
+                  ...(postConditionResults ? { postConditionResults } : {}),
+                  ...(node.routing ? { routing: node.routing } : {}),
+                  ...(routingResult ? { routingResult } : {})
+                }
+              }),
                 edges: updatedPlan.edges.map((edge) => ({
                   from: edge.from,
                   to: edge.to,

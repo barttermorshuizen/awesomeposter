@@ -91,6 +91,7 @@ export type PolicyTrigger =
   | { kind: "onValidationFail"; selector?: NodeSelector; condition?: Record<string, any> }
   | { kind: "onTimeout"; ms: number }
   | { kind: "onMetricBelow"; metric: string; threshold: number }
+  | { kind: "onPostConditionFailed"; selector?: NodeSelector; maxRetries?: number }
   | { kind: "manual" };
 
 export interface NodeSelector {
@@ -101,6 +102,8 @@ export interface NodeSelector {
 ```
 
 Runtime policy validation now rejects unknown action names with migration hints (for example `hitl_pause → hitl`) so callers only reference the canonical union above. `goto` handlers track per-policy attempt counts and stop retrying once `maxAttempts` (default `1`) is exhausted. `hitl` directives can chain follow-up `Action`s that execute once the operator approves or rejects a request; approval defaults to “resume” when no nested action is supplied while rejection falls back to a terminal `fail`. `pause` actions persist the full execution snapshot – including policy state – so resumptions continue deterministically without re-planning.
+
+**Capability post-condition enforcement.** The dedicated `onPostConditionFailed` trigger scopes runtime controls to capability-level guards introduced in Stories 13.1–13.2. When a capability declares `postConditions`, the execution engine evaluates them before emitting `node_complete`. Any failure automatically re-dispatches the same node until the trigger’s `maxRetries` budget is exhausted (default `1`, overridable per trigger, capability metadata, or the `FLEX_CAPABILITY_POST_CONDITION_MAX_RETRIES` env var). Once the retry budget has been consumed the runtime executes the policy’s canonical `action` (`replan`, `hitl`, `fail`, or `emit`) and includes the evaluated guard payload in the outgoing `policy_triggered`, `goal_condition_failed`, or `hitl_request` frames. Each try emits `{ attempt, maxRetries, postConditionResults[] }` so operators can see which facet/path combinations failed without replaying logs. The engine also persists a `postConditionAttempts` map inside every pending-state blob (plan snapshots, runtime pauses, HITL resumptions) to keep retry counts consistent across restarts.
 
 #### Runtime Condition Evaluation
 

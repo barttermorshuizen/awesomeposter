@@ -14,6 +14,7 @@ import type {
   JsonSchemaShape,
   RuntimePolicy,
   Action,
+  NodeSelector,
   HitlContractSummary,
   ContextBundle,
   FacetProvenance,
@@ -54,6 +55,13 @@ const POLICY_ACTION_SOURCE = {
   rejection: 'hitl.reject'
 } as const
 type PolicyActionSource = (typeof POLICY_ACTION_SOURCE)[keyof typeof POLICY_ACTION_SOURCE]
+const DEFAULT_POST_CONDITION_MAX_RETRIES = (() => {
+  const raw = Number(process.env.FLEX_CAPABILITY_POST_CONDITION_MAX_RETRIES ?? 1)
+  if (Number.isFinite(raw) && raw >= 0) {
+    return Math.floor(raw)
+  }
+  return 1
+})()
 
 type NodeTiming = { startedAt?: Date | null; completedAt?: Date | null }
 
@@ -98,6 +106,12 @@ type FeedbackResolutionChangePayload = {
   note?: string | null
   previous: string
   current: string
+}
+
+type PostConditionRetryContext = {
+  attempt?: number
+  maxRetries?: number
+  results?: GoalConditionResult[]
 }
 
 class PlanScheduler {
@@ -498,6 +512,7 @@ export type FlexExecutionOptions = {
     facets?: RunContextSnapshot
     policyActions?: PendingPolicyActionState[]
     policyAttempts?: PolicyAttemptState
+    postConditionAttempts?: Record<string, number>
     mode?: RuntimePolicySnapshotMode
   }
   runContext?: RunContext
@@ -506,6 +521,7 @@ export type FlexExecutionOptions = {
 
 type CapabilityResult = {
   output: Record<string, unknown>
+  capability: CapabilityRecord
 }
 
 export class HitlPauseError extends Error {
@@ -550,6 +566,7 @@ export class ReplanRequestedError extends Error {
       facets: RunContextSnapshot
       policyActions?: PendingPolicyActionState[]
       policyAttempts?: PolicyAttemptState
+      postConditionAttempts?: Record<string, number>
     }
   ) {
     super('Replan requested')
@@ -567,6 +584,7 @@ export class GoalConditionFailedError extends ReplanRequestedError {
         facets: RunContextSnapshot
         policyActions?: PendingPolicyActionState[]
         policyAttempts?: PolicyAttemptState
+        postConditionAttempts?: Record<string, number>
       }
       results: GoalConditionResult[]
       failed: GoalConditionResult[]
@@ -904,6 +922,9 @@ export class FlexExecutionEngine {
       ? opts.initialState!.policyActions.map((action) => ({ ...action }))
       : []
     const policyAttempts = new Map<string, number>(Object.entries(opts.initialState?.policyAttempts ?? {}))
+    const postConditionAttempts = new Map<string, number>(
+      Object.entries(opts.initialState?.postConditionAttempts ?? {})
+    )
     const nodeLookup = new Map<string, FlexPlanNode>()
     for (const node of plan.nodes) {
       nodeLookup.set(node.id, node)
@@ -932,7 +953,8 @@ export class FlexExecutionEngine {
         completedNodeIds,
         policyActions,
         policyAttempts,
-        scheduler
+        scheduler,
+        postConditionAttempts
       })
       policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
     }
@@ -955,7 +977,10 @@ export class FlexExecutionEngine {
             nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
             facets: runContext.snapshot(),
             policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
-            policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+            policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+            postConditionAttempts: postConditionAttempts.size
+              ? Object.fromEntries(postConditionAttempts.entries())
+              : undefined
           })
         }
         if (effect.kind === 'action') {
@@ -983,6 +1008,7 @@ export class FlexExecutionEngine {
                 completedNodeIds,
                 policyActions,
                 policyAttempts,
+                postConditionAttempts,
                 scheduler
               },
               { source: POLICY_ACTION_SOURCE.runtime }
@@ -1042,7 +1068,10 @@ export class FlexExecutionEngine {
               nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
               facets: runContext.snapshot(),
               policyActions: policyActions.length ? this.clonePolicyActions(policyActions) : undefined,
-              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+              postConditionAttempts: postConditionAttempts.size
+                ? Object.fromEntries(postConditionAttempts.entries())
+                : undefined
             }
           )
         }
@@ -1086,7 +1115,8 @@ export class FlexExecutionEngine {
         capabilityId: node.capabilityId,
         label: node.label,
         context: persistenceContext,
-        startedAt
+        startedAt,
+        postConditionGuards: node.postConditionGuards ?? []
       })
       try {
         getLogger().info('flex_node_start', {
@@ -1105,6 +1135,7 @@ export class FlexExecutionEngine {
         executorType,
         contracts: node.contracts ? JSON.parse(JSON.stringify(node.contracts)) : undefined,
         facets: node.facets ? JSON.parse(JSON.stringify(node.facets)) : undefined,
+        postConditionGuards: node.postConditionGuards ?? [],
         assignment: isHumanExecutor
           ? this.buildHumanAssignmentPayload(node, runId, { runContextSnapshot: runContext.getAllFacets() })
           : undefined
@@ -1137,60 +1168,112 @@ export class FlexExecutionEngine {
         })
       }
 
-      try {
-        const result = await this.invokeCapability(
-          runId,
-          node,
-          envelope,
-          opts,
-          plan,
-          runContext,
-          nodeOutputs,
-          nodeStatuses,
-          nodeTimings,
-          completedNodeIds,
-          policyActions,
-          policyAttempts
-        )
-        nodeOutputs.set(node.id, result.output)
+      if (!node.capabilityId) {
+        throw new Error(`Execution node ${node.id} is missing capabilityId`)
+      }
+      const capability = await this.resolveCapability(node.capabilityId)
+      const postConditionPolicy = this.resolvePostConditionPolicy(envelope, node, capability)
+      const supportsPostConditions = Array.isArray(capability.postConditions) && capability.postConditions.length > 0
 
+      try {
         const emitsFeedback = Array.isArray(node.facets?.output) && node.facets.output.includes('feedback')
         const previousFeedbackEntries = emitsFeedback
           ? this.normalizeFeedbackEntries(runContext.getFacet('feedback')?.value)
           : null
-        const nextFeedbackEntries = emitsFeedback
-          ? this.normalizeFeedbackEntries((result.output ?? ({} as Record<string, unknown>)).feedback)
-          : null
-
-        runContext.updateFromNode(node, result.output)
-        if (emitsFeedback && previousFeedbackEntries && nextFeedbackEntries) {
-          const feedbackChanges = this.diffFeedbackResolutions(previousFeedbackEntries, nextFeedbackEntries)
-          if (feedbackChanges.length) {
-            await opts.onEvent(
-              this.buildEvent(
-                'feedback_resolution',
-                {
-                  capabilityId: node.capabilityId,
-                  changes: feedbackChanges
-                },
-                {
-                  runId,
-                  nodeId: node.id,
-                  planVersion: plan.version,
-                  facetProvenance: this.normalizeFacetProvenance(node.provenance)
+        let resolvedOutput: Record<string, unknown> | null = null
+        while (true) {
+          const postConditionRetryContext: PostConditionRetryContext | undefined =
+            postConditionAttempts.has(node.id) && node.postConditionResults && node.postConditionResults.length
+              ? {
+                  attempt: postConditionAttempts.get(node.id),
+                  maxRetries: postConditionPolicy.maxRetries,
+                  results: node.postConditionResults
                 }
-              )
-            )
+              : undefined
+          const execution = await this.invokeCapability(
+            runId,
+            node,
+            envelope,
+            opts,
+            plan,
+            runContext,
+            nodeOutputs,
+            nodeStatuses,
+            nodeTimings,
+            completedNodeIds,
+            policyActions,
+            policyAttempts,
+            postConditionAttempts,
+            capability,
+            postConditionRetryContext
+          )
+          const output = execution.output
+          const nextFeedbackEntries = emitsFeedback
+            ? this.normalizeFeedbackEntries((output ?? ({} as Record<string, unknown>)).feedback)
+            : null
+          const postConditionResults = supportsPostConditions
+            ? this.evaluatePostConditions(capability, node, runContext, output)
+            : []
+          node.postConditionResults = postConditionResults
+          await this.persistence.markNode(runId, node.id, {
+            postConditionResults
+          })
+          if (supportsPostConditions && this.hasFailedPostConditions(postConditionResults)) {
+            await this.handlePostConditionFailure({
+              runId,
+              envelope,
+              plan,
+              node,
+              capability,
+              opts,
+              runContext,
+              nodeOutputs,
+              nodeStatuses,
+              nodeTimings,
+              completedNodeIds,
+              policyActions,
+              policyAttempts,
+              scheduler,
+              postConditionAttempts,
+              results: postConditionResults,
+              policy: postConditionPolicy.policy,
+              maxRetries: postConditionPolicy.maxRetries
+            })
+            continue
           }
+          nodeOutputs.set(node.id, output)
+          runContext.updateFromNode(node, output)
+          resolvedOutput = output
+          if (emitsFeedback && previousFeedbackEntries && nextFeedbackEntries) {
+            const feedbackChanges = this.diffFeedbackResolutions(previousFeedbackEntries, nextFeedbackEntries)
+            if (feedbackChanges.length) {
+              await opts.onEvent(
+                this.buildEvent(
+                  'feedback_resolution',
+                  {
+                    capabilityId: node.capabilityId,
+                    changes: feedbackChanges
+                  },
+                  {
+                    runId,
+                    nodeId: node.id,
+                    planVersion: plan.version,
+                    facetProvenance: this.normalizeFacetProvenance(node.provenance)
+                  }
+                )
+              )
+            }
+          }
+          break
         }
-        completedNodeIds.add(node.id)
+        postConditionAttempts.delete(node.id)
 
         const completedAt = new Date()
         nodeStatuses.set(node.id, 'completed')
         nodeTimings.set(node.id, { ...(nodeTimings.get(node.id) ?? {}), completedAt })
         await this.persistence.markNode(runId, node.id, {
           status: 'completed',
-          output: result.output,
+          output: resolvedOutput,
           completedAt
         })
         try {
@@ -1208,7 +1291,8 @@ export class FlexExecutionEngine {
               capabilityId: node.capabilityId,
               label: node.label,
               completedAt: completedAt.toISOString(),
-              output: result.output
+              output: resolvedOutput,
+              postConditionResults: node.postConditionResults ?? []
             },
             {
               runId,
@@ -1223,7 +1307,7 @@ export class FlexExecutionEngine {
 
         const effect = await opts.onNodeComplete?.({
           node,
-          output: result.output,
+          output: resolvedOutput ?? {},
           runId,
           plan
         })
@@ -1234,7 +1318,10 @@ export class FlexExecutionEngine {
               nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
               facets: runContext.snapshot(),
               policyActions: policyActions.length ? policyActions.map((action) => ({ ...action })) : undefined,
-              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+              policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+              postConditionAttempts: postConditionAttempts.size
+                ? Object.fromEntries(postConditionAttempts.entries())
+                : undefined
             })
           }
           if (effect.kind === 'action') {
@@ -1253,6 +1340,7 @@ export class FlexExecutionEngine {
                 completedNodeIds,
                 policyActions,
                 policyAttempts,
+                postConditionAttempts,
                 scheduler
               },
               { source: POLICY_ACTION_SOURCE.runtime }
@@ -1344,7 +1432,8 @@ export class FlexExecutionEngine {
         completedNodeIds,
         schemaHash: opts.schemaHash ?? null,
         policyActions,
-        policyAttempts
+        policyAttempts,
+        postConditionAttempts
       })
     }
 
@@ -1370,7 +1459,10 @@ export class FlexExecutionEngine {
           nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
           facets: facetsSnapshot,
           ...(policyActions.length ? { policyActions: this.clonePolicyActions(policyActions) } : {}),
-          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {})
+          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {}),
+          postConditionAttempts: postConditionAttempts.size
+            ? Object.fromEntries(postConditionAttempts.entries())
+            : undefined
         },
         results: goalConditionResults,
         failed: failedGoalConditions,
@@ -1397,13 +1489,27 @@ export class FlexExecutionEngine {
           nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
           policyActions: this.clonePolicyActions(policyActions),
           policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+          postConditionAttempts: postConditionAttempts.size
+            ? Object.fromEntries(postConditionAttempts.entries())
+            : undefined,
           mode: opts.initialState?.mode
         }
       }
     })
+    const postConditionCompletePayload =
+      snapshotNodes
+        .map((node) => ({
+          nodeId: node.nodeId,
+          capabilityId: node.capabilityId ?? null,
+          results: node.postConditionResults ?? []
+        }))
+        .filter((entry) => entry.results && entry.results.length) ?? []
     const completePayload: Record<string, unknown> = { output: finalOutput }
     if (goalConditionResults.length) {
       completePayload.goal_condition_results = goalConditionResults
+    }
+    if (postConditionCompletePayload.length) {
+      completePayload.post_condition_results = postConditionCompletePayload
     }
     await opts.onEvent(
       this.buildEvent(
@@ -1431,13 +1537,14 @@ export class FlexExecutionEngine {
     nodeTimings: Map<string, NodeTiming>,
     completedNodeIds: Set<string>,
     policyActions: PendingPolicyActionState[],
-    policyAttempts: Map<string, number>
+    policyAttempts: Map<string, number>,
+    postConditionAttempts: Map<string, number>,
+    capability: CapabilityRecord,
+    postConditionRetryContext?: PostConditionRetryContext
   ): Promise<CapabilityResult> {
     if (!node.capabilityId) {
       throw new Error(`Execution node ${node.id} is missing capabilityId`)
     }
-
-    const capability = await this.resolveCapability(node.capabilityId)
     const capabilityInputs = this.resolveCapabilityInputs(node, runContext)
     await this.validateCapabilityInputs(capability, node, runId, opts, capabilityInputs)
 
@@ -1457,7 +1564,8 @@ export class FlexExecutionEngine {
         plan,
         runContext,
         nodeOutputs,
-        capabilityInputs
+        capabilityInputs,
+        postConditionRetryContext
       )
       try {
         getLogger().info('flex_capability_dispatch_complete', {
@@ -1530,6 +1638,7 @@ export class FlexExecutionEngine {
         completedNodeIds,
         policyActions,
         policyAttempts,
+        postConditionAttempts,
         request: pendingRecord
       })
     }
@@ -1571,6 +1680,7 @@ export class FlexExecutionEngine {
       completedNodeIds: Set<string>
       policyActions: PendingPolicyActionState[]
       policyAttempts: Map<string, number>
+      postConditionAttempts: Map<string, number>
       scheduler?: PlanScheduler
     },
     options: {
@@ -1621,11 +1731,11 @@ export class FlexExecutionEngine {
           rejectAction: action.rejectAction ?? undefined
         }
         context.policyActions.push(followUpEntry)
-        await this.triggerHitlPause({
-          runId: context.runId,
-          envelope: context.envelope,
-          plan: context.plan,
-          opts: context.opts,
+          await this.triggerHitlPause({
+            runId: context.runId,
+            envelope: context.envelope,
+            plan: context.plan,
+            opts: context.opts,
           runContext: context.runContext,
           targetNode: context.node,
           finalOutput,
@@ -1634,12 +1744,13 @@ export class FlexExecutionEngine {
           nodeTimings: context.nodeTimings,
           completedNodeIds: context.completedNodeIds,
           schemaHash: context.opts.schemaHash ?? null,
-          rationale: action.rationale,
-          policyId: policy.id,
-          pendingPolicyAction: followUpEntry,
-          policyActions: context.policyActions,
-          policyAttempts: context.policyAttempts
-        })
+            rationale: action.rationale,
+            policyId: policy.id,
+            pendingPolicyAction: followUpEntry,
+            policyActions: context.policyActions,
+            policyAttempts: context.policyAttempts,
+            postConditionAttempts: context.postConditionAttempts
+          })
         return { kind: 'noop' }
       }
       case 'emit': {
@@ -1708,6 +1819,24 @@ export class FlexExecutionEngine {
     return merged
   }
 
+  private normalizeCapabilityOutput(
+    output: Record<string, unknown> | null | undefined
+  ): Record<string, unknown> | null {
+    if (!output || typeof output !== 'object') {
+      return output ?? null
+    }
+    const maybeWrapped = output as { output?: unknown }
+    const keys = Object.keys(maybeWrapped)
+    if (keys.length === 1 && Object.prototype.hasOwnProperty.call(maybeWrapped, 'output')) {
+      const inner = maybeWrapped.output
+      if (inner && typeof inner === 'object') {
+        return this.cloneJson(inner as Record<string, unknown>)
+      }
+      return (inner ?? null) as Record<string, unknown> | null
+    }
+    return this.cloneJson(output)
+  }
+
   private cloneJson<T>(value: T): T {
     if (value === undefined || value === null) {
       return value
@@ -1758,9 +1887,19 @@ export class FlexExecutionEngine {
     plan: FlexPlan,
     runContext: RunContext,
     nodeOutputs: Map<string, Record<string, unknown>>,
-    capabilityInputs: Record<string, unknown>
+    capabilityInputs: Record<string, unknown>,
+    postConditionRetryContext?: PostConditionRetryContext
   ): Promise<CapabilityResult> {
-    return this.executeCapability(capability, node, envelope, plan, runContext, nodeOutputs, capabilityInputs)
+    return this.executeCapability(
+      capability,
+      node,
+      envelope,
+      plan,
+      runContext,
+      nodeOutputs,
+      capabilityInputs,
+      postConditionRetryContext
+    )
   }
 
   private async executeCapability(
@@ -1770,7 +1909,8 @@ export class FlexExecutionEngine {
     plan: FlexPlan,
     runContext: RunContext,
     nodeOutputs: Map<string, Record<string, unknown>>,
-    capabilityInputs: Record<string, unknown>
+    capabilityInputs: Record<string, unknown>,
+    postConditionRetryContext?: PostConditionRetryContext
   ): Promise<CapabilityResult> {
     const schemaShape = this.getOutputSchemaShape(node, capability)
     const schema = this.buildOutputSchema(schemaShape)
@@ -1784,7 +1924,8 @@ export class FlexExecutionEngine {
       nodeOutputs,
       schemaShape,
       promptContext,
-      inputs: capabilityInputs
+      inputs: capabilityInputs,
+      retryContext: postConditionRetryContext
     })
 
     const metadata = (node.metadata ?? {}) as Record<string, unknown>
@@ -1805,9 +1946,10 @@ export class FlexExecutionEngine {
     }
 
     const result = await this.runtime.runStructured<Record<string, unknown>>(schema, messages, runOptions)
+    const normalizedOutput = this.normalizeCapabilityOutput(result)
 
     return {
-      output: (result ?? {}) as Record<string, unknown>
+      output: (normalizedOutput ?? {}) as Record<string, unknown>
     }
   }
 
@@ -1844,8 +1986,9 @@ export class FlexExecutionEngine {
     schemaShape: JsonSchemaShape | null
     promptContext: ReturnType<typeof resolveCapabilityPrompt> | null
     inputs: Record<string, unknown>
+    retryContext?: PostConditionRetryContext
   }): Array<{ role: 'system' | 'user'; content: string }> {
-    const { capability, node, envelope, runContext, nodeOutputs, schemaShape, promptContext, inputs } = args
+    const { capability, node, envelope, runContext, nodeOutputs, schemaShape, promptContext, inputs, retryContext } = args
     const instructions = Array.isArray(node.bundle.instructions) ? node.bundle.instructions : []
     const metadata = (node.metadata ?? {}) as Record<string, unknown>
     const plannerStage =
@@ -1888,6 +2031,11 @@ export class FlexExecutionEngine {
     }
     if (Object.keys(policies).length) {
       userSections.push(`Policies:\n${stringifyForPrompt(policies)}`)
+    }
+
+    const postConditionRetrySection = this.buildPostConditionRetrySection(node, retryContext)
+    if (postConditionRetrySection) {
+      userSections.push(postConditionRetrySection)
     }
 
     if (completedOutputs.length) {
@@ -1960,6 +2108,38 @@ export class FlexExecutionEngine {
         content: userSections.join('\n\n')
       }
     ]
+  }
+
+  private buildPostConditionRetrySection(
+    node: FlexPlanNode,
+    retryContext?: PostConditionRetryContext
+  ): string | null {
+    const results = retryContext?.results ?? (Array.isArray(node.postConditionResults) ? node.postConditionResults : [])
+    if (!results || !results.length) {
+      return null
+    }
+    const failing = results.filter(
+      (entry) => !entry.satisfied || (typeof entry.error === 'string' && entry.error.length > 0)
+    )
+    if (!failing.length) {
+      return null
+    }
+    const summary: Record<string, unknown> = {
+      failures: failing.map((entry) => ({
+        facet: entry.facet,
+        path: entry.path,
+        satisfied: entry.satisfied,
+        ...(entry.error ? { error: entry.error } : {}),
+        ...(entry.observedValue !== undefined ? { observedValue: entry.observedValue } : {})
+      }))
+    }
+    if (typeof retryContext?.attempt === 'number') {
+      summary.failuresSoFar = retryContext.attempt
+    }
+    if (typeof retryContext?.maxRetries === 'number') {
+      summary.maxRetries = retryContext.maxRetries
+    }
+    return ['Previous post-condition failures detected.', stringifyForPrompt(summary)].join('\n')
   }
 
   private composeFinalOutput(plan: FlexPlan, nodeOutputs: Map<string, Record<string, unknown>>) {
@@ -2440,6 +2620,7 @@ export class FlexExecutionEngine {
       completedNodeIds: Set<string>
       policyActions: PendingPolicyActionState[]
       policyAttempts: Map<string, number>
+      postConditionAttempts: Map<string, number>
     }
   }): Promise<never> {
     const { policyId, reason, context } = args
@@ -2461,6 +2642,9 @@ export class FlexExecutionEngine {
         policyActions: this.clonePolicyActions(context.policyActions),
         policyAttempts: context.policyAttempts.size
           ? Object.fromEntries(context.policyAttempts.entries())
+          : undefined,
+        postConditionAttempts: context.postConditionAttempts.size
+          ? Object.fromEntries(context.postConditionAttempts.entries())
           : undefined,
         mode: 'pause'
       }
@@ -2509,6 +2693,7 @@ export class FlexExecutionEngine {
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
     scheduler?: PlanScheduler
+    postConditionAttempts: Map<string, number>
   }): Promise<{ remainingActions: PendingPolicyActionState[]; resumeNodeId: string | null }> {
     const hitlState = args.opts.hitl?.state
     if (!hitlState) {
@@ -2564,7 +2749,8 @@ export class FlexExecutionEngine {
           completedNodeIds: args.completedNodeIds,
           policyActions: args.policyActions,
           policyAttempts: args.policyAttempts,
-          scheduler: args.scheduler
+          scheduler: args.scheduler,
+          postConditionAttempts: args.postConditionAttempts
         },
         {
           actionOverride: followUpAction,
@@ -2934,6 +3120,7 @@ export class FlexExecutionEngine {
     completedNodeIds: Set<string>
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
+    postConditionAttempts: Map<string, number>
     request: HitlRequestRecord
   }): Promise<never> {
     const {
@@ -2948,6 +3135,7 @@ export class FlexExecutionEngine {
       completedNodeIds,
       policyActions,
       policyAttempts,
+      postConditionAttempts,
       request
     } = args
 
@@ -2978,6 +3166,9 @@ export class FlexExecutionEngine {
       nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
       policyActions: this.clonePolicyActions(policyActions),
       policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+      postConditionAttempts: postConditionAttempts.size
+        ? Object.fromEntries(postConditionAttempts.entries())
+        : undefined,
       mode: 'hitl' as RuntimePolicySnapshotMode
     }
 
@@ -3023,6 +3214,7 @@ export class FlexExecutionEngine {
     pendingPolicyAction?: PendingPolicyActionState
     policyActions: PendingPolicyActionState[]
     policyAttempts: Map<string, number>
+    postConditionAttempts: Map<string, number>
   }): Promise<never> {
     const {
       runId,
@@ -3041,7 +3233,8 @@ export class FlexExecutionEngine {
       policyId,
       pendingPolicyAction,
       policyActions,
-      policyAttempts
+      policyAttempts,
+      postConditionAttempts
     } = args
 
     const hitl = opts.hitl
@@ -3116,7 +3309,10 @@ export class FlexExecutionEngine {
       nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
       facets: runContext.snapshot(),
       policyActions: this.clonePolicyActions(policyActions),
-      policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined
+      policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+      postConditionAttempts: postConditionAttempts.size
+        ? Object.fromEntries(postConditionAttempts.entries())
+        : undefined
     }
     await this.persistence.savePlanSnapshot(runId, plan.version, snapshotNodes, {
       facets: pendingStateSnapshot.facets,
@@ -3128,6 +3324,7 @@ export class FlexExecutionEngine {
         nodeOutputs: pendingStateSnapshot.nodeOutputs,
         policyActions: pendingStateSnapshot.policyActions,
         policyAttempts: pendingStateSnapshot.policyAttempts,
+        postConditionAttempts: pendingStateSnapshot.postConditionAttempts,
         mode: 'hitl'
       }
     })
@@ -3337,6 +3534,240 @@ export class FlexExecutionEngine {
     return candidate as RoutingEvaluationResult
   }
 
+  private normalizePostConditionRetryValue(
+    policyValue: number | undefined,
+    capability: CapabilityRecord
+  ): number {
+    const candidate =
+      policyValue ??
+      this.getCapabilityPostConditionRetryOverride(capability) ??
+      DEFAULT_POST_CONDITION_MAX_RETRIES
+    if (!Number.isFinite(candidate) || candidate! < 0) {
+      return DEFAULT_POST_CONDITION_MAX_RETRIES
+    }
+    return Math.floor(candidate!)
+  }
+
+  private getCapabilityPostConditionRetryOverride(capability: CapabilityRecord): number | null {
+    const metadata = capability.metadata
+    if (!metadata || typeof metadata !== 'object') {
+      return null
+    }
+    const policy = (metadata as { postConditionPolicy?: { maxRetries?: number } }).postConditionPolicy
+    if (!policy || typeof policy !== 'object') {
+      return null
+    }
+    const value = Number((policy as Record<string, unknown>).maxRetries)
+    if (!Number.isFinite(value) || value < 0) {
+      return null
+    }
+    return Math.floor(value)
+  }
+
+  private resolvePostConditionPolicy(
+    envelope: TaskEnvelope,
+    node: FlexPlanNode,
+    capability: CapabilityRecord
+  ): { policy: RuntimePolicy | null; maxRetries: number } {
+    const runtimePolicies = envelope.policies?.runtime ?? []
+    for (const policy of runtimePolicies) {
+      if (policy.trigger.kind !== 'onPostConditionFailed') continue
+      if (!this.matchesNodeSelector(policy.trigger.selector, node)) continue
+      if (!this.isSupportedPostConditionAction(policy.action.type)) continue
+      const maxRetries = this.normalizePostConditionRetryValue(
+        typeof policy.trigger.maxRetries === 'number' ? policy.trigger.maxRetries : undefined,
+        capability
+      )
+      return { policy, maxRetries }
+    }
+    return {
+      policy: null,
+      maxRetries: this.normalizePostConditionRetryValue(undefined, capability)
+    }
+  }
+
+  private matchesNodeSelector(selector: NodeSelector | undefined, node: FlexPlanNode): boolean {
+    if (!selector) return true
+
+    if (selector.capabilityId && selector.capabilityId !== node.capabilityId) {
+      return false
+    }
+
+    if (selector.nodeId && selector.nodeId !== node.id) {
+      return false
+    }
+
+    if (selector.kind && selector.kind !== (node.kind ?? 'execution')) {
+      return false
+    }
+
+    return true
+  }
+
+  private isSupportedPostConditionAction(actionType: Action['type']): boolean {
+    return actionType === 'replan' || actionType === 'hitl' || actionType === 'fail' || actionType === 'emit'
+  }
+
+  private evaluatePostConditions(
+    capability: CapabilityRecord,
+    node: FlexPlanNode,
+    runContext: RunContext,
+    output: Record<string, unknown>
+  ): GoalConditionResult[] {
+    if (!capability.postConditions || capability.postConditions.length === 0) {
+      return []
+    }
+    const evaluationContext = RunContext.fromSnapshot(runContext.snapshot())
+    evaluationContext.updateFromNode(node, output)
+    return evaluateGoalConditions(capability.postConditions, { runContextSnapshot: evaluationContext.snapshot() })
+  }
+
+  private hasFailedPostConditions(results: GoalConditionResult[]): boolean {
+    return results.some(
+      (entry) => !entry.satisfied || (typeof entry.error === 'string' && entry.error.length > 0)
+    )
+  }
+
+  private async handlePostConditionFailure(args: {
+    runId: string
+    envelope: TaskEnvelope
+    plan: FlexPlan
+    node: FlexPlanNode
+    capability: CapabilityRecord
+    opts: FlexExecutionOptions
+    runContext: RunContext
+    nodeOutputs: Map<string, Record<string, unknown>>
+    nodeStatuses: Map<string, FlexPlanNodeStatus>
+    nodeTimings: Map<string, NodeTiming>
+    completedNodeIds: Set<string>
+    policyActions: PendingPolicyActionState[]
+    policyAttempts: Map<string, number>
+    scheduler: PlanScheduler
+    postConditionAttempts: Map<string, number>
+    results: GoalConditionResult[]
+    policy: RuntimePolicy | null
+    maxRetries: number
+  }): Promise<void> {
+    const attemptKey = args.node.id
+    const attempts = (args.postConditionAttempts.get(attemptKey) ?? 0) + 1
+    args.postConditionAttempts.set(attemptKey, attempts)
+
+    await args.opts.onEvent(
+      this.buildEvent(
+        'policy_triggered',
+        {
+          policyId: args.policy?.id ?? 'post_condition_default',
+          action: attempts <= args.maxRetries ? 'retry' : (args.policy?.action.type ?? 'fail'),
+          nodeId: args.node.id,
+          capabilityId: args.node.capabilityId,
+          attempt: attempts,
+          maxRetries: args.maxRetries,
+          postConditionResults: args.results
+        },
+        {
+          runId: args.runId,
+          nodeId: args.node.id,
+          planVersion: args.plan.version,
+          message: 'post_condition_failed'
+        }
+      )
+    )
+
+    if (attempts <= args.maxRetries) {
+      try {
+        getLogger().warn('flex_post_condition_retry', {
+          runId: args.runId,
+          nodeId: args.node.id,
+          capabilityId: args.node.capabilityId,
+          attempt: attempts,
+          maxRetries: args.maxRetries
+        })
+      } catch {}
+    } else {
+      const action = args.policy?.action ?? { type: 'fail', message: 'Capability post conditions failed.' }
+      switch (action.type) {
+        case 'replan': {
+          throw new ReplanRequestedError(
+            {
+              reason: 'post_condition_failed',
+              details: {
+                nodeId: args.node.id,
+                capabilityId: args.node.capabilityId,
+                postConditionResults: args.results
+              }
+            },
+            {
+              completedNodeIds: Array.from(args.completedNodeIds),
+              nodeOutputs: Object.fromEntries(args.nodeOutputs.entries()),
+              facets: args.runContext.snapshot(),
+              policyActions: args.policyActions.length ? this.clonePolicyActions(args.policyActions) : undefined,
+              policyAttempts: args.policyAttempts.size
+                ? Object.fromEntries(args.policyAttempts.entries())
+                : undefined,
+              postConditionAttempts: args.postConditionAttempts.size
+                ? Object.fromEntries(args.postConditionAttempts.entries())
+                : undefined
+            }
+          )
+        }
+        case 'hitl': {
+          if (!args.policy) {
+            throw new RuntimePolicyFailureError('post_condition_default', 'HITL action requires policy configuration')
+          }
+          await this.handleRuntimePolicyAction(
+            args.policy,
+            {
+              runId: args.runId,
+              envelope: args.envelope,
+              plan: args.plan,
+              opts: args.opts,
+              node: args.node,
+              runContext: args.runContext,
+              nodeOutputs: args.nodeOutputs,
+              nodeStatuses: args.nodeStatuses,
+              nodeTimings: args.nodeTimings,
+              completedNodeIds: args.completedNodeIds,
+              policyActions: args.policyActions,
+              policyAttempts: args.policyAttempts,
+              postConditionAttempts: args.postConditionAttempts,
+              scheduler: args.scheduler
+            },
+            { source: POLICY_ACTION_SOURCE.runtime }
+          )
+          return
+        }
+        case 'emit': {
+          await this.emitRuntimeEvent({
+            runId: args.runId,
+            node: args.node,
+            opts: args.opts,
+            eventName: action.event ?? 'post_condition_failed',
+            payload: {
+              ...(action.payload ?? {}),
+              nodeId: args.node.id,
+              capabilityId: args.node.capabilityId,
+              postConditionResults: args.results
+            },
+            policyId: args.policy?.id ?? 'post_condition_default',
+            rationale: action.rationale,
+            planVersion: args.plan.version
+          })
+          throw new RuntimePolicyFailureError(
+            args.policy?.id ?? 'post_condition_default',
+            action.event ?? 'Capability post conditions failed'
+          )
+        }
+        case 'fail':
+        default: {
+          throw new RuntimePolicyFailureError(
+            args.policy?.id ?? 'post_condition_default',
+            action.message ?? 'Capability post conditions failed'
+          )
+        }
+      }
+    }
+  }
+
   private buildPlanSnapshotNodes(
     plan: FlexPlan,
     nodeStatuses: Map<string, FlexPlanNodeStatus>,
@@ -3361,6 +3792,12 @@ export class FlexExecutionEngine {
         metadata,
         rationale,
         routing: node.routing ?? null,
+        postConditionGuards: node.postConditionGuards
+          ? JSON.parse(JSON.stringify(node.postConditionGuards))
+          : [],
+        postConditionResults: node.postConditionResults
+          ? JSON.parse(JSON.stringify(node.postConditionResults))
+          : [],
         startedAt: timing.startedAt ?? null,
         completedAt: timing.completedAt ?? null
       }
@@ -3396,6 +3833,9 @@ export class FlexExecutionEngine {
       ? opts.initialState!.policyActions.map((action) => ({ ...action }))
       : []
     const policyAttempts = new Map<string, number>(Object.entries(opts.initialState?.policyAttempts ?? {}))
+    const postConditionAttempts = new Map<string, number>(
+      Object.entries(opts.initialState?.postConditionAttempts ?? {})
+    )
     if (opts.initialState?.nodeOutputs) {
       for (const [nodeId, output] of Object.entries(opts.initialState.nodeOutputs)) {
         nodeOutputs.set(nodeId, { ...(output ?? {}) })
@@ -3462,7 +3902,8 @@ export class FlexExecutionEngine {
         nodeTimings,
         completedNodeIds,
         policyActions,
-        policyAttempts
+        policyAttempts,
+        postConditionAttempts
       })
       policyActions.splice(0, policyActions.length, ...pendingDispatch.remainingActions)
       if (pendingDispatch.resumeNodeId) {
@@ -3475,6 +3916,7 @@ export class FlexExecutionEngine {
             nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
             policyActions,
             policyAttempts: Object.fromEntries(policyAttempts.entries()),
+            postConditionAttempts: Object.fromEntries(postConditionAttempts.entries()),
             mode: opts.initialState?.mode
           },
           runContext: activeRunContext,
@@ -3590,7 +4032,10 @@ export class FlexExecutionEngine {
           nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
           facets: facetsSnapshot,
           ...(policyActions.length ? { policyActions: this.clonePolicyActions(policyActions) } : {}),
-          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {})
+          ...(policyAttempts.size ? { policyAttempts: Object.fromEntries(policyAttempts.entries()) } : {}),
+          postConditionAttempts: postConditionAttempts.size
+            ? Object.fromEntries(postConditionAttempts.entries())
+            : undefined
         },
         results: goalConditionResults,
         failed: failedGoalConditions,
@@ -3616,6 +4061,9 @@ export class FlexExecutionEngine {
           nodeOutputs: Object.fromEntries(nodeOutputs.entries()),
           policyActions: this.clonePolicyActions(policyActions),
           policyAttempts: policyAttempts.size ? Object.fromEntries(policyAttempts.entries()) : undefined,
+          postConditionAttempts: postConditionAttempts.size
+            ? Object.fromEntries(postConditionAttempts.entries())
+            : undefined,
           mode: opts.initialState?.mode
         }
       }

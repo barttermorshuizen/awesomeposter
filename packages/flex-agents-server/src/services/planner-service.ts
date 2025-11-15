@@ -110,6 +110,18 @@ function normalizeHint(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
 }
 
+function summarizeGuardList(entries?: Array<{ facet: string; path: string }>): string {
+  if (!entries || !entries.length) {
+    return '—'
+  }
+  const rendered = entries.slice(0, 2).map((entry) => `${entry.facet} ${entry.path}`)
+  const remaining = entries.length - rendered.length
+  if (remaining > 0) {
+    return `${rendered.join('; ')} (+${remaining})`
+  }
+  return rendered.join('; ')
+}
+
 export type PlannerServiceInput = {
   envelope: TaskEnvelope
   context: PlannerContextHints
@@ -417,13 +429,20 @@ export function buildPlannerUserPrompt(params: {
       const inputFacets = entry.inputFacets.length ? entry.inputFacets.join(', ') : '—'
       const outputFacets = entry.outputFacets.length ? entry.outputFacets.join(', ') : '—'
       const reasons = entry.reasonCodes.join(', ')
+      const guardSummary = summarizeGuardList(
+        entry.postConditions.map((condition) => ({
+          facet: condition.facet,
+          path: condition.path
+        }))
+      )
       return [
         escapeTableCell(entry.capabilityId),
         escapeTableCell(entry.displayName),
         escapeTableCell(entry.kind),
         escapeTableCell(inputFacets),
         escapeTableCell(outputFacets),
-        escapeTableCell(reasons || '—')
+        escapeTableCell(reasons || '—'),
+        escapeTableCell(guardSummary)
       ]
     })
   } else {
@@ -434,19 +453,26 @@ export function buildPlannerUserPrompt(params: {
     capabilityRows = fallbackDefinitions.map((capability) => {
       const inputFacets = capability.inputFacets?.length ? capability.inputFacets.join(', ') : '—'
       const outputFacets = capability.outputFacets?.length ? capability.outputFacets.join(', ') : '—'
+      const guardSummary = summarizeGuardList(
+        capability.postConditions?.map((condition) => ({
+          facet: condition.facet,
+          path: condition.path
+        }))
+      )
       return [
         escapeTableCell(capability.capabilityId),
         escapeTableCell(capability.displayName),
         escapeTableCell(capability.kind),
         escapeTableCell(inputFacets),
         escapeTableCell(outputFacets),
-        escapeTableCell('—')
+        escapeTableCell('—'),
+        escapeTableCell(guardSummary)
       ]
     })
   }
 
   const capabilityTable = formatMarkdownTable(
-    ['Capability ID', 'Display Name', 'Kind', 'Input Facets', 'Output Facets', 'Reason Codes'],
+    ['Capability ID', 'Display Name', 'Kind', 'Input Facets', 'Output Facets', 'Reason Codes', 'Post-Condition Guards'],
     capabilityRows
   )
 

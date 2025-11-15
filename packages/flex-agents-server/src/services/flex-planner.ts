@@ -7,6 +7,7 @@ import type {
   FlexPlanNodeFacets,
   FlexPlanNodeProvenance,
   GoalConditionResult,
+  FacetCondition,
   JsonSchemaContract,
   NodeContract,
   OutputContract,
@@ -86,6 +87,8 @@ export type FlexPlanNode = {
   executor?: FlexPlanExecutor
   routing?: ConditionalRoutingNode | null
   metadata: Record<string, unknown>
+  postConditionGuards?: FacetCondition[]
+  postConditionResults?: GoalConditionResult[]
 }
 
 export type FlexPlan = {
@@ -559,7 +562,12 @@ export class FlexPlanner {
         rationale: draftNode.rationale ?? [],
         executor,
         routing: routingConfig,
-        metadata
+        metadata,
+        postConditionGuards:
+          capability?.postConditions && capability.postConditions.length
+            ? safeJsonClone(capability.postConditions)
+            : [],
+        postConditionResults: []
       }
 
       nodes.push(node)

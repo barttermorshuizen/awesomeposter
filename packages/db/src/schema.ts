@@ -423,6 +423,12 @@ export const flexPlanNodes = pgTable(
     contextJson: jsonb('context_json').$type<Record<string, unknown>>().default({}),
     outputJson: jsonb('output_json').$type<Record<string, unknown> | null>().default(null),
     errorJson: jsonb('error_json').$type<Record<string, unknown> | null>().default(null),
+    postConditionGuardsJson: jsonb('post_condition_guards_json')
+      .$type<Array<Record<string, unknown>> | null>()
+      .default(null),
+    postConditionResultsJson: jsonb('post_condition_results_json')
+      .$type<Array<Record<string, unknown>> | null>()
+      .default(null),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
@@ -467,6 +473,9 @@ export const flexRunOutputs = pgTable('flex_run_outputs', {
   facetSnapshotJson: jsonb('facet_snapshot_json').$type<Record<string, unknown> | null>().default(null),
   provenanceJson: jsonb('provenance_json').$type<Record<string, unknown> | null>().default(null),
   goalConditionResultsJson: jsonb('goal_condition_results_json')
+    .$type<Array<Record<string, unknown>> | null>()
+    .default(null),
+  postConditionResultsJson: jsonb('post_condition_results_json')
     .$type<Array<Record<string, unknown>> | null>()
     .default(null),
   recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow(),

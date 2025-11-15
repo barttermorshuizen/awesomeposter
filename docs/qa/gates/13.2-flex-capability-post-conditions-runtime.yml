@@ -1,0 +1,44 @@
+schema: 1
+story: '13.2'
+story_title: 'Capability Post-Condition Runtime Enforcement'
+gate: PASS
+status_reason: 'Post-condition retries now inject failure context into redispatch + prompts, and regression coverage confirms recovery.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-15T07:09:12Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 95
+expires: '2025-11-29T07:09:12Z'
+
+evidence:
+  tests_reviewed: 3
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Changes stay inside orchestrator runtime; no external surface change.'
+  performance:
+    status: PASS
+    notes: 'Condition evaluation reuses existing helper; retry context injection is constant time.'
+  reliability:
+    status: PASS
+    notes: 'Retry path now passes failure context; tests cover recovery + policy action.'
+  maintainability:
+    status: PASS
+    notes: 'Follows existing service patterns and documentation updates.'
+
+recommendations:
+  immediate:
+    - action: 'None'
+      refs: []
+  future:
+    - action: 'None'
+      refs: []

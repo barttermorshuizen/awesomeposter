@@ -1,6 +1,6 @@
 # Flex Agents Server — Architecture Specification
 
-_Last updated: 2025-11-06_
+_Last updated: 2025-11-14_
 
 
 ## Table of Contents
@@ -16,7 +16,6 @@ _Last updated: 2025-11-06_
   - [5.3 TaskPolicies](#53-taskpolicies)
     - [PlannerPolicy](#plannerpolicy)
     - [RuntimePolicy](#runtimepolicy)
-      - [Runtime Condition Evaluation](#runtime-condition-evaluation)
   - [5.4 PlanGraph](#54-plangraph)
   - [5.5 ContextBundle](#55-contextbundle)
   - [5.6 AgentCapability](#56-agentcapability)
@@ -55,21 +54,21 @@ _Last updated: 2025-11-06_
   - [Rationale](#rationale)
 - [5.11 Reference capability registry](#511-reference-capability-registry)
 - [5.12 Reference facet catalog](#512-reference-facet-catalog)
-  - [Facet post_context](#facet-post_context)
-  - [Facet creative_brief](#facet-creative_brief)
-  - [Facet strategic_rationale](#facet-strategic_rationale)
-  - [Facet handoff_summary](#facet-handoff_summary)
-  - [Facet company_information](#facet-company_information)
+  - [Facet post\_context](#facet-postcontext)
+  - [Facet creative\_brief](#facet-creativebrief)
+  - [Facet strategic\_rationale](#facet-strategicrationale)
+  - [Facet handoff\_summary](#facet-handoffsummary)
+  - [Facet company_information](#facet-companyinformation)
   - [Facet feedback](#facet-feedback)
-  - [Facet post_copy](#facet-post_copy)
-  - [Facet post_visual](#facet-post_visual)
+  - [Facet post\_copy](#facet-postcopy)
+  - [Facet post\_visual](#facet-postvisual)
   - [Facet post](#facet-post)
-  - [Facet positioning_context](#facet-positioning_context)
-  - [Facet positioning_recommendation](#facet-positioning_recommendation)
-  - [Facet messaging_stack](#facet-messaging_stack)
+  - [Facet positioning\_context](#facet-positioningcontext)
+  - [Facet positioning\_recommendation](#facet-positioningrecommendation)
+  - [Facet messaging\_stack](#facet-messagingstack)
   - [Facet: positioning](#facet-positioning)
-  - [Facet value_canvas](#facet-value_canvas)
-  - [Facet positioning_opportunities](#facet-positioning_opportunities)
+  - [Facet value\_canvas](#facet-valuecanvas)
+  - [Facet positioning\_opportunities](#facet-positioningopportunities)
 - [6. Component Responsibilities](#6-component-responsibilities)
   - [Telemetry & Metrics Parity](#telemetry-metrics-parity)
 - [7. Execution Flow](#7-execution-flow)
@@ -117,6 +116,11 @@ _Last updated: 2025-11-06_
   - [Implementation Notes](#implementation-notes)
   - [Error Handling & Observability](#error-handling-observability)
   - [Open Questions](#open-questions)
+- [15.12 Facet Widget Surfaces](#1512-facet-widget-surfaces)
+  - [Input Widgets](#input-widgets)
+  - [Output Widgets](#output-widgets)
+  - [Widget Registry & Decorators](#widget-registry-decorators)
+  - [Guidelines for New Widgets](#guidelines-for-new-widgets)
 - [16. Retrieval Knowledge Stores](#16-retrieval-knowledge-stores)
 
 ## 1. Scope & Goals
@@ -171,7 +175,9 @@ Canonical request payload containing `objective`, `inputs`, `constraints`, `outp
 
 **Facet state references.** Callers should reference paths that resolve within the facet snapshot published by the capability (for example `/value[0].status`). The orchestrator forwards the condition payloads unchanged so downstream services can evaluate them beside facet catalogs and capability provenance.
 
-**Runtime evaluation + telemetry.** The execution engine evaluates every `goal_condition` entry once terminal nodes succeed and exposes the results as `payload.goal_condition_results` on the final `complete` SSE frame. Each result includes the facet name, JSON-pointer path, canonical expression, satisfaction flag, and any runtime error message. The same array is stored in `flex_run_outputs.goal_condition_results_json` so replans and operator tools can see which predicates failed without replaying the run. Telemetry publishes aggregate counts via the `flex_goal_condition_evaluated` log and the `flex.goal_condition.*` histograms.
+**Runtime evaluation + telemetry.** When the execution engine finishes a run it evaluates each `goal_condition` entry against the resolved facet snapshot and streams the per-condition results in `payload.goal_condition_results` on the final `complete` SSE frame. Each entry captures the facet name, the pointer used, the canonical expression, whether it was satisfied, and any runtime evaluation error. The same array is persisted to `flex_run_outputs.goal_condition_results_json`, enabling follow-up replans or operator tooling to see which predicates failed without replaying the run. Telemetry surfaces aggregate counts (passed/failed/errored) via the `flex_goal_condition_evaluated` log and the `flex.goal_condition.*` histograms.
+
+**Automatic replans when predicates fail.** If any evaluated entry returns `satisfied === false` or reports an `error`, the execution engine raises a `GoalConditionFailedError`. The run coordinator persists the failed predicate structures under the latest plan snapshot, records them in `flex_run_outputs.goal_condition_results_json`, and triggers a standard planner replan before streaming `plan_updated` or `complete`. The second-round `plan_requested` / `plan_generated` frames include `payload.replan = { reason: "goal_condition_failed", failedGoalConditions: [...] }`, giving clients and operators full visibility into which facets drove the replan; a dedicated `goal_condition_failed` SSE event fires ahead of the replan so dashboards can surface the issue immediately. Automatic retries are capped by `FLEX_GOAL_CONDITION_REPLAN_LIMIT` (default `2`) to prevent infinite loops; exceeding the cap marks the run `failed` with the last `goal_condition_results` array attached to the final `complete` payload.
 
 ### 5.2 OutputContract
 Client-supplied JSON Schema plus optional post-processing hints (for example field ordering). The validator enforces the schema before finalizing a run; the orchestrator may also use it to derive intermediate expectations.
@@ -452,12 +458,19 @@ Facet-driven contracts let the planner assemble dynamic graphs without hard-codi
 - **User prompt focus:** The user message now concentrates on the task envelope, planner hints, policies, special instructions, and current graph context, reducing duplication while keeping the planner grounded in run-specific details.
 - **Context walkthrough:** Envelope objective, planner directives, policies, inputs, output contract, and any existing graph context are summarized in compact sections ahead of the tables. Special instructions and legacy policy markers surface inline so the planner can reason about constraints before composing nodes.
 - **Checklist + diagnostics guardrails:** The internal checklist from the Prompt Blueprint now lives in both the system instructions and the user message reminder to reinforce facet coverage, capability validity, and rationale requirements. Guidance about diagnostics vs. invented nodes is word-for-word with the blueprint to maintain orchestration parity.
+- **Goal-condition repair brief:** When the coordinator passes `goalConditionFailures`, the user prompt renders a dedicated `### GOAL CONDITION REPAIR` section that enumerates each failed predicate (facet, path, canonical DSL, JSON-Logic payload, last observed value, and evaluation error). Planner nodes must explicitly address every listed predicate before another completion attempt is allowed.
 - **Prompt telemetry:** PlannerService records system/user character counts and rendered row counts through `flex.planner.prompt.*` histograms. This enables the orchestrator telemetry feed to track prompt efficiency regressions and correlate token budgets to plan quality.
+
+##### Comprehensive Relevant Capability Set (CRCS)
+- **Reachability graph:** Before emitting `plan_requested`, the capability registry builds a bipartite graph connecting envelope/run-context input facets to required output (and goal-condition) facets through registered capabilities. Only capabilities that lie on at least one valid path from an available input facet to a required output facet survive; disconnected capabilities never appear in CRCS.
+- **Reason codes:** Each CRCS row exposes `reasonCodes` drawn from `{ path, policy_reference, goal_condition }`. `path` certifies the reachability proof, while `policy_reference` / `goal_condition` annotate capabilities that policies or goal conditions explicitly pinned. Capabilities that are pinned but not on a valid path are excluded from CRCS and show up under `missingPinnedCapabilityIds`.
+- **Capability kinds:** Registrations declare a `kind` (`structuring`, `execution`, `validation`, `transformation`, or `routing`) that is persisted in `flex_capabilities.kind`. CRCS rows, planner prompts, and SSE streams echo the stored value directly—there is no longer any heuristic inference based on capability names or summaries.
+- **Prompt table + metrics:** The planner prompt’s `CAPABILITY REGISTRY SUMMARY` renders the reachability-ordered table (registry order preserved) until the configurable cap (`FLEX_PLANNER_CRCS_MAX_ROWS`) is reached. Telemetry emits `flex.planner.crcs.*` histograms for total rows, MRCS/path size, per-reason counts, and missing pinned capability counts so Grafana dashboards can correlate prompt density with latency and plan quality.
 
 #### Story 8.8 Dynamic Assembly Details
 - **Live registry hydration:** During planning the orchestrator hydrates the latest capability snapshot (strategy, generation, QA, transformation helpers) and facet catalog definitions. Capability selections record coverage gaps so derived nodes are transparent.
 - **Capability scoring:** Candidates are scored on facet alignment, envelope-derived channel/format hints, language support, and declared costs. A configurable cutoff prevents low-confidence matches from entering the graph; derived selections are annotated when the planner leans on a capability outside its highest-confidence traits.
-- **Plan taxonomy:** Generated plan graphs now include `structuring`, optional `branch`, `routing`, `execution`, `transformation`, `validation`, and `fallback` nodes. Each node carries compiled input/output schemas (via `FacetContractCompiler`), provenance arrays, and expectations the execution engine reuses for validation. Routing nodes declare `routes[]`/`elseTo` entries using the Condition DSL so the deterministic step can emit explicit DAG edges while keeping runtime scheduling immutable.
+- **Plan taxonomy:** Generated plan graphs now include `structuring`, optional `branch`, `routing`, `execution`, `transformation`, `validation`, and `fallback` nodes. Each node carries compiled input/output schemas (via `FacetContractCompiler`), provenance arrays, and expectations the execution engine reuses for validation. Routing nodes describe `routes[]` and optional `elseTo` Condition DSL predicates so the deterministic planner can emit explicit DAG edges without mutating topology at runtime.
 - **Branch expansion:** Pre-execution branch directives (e.g., `policies.branchVariants`) produce dedicated branch nodes linked between strategy and execution nodes. Branch nodes inherit facet provenance and node metadata so downstream tooling can visualise the branch origin.
 - **Normalization nodes:** When caller output contracts require JSON schema enforcement the planner injects a `transformation` node after the execution stage. The node is virtual (orchestrator-managed) but records provenance, instructions, and plan wiring so downstream services can normalise outputs without custom glue code.
 - **Fallback wiring:** Every plan terminates with a fallback/HITL node that references the terminal execution node. The fallback node captures escalation instructions, facet rationale, and policy triggers so the execution engine can enter HITL mode without regenerating the plan.
@@ -758,6 +771,8 @@ All validator outputs use the normalized diagnostic buckets below so planner pro
 - `plan_generated.payload` includes `planVersion`, trimmed node metadata (`nodeId`, `capabilityId`, `provides[]`, `enforces[]`), and the same diagnostic buckets for transparency.
 - `policy_triggered` and `plan_updated` events reuse the schema when policies introduce additional findings (topology only changes after a replan).
 
+When capabilities emit the shared `feedback` facet, the execution engine also raises a `feedback_resolution` event whenever an entry’s `resolution` flips (for example, `open → addressed` or `addressed → open`). The event payload lists each change (facet, path, previous, current, message/note), and telemetry records a `flex.feedback.resolution` counter labeled by capability and facet so operators can audit whether reviewer notes are being closed out promptly.
+
 ### 5.9.5 Constraints vs. Policies Separation
 
 - **Rule of separation**
@@ -943,15 +958,17 @@ Once validated, the plan graph is the single source of truth for control flow.
 
 ## 5.11 Reference capability registry
 
-| capabilityId | AgentType | summary | inputTraits | inputContract | outputContract |
-| :---- | :---- | :---- | :---- | :---- | :---- |
-| strategist.SocialPosting | AI | Generates a strategic rationale and creative brief for social posts (e.g., new case, new employee). | Reasoning, Planning, Context extraction | post\_context, company\_information | creative\_brief, strategic\_rationale, handoff\_summary |
-| strategist.Positioning | AI | Analyzes a competitive positioning and produces a clear value proposition with reasoning. | Analysis, Synthesis, Market Reasoning | positioning\_context, feedback | value\_canvas, positioning\_opportunities, positioning\_recommendation |
-| copywriter.SocialpostDrafting | AI | Drafts social post copy using strategist’s creative brief. | Writing, Tone adaptation, Channel adaptation, | creative\_brief,handoff\_summary, feedback | post\_copy,handoff\_summary |
-| copywriter.Messaging | AI | Takes positioning and creates a messaging stack. | Copy Editing, Style Adaptation | positioning\_context, positioning\_recommendation, feedback | messaging\_stack, handoff\_summary |
-| designer.VisualDesign | Human | Creates visual assets for a post using strategists’ creative brief. | Visual design, Brand alignment | creative\_brief, handoff\_summary, feedback | post\_visual,handoff\_summary |
-| director.SocialPostingReview | Human | Approves final post (copy \+ visuals), or provides feedback on rationale,visuals or copy. | Evaluation, Brand Consistency | post\_context, strategic\_rationale, post\_copy, post\_visual | post, feedback |
-| director.PositioningReview | Human | Approves positioning recommendation and messaging stack, or provides feedback on positioning or messaging stack | Evaluation, Brand strategy | positioning\_context, value\_canvas, positioning\_opportunities, positioning\_recommendation, messaging\_stack | positioning, feedback |
+| capabilityId | AgentType | kind | summary | inputTraits | inputContract | outputContract |
+| :---- | :---- | :---- | :---- | :---- | :---- | :---- |
+| strategist.SocialPosting | AI | structuring | Generates a strategic rationale and creative brief for social posts (e.g., new case, new employee). | Reasoning, Planning, Context extraction | company\_information, post\_context | creative\_brief, strategic\_rationale, handoff\_summary, feedback |
+| strategist.Positioning | AI | structuring | Analyzes a competitive positioning and produces a clear value proposition with reasoning. | Analysis, Synthesis, Market Reasoning | positioning\_context, feedback | value\_canvas, positioning\_opportunities, positioning\_recommendation |
+| copywriter.SocialpostDrafting | AI | execution | Drafts social post copy using strategist’s creative brief. | Writing, Tone adaptation, Channel adaptation, | company\_information, creative\_brief, handoff\_summary | post\_copy, handoff\_summary, feedback |
+| copywriter.Messaging | AI | execution | Takes positioning and creates a messaging stack. | Copy Editing, Style Adaptation | positioning\_context, positioning\_recommendation, feedback | messaging\_stack, handoff\_summary |
+| designer.VisualDesign | Human | execution | Creates visual assets for a post using strategists’ creative brief. | Visual design, Brand alignment | company\_information, creative\_brief, handoff\_summary, feedback | post\_visual, handoff\_summary, feedback |
+| director.SocialPostingReview | Human | validation | Approves final post (copy \+ visuals), or provides feedback on rationale,visuals or copy. | Evaluation, Brand Consistency | post\_context, strategic\_rationale, post\_copy, post\_visual | post, feedback |
+| director.PositioningReview | Human | validation | Approves positioning recommendation and messaging stack, or provides feedback on positioning or messaging stack | Evaluation, Brand strategy | positioning\_context, value\_canvas, positioning\_opportunities, positioning\_recommendation, messaging\_stack | positioning, feedback |
+
+> Strategist, copywriter, and designer capabilities all output the shared `feedback` facet. When they deliver a revision, they must update the original entry (matching facet/path) so `resolution = "addressed"` (or revert to `open` if it still needs work), allowing replans and telemetry to see the current state without duplicate records.
 
 **Marketing sandbox tagging**
 - Every capability above publishes `metadata.catalogTags = ["marketing-agency", "sandbox"]` and `metadata.collection = "flex.marketing"` in its registration payload.
@@ -1433,7 +1450,7 @@ Each entry references the facet affected so the planner can map feedback to prod
 
 * path narrows scope for fine-grained feedback targeting.
 
-* Agents addressing items update the originating entry (matching facet/path) with a new resolution/note rather than appending duplicates, ensuring goal conditions can assert that all feedback is addressed.
+* Agents addressing items update the originating entry (matching facet/path) with a new resolution/note so downstream goal conditions can determine whether all feedback is addressed.
 
 * Serves both as conversational context and as a change log for future learning loops.
 
@@ -1443,6 +1460,15 @@ Each entry references the facet affected so the planner can map feedback to prod
 * requiredByDefault: true
 * catalogTags: ["marketing-agency", "sandbox"]
 
+**inline decorator behaviour**
+
+When a capability advertises the `feedback` facet (direction: output), the facet widget registry auto-loads the `feedback.inline` decorator. Every rendered input facet provides `facetKey` + JSON pointer metadata, so the decorator can:
+
+* Surface a badge showing unresolved feedback counts and preview the latest open message inline.
+* Launch a lightweight composer that is pre-filled with the facet key and pointer for the targeted field.
+* Add structured entries (message, severity, path, timestamp) via the existing facet mutation pipeline with no bespoke wiring inside generic widgets, and update existing entries in place when marking them addressed.
+
+Removing the facet from the contract immediately disables the decorator, keeping the UI purely driven by facet metadata.
 Understood — keeping post\_copy as a single, minimal text field makes it clean and consistent with how you simplified strategic\_rationale.
 
 Here’s the revised definition.
@@ -2303,7 +2329,7 @@ It’s a structured map of *where to move next* based on current performance, co
 - `flex_runs`: mirrors `orchestrator_runs` but records envelope metadata (`objective`, `schema_hash`, `persona`, `variant_policy`) plus persisted run context (`hitlClarifications` storing the structured clarify question/answer history).
 - `flex_plan_nodes`: stores node-level state, selected capability IDs, context hashes, and validation status for auditing and resumption.
 - `flex_plan_snapshots`: versioned checkpoints serializing plan graphs (node facets, compiled contracts, provenance, pending node IDs) and the facet snapshot used for resume/HITL flows.
-- `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, goal-condition evaluation results, completion status, and timestamps so downstream systems can audit or resume runs.
+- `flex_run_outputs`: captures validated final payloads, schema hashes, plan version, facet snapshot, provenance map, completion status, and timestamps so downstream systems can audit or resume runs.
 - `flex_capabilities`: stores registered agent metadata, heartbeat timestamps, availability state, and facet coverage hints.
 - Reuse `agent_messages` and `hitl_requests` tables, adding `flex_run_id` foreign keys for joint reporting.
 
@@ -2327,23 +2353,24 @@ It’s a structured map of *where to move next* based on current performance, co
 The `/api/v1/flex/run.stream` controller validates the incoming envelope, persists an initial `flex_runs` row, and streams `FlexEvent` frames for planner lifecycle updates. Frames conform to `{ type, id?, timestamp, payload?, message?, runId?, nodeId? }`. Supported event types in this release:
 
 - `start`: emitted after persistence with `payload.runId` and optional `threadId`.
-- `plan_requested`: planner handshake has started; payload includes attempt number, normalized policy keys, and capability snapshot metadata.
+- `plan_requested`: planner handshake has started; payload includes attempt number, normalized policy keys, capability snapshot metadata, and a `crcs` summary describing the Comprehensive Relevant Capability Set (`{ totalRows, mrcsSize, reasonCounts, rowCap?, missingPinnedCapabilities? }`). Each `crcs.rows[]` entry mirrors the registry payload (`capabilityId`, `displayName`, `kind`, facet coverage, `{ facet, path, expression }` guards, `reasonCodes`, `source`), and the `kind` value is taken directly from the persisted registration union—no heuristic inference occurs at stream time. When the request is the result of an automatic replan the payload also carries `replan = { reason: string, failedGoalConditions?: GoalConditionResult[] }`, where goal-condition failures list the facet, pointer, DSL, JSON-Logic, observed value, and evaluation error that triggered the cycle.
 - `plan_rejected`: validation failed; payload surfaces structured diagnostics aligned with planner feedback loops.
-- `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`).
-- `plan_updated`: new plan version persisted after replanning or HITL resume; payload includes `previousVersion`, `version`, summary node statuses, and the trigger metadata.
+- `plan_generated`: contains trimmed plan metadata (`nodes[{ id, capabilityId, label }]`). Replan-driven generations echo the `replan` metadata described above so clients can display rationale alongside the fresh plan version, and include the most recent `crcs` summary so UIs can compare planner prompt density before/after the change.
+- `plan_updated`: new plan version persisted after replanning or HITL resume; payload includes `previousVersion`, `version`, summary node statuses, trigger metadata, and (when applicable) the same `replan` structure so operators can see why the plan changed. Each update replays the latest `crcs` summary so dashboards can correlate plan churn with registry breadth.
 - `node_start` / `node_complete` / `node_error`: per-node execution lifecycle.
 - `policy_triggered`: emitted when runtime policies fire (including during resume); payload includes canonical `actionDetails` (type, metadata, nested follow-ups) alongside legacy fields so clients can identify the requested behaviour.
+- `goal_condition_failed`: emitted when a run fails one or more goal predicates; payload includes the failed predicate structures, the automatic replan attempt number, and the configurable retry cap.
 - `hitl_request`: surfaced when policies require human approval; downstream UI pauses the run.
 -  `hitl_request` payloads include `pendingNodeId`, `contractSummary` (compiled facets + contracts), and `operatorPrompt` so clients can render enriched approval context. Resume streams emit the same structure until the request resolves.
 - `validation_error`: Ajv validation failures (payload contains `scope` and `errors[]` for structured UI handling).
-- `complete`: final frame containing `payload.output` that satisfies the caller schema.
+- `complete`: final frame containing `payload.output` that satisfies the caller schema. When envelopes supplied `goal_condition` entries, `payload.goal_condition_results` lists the evaluated predicates (facet, path, expression, DSL, JSON-Logic, observed value, satisfied flag, error message if evaluation failed) so clients can see which ones passed without re-inspecting facet snapshots. The orchestrator withholds this frame until all failed predicates have been reparsed and satisfied or the automatic replan cap has been exceeded.
 - `log`: informational/debug messages.
 
 Each frame carries `runId` (and `nodeId` for node-scoped events) at the top level, allowing consumers to correlate updates without re-parsing payloads.
 
 **Resume after HITL/Flex Task Submission:** Once the operator submits via `/api/v1/flex/run.resume`, the client should open a fresh stream with the same `threadId` and set `constraints.resumeRunId` to the previous `runId`. The coordinator will rehydrate the persisted plan, emit `plan_generated`/`node_complete` frames, validate the stored output, and finish with `complete`. Declines go through `/api/v1/flex/tasks/:taskId/decline`, triggering policy-defined fail paths without attempting resume.
 
-**Facet goal predicates.** Envelopes may include an optional `goal_condition` array. Each entry names the facet being inspected, points to a path within that facet payload, and supplies the shared Condition DSL envelope. The runtime ANDs the entries together—callers can require multiple facets to satisfy their predicates before the run is marked complete while still keeping the planner contracts immutable.
+**Facet goal predicates.** Envelopes may include an optional `goal_condition` array. Each entry names the facet being inspected, points to a path within that facet payload, and supplies the shared Condition DSL envelope. The runtime ANDs the entries together—callers can require multiple facets to satisfy their predicates before the run is marked complete while still keeping the planner contracts immutable. If any predicate fails, the execution engine triggers a `goal_condition_failed` replan, surfaces the failed structures on planner lifecycle frames, and retries up to `FLEX_GOAL_CONDITION_REPLAN_LIMIT` times before returning a terminal `complete` with the failure metadata.
 
 Example `curl` invocation:
 
@@ -2553,11 +2580,15 @@ Use this endpoint during incident response to validate operator guidance, inspec
 
 ## 11. Capability Registry & Agent Contracts
 - Capability metadata now lives alongside each agent (for example `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts`); the module exports the capability payload with facet-based `inputContract` / `outputContract` arrays alongside prompt assets.
+- Every registration must include an explicit `kind` drawn from `{ structuring, execution, validation, transformation, routing }`. The registry persists this value (`flex_capabilities.kind`), CRCS rows and planner prompts echo it verbatim, and heuristic inference has been removed to prevent domain-leaking guesses based on names or summaries.
 - A Nitro startup plugin consumes these exports and POSTs them to `/api/v1/flex/capabilities/register`, exercising the same validation/logging path as external registrants, and re-registers on an interval (`FLEX_CAPABILITY_SELF_REGISTER_REFRESH_MS`, default 5 minutes) to keep heartbeat status active.
 - `PlannerService` uses the registry to resolve capabilities by matching facet coverage alongside envelope-driven channel/format hints surfaced from TaskEnvelope inputs and planner policies.
 - `ContextBuilder` translates high-level objectives (for example “two variants”) into per-agent instructions so strategists craft briefs and writers fill slots without code changes.
 - Agents continue to rely on natural-language prompts but receive machine-readable facet contracts and validation hints alongside human context.
 - The registry service (`packages/flex-agents-server/src/services/flex-capability-registry.ts`) caches active entries in memory with a configurable TTL (`FLEX_CAPABILITY_CACHE_TTL_MS`) and automatically marks records inactive once their heartbeat timeout elapses.
+- Capability registrations may now include optional `postConditions: FacetCondition[]` arrays mirroring the TaskEnvelope `goal_condition` contract. The registry normalizes each predicate through the shared [Condition DSL Parser & Validation](../condition-dsl.md#condition-dsl-parser--validation), persists both the submitted DSL (`post_conditions_dsl_json`) and compiled metadata (`post_conditions_compiled_json`) in `flex_capabilities`, and rejects malformed facet/path pairs with descriptive errors before caching the record.
+- Active capability snapshots (`listActive`, `getCapabilityById`) expose the compiled `postConditions` payload alongside a `metadata.postConditionGuards` summary, while CRCS rows and SSE scaffolds include a `{ facet, path, expression }` list so planners and operator tooling can state which facets each predicate guards. SSE `plan_requested` / `plan_generated` payloads surface these details via `crcs.rows`, keeping operator dashboards in lockstep with the planner prompt tables.
+- The registry’s `computeCrcsSnapshot()` helper assembles the Comprehensive Relevant Capability Set (CRCS) ahead of every planner request by walking the facet-capability graph: capabilities only appear if they lie on at least one path from an available envelope/run-context input facet to a required output or goal-condition facet. Each capability row is annotated with `reasonCodes` (`path`, `policy_reference`, `goal_condition`), missing pinned capability IDs are reported, and the planner prompt/telemetry layers consume the snapshot to keep capability tables concise without hiding policy-critical entries. `PolicyNormalizer`, `PlannerValidationService`, and `ContextBuilder` treat missing pinned capabilities as hard errors, forcing replans or operator escalation before execution proceeds.
 - Facet declarations are validated against the shared catalog at registration time; the registry compiles merged JSON Schemas, persists `input_facets` / `output_facets` coverage hints, and rejects unknown facets or direction mismatches before capabilities become available.
 - Legacy `defaultContract` fallbacks have been removed—registrations must provide explicit facet-backed `outputContract` payloads and the registry persists the compiled JSON Schema as the single source of truth.
 - The database layer persists metadata to the shared `flex_capabilities` table (Drizzle schema + migration), keyed by `capability_id` with timestamps for `registered_at`, `last_seen_at`, and rolling `status` (`active`/`inactive`).
@@ -2599,13 +2630,13 @@ Facet definitions are centralised in `packages/shared/src/flex/facets/catalog.ts
 
 | Capability ID | Display Name | Responsibilities | Input Facets | Output Facets | Source |
 | --- | --- | --- | --- | --- | --- |
-| `strategist.SocialPosting` | Strategist – Social Posting | Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs. | `company_information`, `post_context` | `creative_brief`, `strategic_rationale`, `handoff_summary`, `feedback` | `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts` |
-| `strategist.Positioning` | Strategist – Positioning | Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation. | `company_information`, `positioning_context` | `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-positioning.ts` |
-| `copywriter.SocialpostDrafting` | Copywriter – Social Drafting | Generates or revises campaign copy using strategist output and reviewer feedback. | `company_information`, `creative_brief`, `handoff_summary` | `post_copy`, `handoff_summary`, `feedback` | `packages/flex-agents-server/src/agents/marketing/copywriter-socialpost-drafting.ts` |
-| `copywriter.Messaging` | Copywriter – Messaging Stack | Converts positioning recommendations into a structured messaging hierarchy. | `company_information`, `positioning_context`, `positioning_recommendation` | `messaging_stack`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-messaging.ts` |
-| `designer.VisualDesign` | Designer – Visual Design | Creates or sources campaign visuals aligned with strategist guidance and reviewer feedback. | `company_information`, `creative_brief`, `handoff_summary`, `feedback` | `post_visual`, `handoff_summary`, `feedback` | `packages/flex-agents-server/src/agents/marketing/designer-visual-design.ts` |
-| `director.SocialPostingReview` | Director – Social Review | Reviews campaign deliverables, approves final social posts, or records structured feedback. | `company_information`, `post_context`, `strategic_rationale`, `post_copy`, `post_visual` | `post`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-social-review.ts` |
-| `director.PositioningReview` | Director – Positioning Review | Approves positioning recommendations and messaging stacks or records actionable feedback. | `company_information`, `positioning_context`, `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `messaging_stack` | `positioning`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-positioning-review.ts` |
+| `strategist.SocialPosting` | Strategist – Social Posting | Plans social campaign briefs, rationale, and handoff notes from marketing-context inputs. | `post_context`, `feedback` | `creative_brief`, `strategic_rationale`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-social-posting.ts` |
+| `strategist.Positioning` | Strategist – Positioning | Transforms market inputs into an updated positioning canvas, opportunity list, and recommendation. | `positioning_context`, `feedback` | `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/strategist-positioning.ts` |
+| `copywriter.SocialpostDrafting` | Copywriter – Social Drafting | Generates or revises campaign copy using strategist output and reviewer feedback. | `creative_brief`, `handoff_summary`, `feedback` | `post_copy`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-socialpost-drafting.ts` |
+| `copywriter.Messaging` | Copywriter – Messaging Stack | Converts positioning recommendations into a structured messaging hierarchy. | `positioning_context`, `positioning_recommendation`, `feedback` | `messaging_stack`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/copywriter-messaging.ts` |
+| `designer.VisualDesign` | Designer – Visual Design | Creates or sources campaign visuals aligned with strategist guidance and reviewer feedback. | `creative_brief`, `handoff_summary`, `feedback` | `post_visual`, `handoff_summary` | `packages/flex-agents-server/src/agents/marketing/designer-visual-design.ts` |
+| `director.SocialPostingReview` | Director – Social Review | Reviews campaign deliverables, approves final social posts, or records structured feedback. | `post_context`, `strategic_rationale`, `post_copy`, `post_visual` | `post`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-social-review.ts` |
+| `director.PositioningReview` | Director – Positioning Review | Approves positioning recommendations and messaging stacks or records actionable feedback. | `positioning_context`, `value_canvas`, `positioning_opportunities`, `positioning_recommendation`, `messaging_stack` | `positioning`, `feedback` | `packages/flex-agents-server/src/agents/marketing/director-positioning-review.ts` |
 | `HumanAgent.clarifyBrief` | Human Operator – Brief Clarification | Resolves planner clarification requests with structured human responses; declines or missed SLAs fail the run. | `objectiveBrief`, `audienceProfile`, `toneOfVoice`, `writerBrief`, `clarificationRequest` | `clarificationResponse` | `packages/flex-agents-server/src/agents/human-clarify-brief.ts` |
 
 > Capability metadata, facet coverage, costs, and heartbeat settings are the source of truth—update the tables above and the corresponding agent module together during future agent work. Add new facets to the catalog before referencing them in capabilities.
@@ -2717,10 +2748,8 @@ interface ClarificationEntry {
 - Facets now double as UI composition primitives. Each facet definition contributes schema fragments and semantic hints so the UI can render and validate human input appropriately.
 - A facet widget registry (for example `PostVisualWidget`, `CompanyInformationWidget`) maps facet names to reusable UI components that assemble into the task surface.
 - Each widget owns one facet’s schema slice; the framework composes widgets according to the paused node’s facet list to build the end-to-end task view.
-- The same registry can declaratively attach decorators (e.g. `feedback.inline`) so capabilities that emit a facet automatically gain contextual UI affordances—Flex Human renders an inline composer + badge beside every input facet whenever the capability advertises the `feedback` output facet, and removing that facet immediately disables the decorator.
 - Adding a new facet automatically enriches planner reasoning and the available human task interfaces—the UI evolves alongside the facet catalog without manual form building.
 - Flex human task UI lives in a distinct module (`flexTasks` Pinia store plus `FlexTaskPanel.vue` host) separate from legacy HITL approval flows; shared utilities (SSE bridge, notification helpers) may be reused, but state machines and components MUST stay isolated so approvals remain binary while flex tasks render facet-driven forms.
-- Detailed widget/decorator guidance for future facets lives in [`docs/architecture/flex-agents-server/1512-facet-widget-surfaces.md`](./flex-agents-server/1512-facet-widget-surfaces.md); keep that doc current whenever you add or refactor widgets.
 
 #### 15.4.1 Facet Widget Namespace Convention
 - Facets that need different UX on the read-only (input) side versus the authoring (output) side register widgets under namespaced keys: `facetName.input` for the contextual surface humans consume, and `facetName.output` for any authoring surface that writes back to the node payload.
@@ -2885,6 +2914,42 @@ sequenceDiagram
 
 ### Open Questions
 - **Bandwidth:** if uploads become large, consider presigned direct PUTs; out of scope for Story 10.6 but noted here.
+
+## 15.12 Facet Widget Surfaces
+
+Human-facing flex tasks render input/output facets through a shared widget pipeline so designers and engineers can add new surfaces without duplicating view logic.
+
+### Input Widgets
+
+- `FlexTaskPanel` resolves the list of input facets per task and renders each one inside a single expansion panel container. This keeps the layout identical for generic JSON payloads and bespoke widgets.
+- Custom widgets (e.g., `CompanyInformationWidget`, `PostVisualInputGallery`) receive the same props as fallback widgets: `definition`, `schema`, `modelValue`, and the full task context. They are responsible for showing their own structured UI but must avoid injecting extra collapsible shells—the parent panel already provides the expand/collapse affordance.
+- Fallback facets (no custom widget) show a prettified JSON block inside the same container so operators can still view raw payloads.
+- Feedback chips in the panel title surface per-facet comment counts; the inline composer control sits inside the panel body to keep interactions contextual.
+
+### Output Widgets
+
+- Output facets reuse the same registry (`src/components/flex-tasks/widgets/registry.ts`) but render in the submission section of the panel. Widgets receive model updates through `v-model` so their changes propagate into the draft payload map.
+- Default/fallback output facets render the `DefaultFacetWidget` which is a JSON editor wrapped in the same expansion panel scaffolding as custom widgets.
+
+### Widget Registry & Decorators
+
+- `registerFacetWidget(facetName, component, direction)` stores the Vue component (`Component` marked raw) keyed by facet name + direction. Input widgets use the `.input` namespace; output widgets use `.output`.
+- Decorators (e.g., `feedback.inline`) register through `registerInputFacetDecorator`. Decorators subscribe to specific facets (like `feedback`) and are injected automatically based on the task’s declared facets.
+- The inline feedback decorator wraps any input facet panel with:
+  - A badge placed inside the panel header (`<template #actions>`).
+  - A contextual composer below the widget content (button, severity toggle, comment list).
+  - Author-aware deletion: only the current operator can remove their entries; entries store their source index so removals map back into the draft array.
+  - Resolve/undo icon controls with tooltips so operators can flip the `resolution` field in-place. These controls emit the same decorator events as the composer, ensuring addressed items persist through the Ajv validator and telemetry snapshots.
+
+### Guidelines for New Widgets
+
+1. **Keep layout lean** – rely on the parent expansion panel for structure. Avoid embedding additional `v-expansion-panels` unless the facet explicitly represents a hierarchical payload.
+2. **Respect read-only state** – the parent will pass `readonly` when a task is locked; widgets must disable editing accordingly.
+3. **Surface metadata** – show relevant descriptions/tooltips at the top of the panel body using the provided `definition.title`/`definition.description`.
+4. **Emit changes once** – use `@update:model-value` to send normalized data structures back to `FlexTaskPanel`. The panel handles pointer mapping and submission.
+5. **Leverage decorators** – if a facet supports inline actions (feedback, validation, assets, etc.), register them through the decorator API so they can be attached declaratively without modifying every widget.
+
+Refer to `src/components/flex-tasks/widgets/` for canonical widget implementations and `FlexTaskPanel.vue` for the shared panel scaffolding. This document should be updated whenever the widget contract changes so future contributors understand how to hook into the system.*** End Patch*** End Patch
 
 ## 16. Retrieval Knowledge Stores
 

@@ -285,6 +285,7 @@ export const FacetConditionSchema = z
   })
   .strict()
 export type FacetCondition = z.infer<typeof FacetConditionSchema>
+export type FlexPostConditionGuard = FacetCondition
 
 export type CapabilityPostConditionDslEntry = {
   facet: string
@@ -354,6 +355,7 @@ export const GoalConditionResultSchema = z
   })
   .strict()
 export type GoalConditionResult = z.infer<typeof GoalConditionResultSchema>
+export type FlexPostConditionResult = GoalConditionResult
 
 /**
  * Canonical wrapper for planner requests including objectives and policies.

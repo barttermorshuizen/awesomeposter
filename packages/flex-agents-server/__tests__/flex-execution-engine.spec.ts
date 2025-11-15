@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { FlexEvent, OutputContract, TaskEnvelope, ContextBundle } from '@awesomeposter/shared'
+import type { FlexEvent, OutputContract, TaskEnvelope, ContextBundle, CapabilityRecord } from '@awesomeposter/shared'
 import {
   FlexExecutionEngine,
   ReplanRequestedError,
-  GoalConditionFailedError
+  GoalConditionFailedError,
+  RuntimePolicyFailureError
 } from '../src/services/flex-execution-engine'
 import { RunContext } from '../src/services/run-context'
 import type { FlexPlan, FlexPlanNode, FlexPlanNodeContracts, FlexPlanEdge } from '../src/services/flex-planner'
@@ -104,6 +105,58 @@ function buildPlan(options: PlanBuildOptions): FlexPlan {
     createdAt: new Date().toISOString(),
     nodes,
     edges,
+    metadata: {}
+  }
+}
+
+function buildCapabilityWithPostConditions(overrides: Partial<CapabilityRecord> = {}): CapabilityRecord {
+  return {
+    capabilityId: 'writer.v1',
+    version: '1.0.0',
+    displayName: 'Writer',
+    summary: 'Writes copy variants',
+    kind: 'execution',
+    agentType: 'ai',
+    inputTraits: undefined,
+    inputContract: BASE_CONTRACT,
+    outputContract: BASE_CONTRACT,
+    cost: undefined,
+    preferredModels: [],
+    heartbeat: undefined,
+    instructionTemplates: undefined,
+    assignmentDefaults: undefined,
+    metadata: {},
+    postConditions: [
+      {
+        facet: 'summary',
+        path: '/status',
+        condition: {
+          dsl: 'status == "ready"',
+          canonicalDsl: 'status == "ready"',
+          jsonLogic: {
+            '==': [{ var: 'status' }, 'ready']
+          }
+        }
+      }
+    ],
+    status: 'active',
+    lastSeenAt: new Date().toISOString(),
+    registeredAt: new Date().toISOString(),
+    ...overrides
+  }
+}
+
+function buildPostConditionPlan(capabilityId: string): FlexPlan {
+  const executionNode: FlexPlanNode = {
+    ...baseNode('writer-node', 'execution'),
+    capabilityId,
+    facets: { input: [], output: ['summary'] }
+  }
+  return {
+    runId: 'run-post',
+    version: 1,
+    nodes: [executionNode],
+    edges: [],
     metadata: {}
   }
 }
@@ -362,5 +415,134 @@ describe('FlexExecutionEngine goal condition evaluation', () => {
     ).rejects.toBeInstanceOf(GoalConditionFailedError)
 
     expect(recordResult).not.toHaveBeenCalled()
+  })
+})
+
+describe('Capability post-condition enforcement', () => {
+  it('retries failing nodes until post conditions pass and emits telemetry', async () => {
+    const capability = buildCapabilityWithPostConditions()
+    const runtime = {
+      runStructured: vi
+        .fn()
+        .mockResolvedValueOnce({ output: { summary: { status: 'draft' } } })
+        .mockResolvedValueOnce({ output: { summary: { status: 'ready' } } })
+    }
+    const { persistence } = buildPersistenceStub()
+    const capabilityRegistry = {
+      getCapabilityById: vi.fn().mockResolvedValue(capability)
+    } as unknown as FlexCapabilityRegistryService
+    const engine = new FlexExecutionEngine(persistence, {
+      capabilityRegistry,
+      runtime
+    })
+    const { events, onEvent } = collectEvents()
+    await engine.execute(
+      'run-post-conditions',
+      {
+        ...buildEnvelope(),
+        policies: {
+          runtime: [
+            {
+              id: 'pc-policy',
+              trigger: {
+                kind: 'onPostConditionFailed',
+                selector: { capabilityId: capability.capabilityId },
+                maxRetries: 2
+              },
+              action: { type: 'replan', rationale: 'guard failed' }
+            }
+          ]
+        }
+      },
+      buildPostConditionPlan(capability.capabilityId),
+      {
+        onEvent,
+        runContext: new RunContext()
+      }
+    )
+
+    expect(runtime.runStructured).toHaveBeenCalledTimes(2)
+    const policyEvent = events.find((evt) => evt.type === 'policy_triggered' && evt.nodeId === 'writer-node')
+    expect(policyEvent).toBeTruthy()
+    expect((policyEvent?.payload as Record<string, unknown>)?.postConditionResults).toMatchObject([
+      {
+        facet: 'summary',
+        path: '/status',
+        satisfied: false
+      }
+    ])
+    expect((policyEvent?.payload as Record<string, unknown>)?.maxRetries).toBe(2)
+
+    const secondCallMessages = runtime.runStructured.mock.calls[1]?.[1] as
+      | Array<{ role: string; content: string }>
+      | undefined
+    const userMessage = secondCallMessages?.find((msg) => msg.role === 'user')?.content ?? ''
+    expect(userMessage).toContain('Previous post-condition failures')
+    expect(userMessage).toContain('/status')
+
+    const nodeComplete = events.find((evt) => evt.type === 'node_complete' && evt.nodeId === 'writer-node')
+    expect(nodeComplete).toBeTruthy()
+    expect((nodeComplete?.payload as Record<string, unknown>)?.postConditionResults).toMatchObject([
+      {
+        facet: 'summary',
+        path: '/status',
+        satisfied: true
+      }
+    ])
+  })
+
+  it('executes the configured action when the retry budget is exhausted', async () => {
+    const capability = buildCapabilityWithPostConditions()
+    const runtime = {
+      runStructured: vi.fn().mockResolvedValue({ output: { summary: { status: 'draft' } } })
+    }
+    const { persistence } = buildPersistenceStub()
+    const capabilityRegistry = {
+      getCapabilityById: vi.fn().mockResolvedValue(capability)
+    } as unknown as FlexCapabilityRegistryService
+    const engine = new FlexExecutionEngine(persistence, {
+      capabilityRegistry,
+      runtime
+    })
+    const { events, onEvent } = collectEvents()
+
+    await expect(
+      engine.execute(
+        'run-post-conditions-fail',
+        {
+          ...buildEnvelope(),
+          policies: {
+            runtime: [
+              {
+                id: 'pc-fail',
+                trigger: {
+                  kind: 'onPostConditionFailed',
+                  selector: { capabilityId: capability.capabilityId },
+                  maxRetries: 0
+                },
+                action: { type: 'fail', message: 'capability guards failed' }
+              }
+            ]
+          }
+        },
+        buildPostConditionPlan(capability.capabilityId),
+        {
+          onEvent,
+          runContext: new RunContext()
+        }
+      )
+    ).rejects.toBeInstanceOf(RuntimePolicyFailureError)
+
+    expect(runtime.runStructured).toHaveBeenCalledTimes(1)
+    const policyEvent = events.find((evt) => evt.type === 'policy_triggered' && evt.nodeId === 'writer-node')
+    expect(policyEvent).toBeTruthy()
+    expect((policyEvent?.payload as Record<string, unknown>)?.maxRetries).toBe(0)
+    expect((policyEvent?.payload as Record<string, unknown>)?.postConditionResults).toMatchObject([
+      {
+        facet: 'summary',
+        path: '/status',
+        satisfied: false
+      }
+    ])
   })
 })

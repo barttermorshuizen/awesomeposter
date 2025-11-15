@@ -6,7 +6,8 @@ import type {
   ContextBundle,
   FlexFacetProvenanceMap,
   ConditionalRoutingNode,
-  GoalConditionResult
+  GoalConditionResult,
+  FacetCondition
 } from '@awesomeposter/shared'
 import { ensureFacetPlaceholders, stripPlannerFields } from './run-context-utils'
 import type { RunContextSnapshot } from './run-context'
@@ -457,6 +458,8 @@ export type FlexPlanNodeSnapshot = {
   rationale?: string[] | null
   executor?: FlexPlanExecutor | null
   routing?: ConditionalRoutingNode | null
+  postConditionGuards?: FacetCondition[] | null
+  postConditionResults?: GoalConditionResult[] | null
 }
 
 export type FlexRunRecord = {
@@ -481,6 +484,7 @@ type PlanSnapshotState = {
   policyAttempts?: Record<string, number>
   mode?: RuntimePolicySnapshotMode
   goalConditionFailures?: GoalConditionResult[]
+  postConditionAttempts?: Record<string, number>
 }
 
 type SavePlanSnapshotOptions = {
@@ -517,6 +521,12 @@ export type FlexRunOutputRow = {
   facets: RunContextSnapshot | null
   provenance: Record<string, unknown> | null
   goalConditionResults: GoalConditionResult[] | null
+  postConditionResults: Array<{
+    nodeId: string
+    capabilityId: string | null
+    guards: FacetCondition[]
+    results: GoalConditionResult[]
+  }> | null
   recordedAt: Date | null
   updatedAt: Date | null
 }
@@ -639,6 +649,8 @@ export class FlexRunPersistence {
           contextJson: node.context ? clone(node.context) : {},
           outputJson: node.output ? clone(node.output) : null,
           errorJson: node.error ? clone(node.error) : null,
+          postConditionGuardsJson: node.postConditionGuards ? clone(node.postConditionGuards) : null,
+          postConditionResultsJson: node.postConditionResults ? clone(node.postConditionResults) : null,
           startedAt: node.startedAt ?? null,
           completedAt: node.completedAt ?? null,
           createdAt: now,
@@ -657,6 +669,8 @@ export class FlexRunPersistence {
               contextJson: sql`excluded.context_json`,
               outputJson: sql`excluded.output_json`,
               errorJson: sql`excluded.error_json`,
+              postConditionGuardsJson: sql`excluded.post_condition_guards_json`,
+              postConditionResultsJson: sql`excluded.post_condition_results_json`,
               startedAt: sql`excluded.started_at`,
               completedAt: sql`excluded.completed_at`,
               updatedAt: sql`excluded.updated_at`
@@ -695,6 +709,8 @@ export class FlexRunPersistence {
           metadata: node.metadata ? clone(node.metadata) : null,
           executor: node.executor ? clone(node.executor) : null,
           rationale: node.rationale ? clone(node.rationale) : null,
+          postConditionGuards: node.postConditionGuards ? clone(node.postConditionGuards) : [],
+          postConditionResults: node.postConditionResults ? clone(node.postConditionResults) : [],
           startedAt: node.startedAt ? node.startedAt.toISOString() : null,
           completedAt: node.completedAt ? node.completedAt.toISOString() : null
         })),
@@ -709,6 +725,9 @@ export class FlexRunPersistence {
                 : {}),
               ...(options.pendingState.policyAttempts
                 ? { policyAttempts: clone(options.pendingState.policyAttempts) }
+                : {}),
+              ...(options.pendingState.postConditionAttempts
+                ? { postConditionAttempts: clone(options.pendingState.postConditionAttempts) }
                 : {}),
               ...(options.pendingState.mode ? { mode: options.pendingState.mode } : {}),
               ...(options.pendingState.goalConditionFailures
@@ -775,6 +794,12 @@ export class FlexRunPersistence {
     if (updates.error !== undefined) set.errorJson = updates.error ? clone(updates.error) : null
     if (updates.startedAt !== undefined) set.startedAt = updates.startedAt ?? null
     if (updates.completedAt !== undefined) set.completedAt = updates.completedAt ?? null
+    if (updates.postConditionGuards !== undefined) {
+      set.postConditionGuardsJson = updates.postConditionGuards ? clone(updates.postConditionGuards) : null
+    }
+    if (updates.postConditionResults !== undefined) {
+      set.postConditionResultsJson = updates.postConditionResults ? clone(updates.postConditionResults) : null
+    }
 
     await this.db
       .insert(flexPlanNodes)
@@ -787,6 +812,8 @@ export class FlexRunPersistence {
         contextJson: updates.context ? clone(updates.context) : {},
         outputJson: updates.output ? clone(updates.output) : null,
         errorJson: updates.error ? clone(updates.error) : null,
+        postConditionGuardsJson: updates.postConditionGuards ? clone(updates.postConditionGuards) : null,
+        postConditionResultsJson: updates.postConditionResults ? clone(updates.postConditionResults) : null,
         startedAt: updates.startedAt ?? null,
         completedAt: updates.completedAt ?? null,
         createdAt: now,
@@ -809,6 +836,17 @@ export class FlexRunPersistence {
   async recordResult(runId: string, result: Record<string, unknown>, options: RecordResultOptions = {}) {
     const now = new Date()
     const status: FlexRunStatus = options.status ?? 'completed'
+    const postConditionSnapshot =
+      options.snapshot?.nodes && options.snapshot.nodes.length
+        ? options.snapshot.nodes
+            .map((node) => ({
+              nodeId: node.nodeId,
+              capabilityId: node.capabilityId ?? null,
+              guards: node.postConditionGuards ? clone(node.postConditionGuards) : [],
+              results: node.postConditionResults ? clone(node.postConditionResults) : []
+            }))
+            .filter((entry) => entry.guards.length || entry.results.length)
+        : null
     await this.db.transaction(async (tx) => {
       await tx
         .update(flexRuns)
@@ -826,6 +864,7 @@ export class FlexRunPersistence {
           facetSnapshotJson: options.facets ? clone(options.facets) : null,
           provenanceJson: options.provenance ? clone(options.provenance) : null,
           goalConditionResultsJson: options.goalConditionResults ? clone(options.goalConditionResults) : null,
+          postConditionResultsJson: postConditionSnapshot ? clone(postConditionSnapshot) : null,
           recordedAt: now,
           updatedAt: now
         })
@@ -839,6 +878,7 @@ export class FlexRunPersistence {
             facetSnapshotJson: sql`excluded.facet_snapshot_json`,
             provenanceJson: sql`excluded.provenance_json`,
             goalConditionResultsJson: sql`excluded.goal_condition_results_json`,
+            postConditionResultsJson: sql`excluded.post_condition_results_json`,
             updatedAt: now
           }
         })
