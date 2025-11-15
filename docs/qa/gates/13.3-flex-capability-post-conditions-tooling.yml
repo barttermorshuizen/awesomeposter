@@ -1,0 +1,44 @@
+schema: 1
+story: '13.3'
+story_title: 'Capability Post-Condition Tooling & Observability'
+gate: PASS
+status_reason: 'Sandbox UI ingests runtime post-condition results, surfaces retry budgets, and telemetry logs attempt metadata; AC1–AC3 satisfied.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-11-15T10:45:00Z'
+
+top_issues: []
+
+waiver:
+  active: false
+
+quality_score: 95
+expires: '2025-11-29T10:45:00Z'
+
+evidence:
+  tests_reviewed: 2
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: 'Guard telemetry changes do not expose new data.'
+  performance:
+    status: PASS
+    notes: 'Bookkeeping additions remain constant-time.'
+  reliability:
+    status: PASS
+    notes: 'Guard summaries and telemetry now reflect runtime evaluations.'
+  maintainability:
+    status: PASS
+    notes: 'Logic matches documented patterns and has regression coverage.'
+
+recommendations:
+  immediate:
+    - action: 'None'
+      refs: []
+  future:
+    - action: 'None'
+      refs: []

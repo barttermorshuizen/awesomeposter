@@ -17,7 +17,9 @@ import {
   type HitlOriginAgent,
   type HitlRequestPayload,
   type HitlContractSummary,
-  type TaskPolicies
+  type TaskPolicies,
+  type FlexPostConditionGuard,
+  type FlexPostConditionResult
 } from '@awesomeposter/shared'
 import { postFlexEventStream, type FlexEventWithId } from '@/lib/flex-sse'
 import { addFlexEventListener } from '@/lib/flex-event-bus'
@@ -29,6 +31,7 @@ import 'vue-json-pretty/lib/styles.css'
 import type { FlexSandboxPlan, FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode } from '@/lib/flexSandboxTypes'
 import { appendHistoryEntry, extractPlanPayload } from '@/lib/flexSandboxPlan'
 import { isFlexDslPoliciesEnabledClient, isFlexSandboxEnabledClient } from '@/lib/featureFlags'
+import { summarizeGuardStates, type GuardSummary } from '@/lib/postConditionUtils'
 import { useHitlStore } from '@/stores/hitl'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useFlexTasksStore } from '@/stores/flexTasks'
@@ -220,6 +223,15 @@ const runError = ref<string | null>(null)
 const correlationId = ref<string | undefined>()
 const runId = ref<string | undefined>()
 const plan = ref<FlexSandboxPlan | null>(null)
+const postConditionSummary = computed<GuardSummary>(() =>
+  summarizeGuardStates((plan.value?.nodes ?? []) as any)
+)
+const guardRetryState = ref<{
+  attempt: number
+  maxRetries: number | null
+  nodeId?: string | null
+  capabilityId?: string | null
+} | null>(null)
 const planStreamError = ref<string | null>(null)
 const notifications = useNotificationsStore()
 const envelopeBuilder = useFlexEnvelopeBuilderStore()
@@ -1230,6 +1242,7 @@ function resetRunState() {
   runId.value = undefined
   plan.value = null
   planStreamError.value = null
+  guardRetryState.value = null
   hitlStore.resetAll()
   eventSequence = 0
 }
@@ -1262,13 +1275,13 @@ function updatePlanFromGenerated(payload: unknown, timestamp: string) {
     runId: record.runId ?? plan.value?.runId ?? null,
     version: record.version ?? plan.value?.version,
     metadata: record.metadata ?? null,
-    nodes: record.nodes.map((node) => ({
-      ...node,
+    nodes: (record.nodes as FlexSandboxPlanNode[]).map((node) => ({
+      ...(node as FlexSandboxPlanNode),
       lastUpdatedAt: timestamp
     })),
     edges: record.edges ?? [],
     history
-  }
+  } as FlexSandboxPlan
 }
 
 function updatePlanFromUpdate(payload: unknown, timestamp: string) {
@@ -1298,37 +1311,31 @@ function updatePlanFromUpdate(payload: unknown, timestamp: string) {
   if (planStreamError.value) {
     planStreamError.value = null
   }
-  const nodeMap = new Map(record.nodes.map((node) => [node.id, node]))
-  const mergedNodes: FlexSandboxPlanNode[] = current.nodes.map((node) => {
-    const incoming = nodeMap.get(node.id)
-    if (!incoming) return node
-    nodeMap.delete(node.id)
-    return {
-      ...node,
-      ...incoming,
-      lastUpdatedAt: timestamp
-    }
-  })
+  const incomingNodes = Array.isArray(record.nodes)
+    ? (record.nodes as FlexSandboxPlanNode[])
+    : ([] as FlexSandboxPlanNode[])
+  const normalizedNodes = incomingNodes.map(
+    (node) =>
+      ({
+        ...(node as any),
+        lastUpdatedAt: timestamp
+      }) as FlexSandboxPlanNode
+  )
 
-  for (const node of nodeMap.values()) {
-    mergedNodes.push({
-      ...node,
-      lastUpdatedAt: timestamp
-    })
-  }
+  const historyEntries = appendHistoryEntry(current.history ?? [], {
+    version: record.version ?? current.version ?? 1,
+    timestamp,
+    trigger: triggerInfo ?? 'planner_update'
+  }) as FlexSandboxPlanHistoryEntry[]
 
   const updatedPlan = {
     runId: record.runId ?? current.runId,
     version: record.version ?? current.version,
     metadata: record.metadata ?? current.metadata,
-    nodes: mergedNodes,
+    nodes: normalizedNodes,
     edges: record.edges && record.edges.length ? record.edges : current.edges ?? [],
-    history: appendHistoryEntry(current.history ?? [], {
-      version: record.version ?? current.version ?? 1,
-      timestamp,
-      trigger: triggerInfo ?? 'planner_update'
-    })
-  }
+    history: historyEntries
+  } as FlexSandboxPlan
   plan.value = updatedPlan
 }
 
@@ -1349,28 +1356,141 @@ function updateNodeStatus(
       edges: []
     }
   }
-  const nodes = plan.value.nodes.slice()
+  const nodes = (plan.value.nodes as FlexSandboxPlanNode[]).slice()
   const index = nodes.findIndex((node) => node.id === nodeId)
   if (index === -1) {
-    nodes.push({
+    const nextNode: FlexSandboxPlanNode = {
       id: nodeId,
       capabilityId: null,
       label: nodeId,
       status,
       lastUpdatedAt: timestamp,
       ...(patch ?? {})
-    })
+    }
+    nodes.push(nextNode)
   } else {
-    nodes[index] = {
+    const nextNode: FlexSandboxPlanNode = {
       ...nodes[index],
       ...(patch ?? {}),
       status,
       lastUpdatedAt: timestamp
     }
+    nodes[index] = nextNode
   }
-  plan.value = {
-    ...plan.value,
-    nodes
+  const nextPlan = plan.value as FlexSandboxPlan
+  nextPlan.nodes = nodes as FlexSandboxPlanNode[]
+  plan.value = { ...nextPlan }
+}
+
+function extractPostConditions(payload: Record<string, unknown> | undefined): {
+  guards?: FlexPostConditionGuard[]
+  results?: FlexPostConditionResult[]
+} {
+  const guards = Array.isArray(payload?.postConditionGuards)
+    ? (payload?.postConditionGuards as FlexPostConditionGuard[])
+    : undefined
+  const results = Array.isArray(payload?.postConditionResults)
+    ? (payload?.postConditionResults as FlexPostConditionResult[])
+    : undefined
+  return { guards, results }
+}
+
+type AggregatedPostConditionEntry = {
+  nodeId: string
+  capabilityId: string | null
+  results: FlexPostConditionResult[]
+}
+
+function extractAggregatedPostConditionResults(payload: Record<string, unknown> | undefined): AggregatedPostConditionEntry[] {
+  if (!payload) return []
+  const raw = (payload as Record<string, unknown>).post_condition_results
+  if (!Array.isArray(raw)) return []
+  const entries: AggregatedPostConditionEntry[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    const nodeId = typeof record.nodeId === 'string' ? record.nodeId : null
+    const capabilityId =
+      typeof record.capabilityId === 'string'
+        ? record.capabilityId
+        : record.capabilityId === null
+          ? null
+          : null
+    const results = Array.isArray(record.results)
+      ? (record.results as FlexPostConditionResult[])
+      : []
+    if (!nodeId || !results.length) continue
+    entries.push({
+      nodeId,
+      capabilityId,
+      results
+    })
+  }
+  return entries
+}
+
+function applyAggregatedPostConditionResults(entries: AggregatedPostConditionEntry[]) {
+  if (!plan.value || !entries.length) return
+  const nodes = plan.value.nodes.slice()
+  const idToIndex = new Map<string, number>()
+  nodes.forEach((node, index) => {
+    idToIndex.set(node.id, index)
+  })
+  let mutated = false
+  for (const entry of entries) {
+    const nodeIndex = idToIndex.get(entry.nodeId)
+    if (nodeIndex === undefined) continue
+    const existing = nodes[nodeIndex]
+    const nextNode: FlexSandboxPlanNode = {
+      ...existing,
+      capabilityId: existing.capabilityId ?? entry.capabilityId ?? null,
+      postConditionResults: entry.results
+    }
+    nodes[nodeIndex] = nextNode
+    mutated = true
+  }
+  if (mutated) {
+    plan.value = {
+      ...(plan.value as FlexSandboxPlan),
+      nodes
+    }
+  }
+}
+
+function updateGuardRetryState(payload: Record<string, unknown> | undefined, nodeId?: string | null, capabilityId?: string | null) {
+  if (!payload) return
+  const attemptRaw = (payload as Record<string, unknown>).attempt
+  const maxRetriesRaw = (payload as Record<string, unknown>).maxRetries
+  const attempt = typeof attemptRaw === 'number' ? attemptRaw : undefined
+  const maxRetries =
+    typeof maxRetriesRaw === 'number'
+      ? maxRetriesRaw
+      : maxRetriesRaw === null
+        ? null
+        : undefined
+  const postConditionResults =
+    (payload as Record<string, unknown>).postConditionResults ||
+    (payload as Record<string, unknown>).post_condition_results
+  if (attempt === undefined || !Array.isArray(postConditionResults)) {
+    return
+  }
+  const resolvedNodeId =
+    typeof nodeId === 'string'
+      ? nodeId
+      : typeof (payload as Record<string, unknown>).nodeId === 'string'
+        ? ((payload as Record<string, unknown>).nodeId as string)
+        : null
+  const resolvedCapabilityId =
+    typeof capabilityId === 'string'
+      ? capabilityId
+      : typeof (payload as Record<string, unknown>).capabilityId === 'string'
+        ? ((payload as Record<string, unknown>).capabilityId as string)
+        : null
+  guardRetryState.value = {
+    attempt,
+    maxRetries: maxRetries ?? null,
+    nodeId: resolvedNodeId,
+    capabilityId: resolvedCapabilityId
   }
 }
 
@@ -1425,11 +1545,16 @@ function handleEvent(evt: FlexEventWithId) {
         payload.routingResult && typeof payload.routingResult === 'object'
           ? (payload.routingResult as FlexSandboxPlanNode['routingResult'])
           : undefined
+      const postConditions = extractPostConditions(payload)
       updateNodeStatus(
         evt.nodeId,
         'completed',
         evt.timestamp,
-        routingResult ? { routingResult } : undefined
+        {
+          ...(routingResult ? { routingResult } : {}),
+          ...(postConditions.guards ? { postConditionGuards: postConditions.guards } : {}),
+          ...(postConditions.results ? { postConditionResults: postConditions.results } : {})
+        }
       )
       flexTasksStore.handleNodeComplete(evt)
       break
@@ -1484,6 +1609,11 @@ function handleEvent(evt: FlexEventWithId) {
       runError.value = message ? `Validation error (${scope}): ${message}` : `Validation error (${scope})`
       break
     }
+    case 'policy_triggered': {
+      const payload = (evt.payload ?? {}) as Record<string, unknown>
+      updateGuardRetryState(payload, evt.nodeId, typeof evt.capabilityId === 'string' ? evt.capabilityId : undefined)
+      break
+    }
     case 'log':
       if (evt.message === 'hitl_request_denied') {
         const payload = evt.payload as Record<string, unknown> | undefined
@@ -1505,6 +1635,13 @@ function handleEvent(evt: FlexEventWithId) {
       } else if (runStatus.value !== 'error') {
         runStatus.value = 'completed'
       }
+      {
+        const aggregatedResults = extractAggregatedPostConditionResults(payload)
+        if (aggregatedResults.length) {
+          applyAggregatedPostConditionResults(aggregatedResults)
+        }
+      }
+      guardRetryState.value = null
       hitlStore.resetAll()
       break
     }
@@ -2072,6 +2209,12 @@ watch(
   },
   { immediate: true }
 )
+
+defineExpose({
+  handleEvent,
+  postConditionSummary,
+  guardRetryState
+})
 </script>
 
 <template>
@@ -2406,6 +2549,69 @@ watch(
             <div class="font-weight-medium">Plan Snapshot Rejected</div>
             <div>{{ planStreamError }}</div>
           </v-alert>
+          <v-card class="mb-4">
+            <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+              <span>Guard Health</span>
+              <v-chip size="x-small" color="primary" variant="tonal">
+                {{ postConditionSummary.total }}
+              </v-chip>
+              <v-spacer />
+              <v-chip size="x-small" color="success" variant="tonal">
+                Pass {{ postConditionSummary.pass }}
+              </v-chip>
+              <v-chip size="x-small" color="warning" variant="tonal">
+                Pending {{ postConditionSummary.pending }}
+              </v-chip>
+              <v-chip size="x-small" color="error" variant="tonal">
+                Fail {{ postConditionSummary.fail + postConditionSummary.error }}
+              </v-chip>
+            </v-card-title>
+            <v-card-text>
+              <v-alert
+                v-if="!postConditionSummary.total"
+                type="info"
+                variant="tonal"
+                border="start"
+                text="No post conditions were reported for this run."
+              />
+              <template v-else>
+                <div class="text-caption text-medium-emphasis mb-2">
+                  Counters update as SSE frames stream in from the runtime.
+                </div>
+                <div v-if="postConditionSummary.latestFailure" class="text-body-2">
+                  Latest failing facet:
+                  <code>
+                    {{ postConditionSummary.latestFailure.facet }} {{ postConditionSummary.latestFailure.path }}
+                  </code>
+                  <span class="text-medium-emphasis ms-1">
+                    (node {{ postConditionSummary.latestFailure.nodeId ?? 'unknown' }}, capability
+                    {{ postConditionSummary.latestFailure.capabilityId ?? 'unknown' }})
+                  </span>
+                </div>
+                <div v-else class="text-body-2 text-medium-emphasis">
+                  All evaluated guards are passing.
+                </div>
+                <div v-if="guardRetryState" class="text-body-2 mt-1">
+                  Retry budget:
+                  <span class="text-medium-emphasis">
+                    Attempt {{ guardRetryState.attempt }}
+                    <template v-if="guardRetryState.maxRetries !== null">
+                      / {{ guardRetryState.maxRetries }}
+                    </template>
+                    <template v-else>
+                      (no configured max)
+                    </template>
+                  </span>
+                  <span v-if="guardRetryState.nodeId" class="text-medium-emphasis ms-1">
+                    node {{ guardRetryState.nodeId }}
+                  </span>
+                  <span v-if="guardRetryState.capabilityId" class="text-medium-emphasis ms-1">
+                    capability {{ guardRetryState.capabilityId }}
+                  </span>
+                </div>
+              </template>
+            </v-card-text>
+          </v-card>
           <FlexSandboxPlanInspector
             :plan="plan"
             :capability-catalog="capabilityRecords"

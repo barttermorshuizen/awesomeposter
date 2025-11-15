@@ -9,18 +9,17 @@ const loadFlexRunDebugMock = vi.fn()
 vi.mock('../src/services/orchestrator-persistence', () => {
 
   class MockFlexRunPersistence {
-     
     constructor() {}
-    async loadFlexRun(...args: any[]) {
+    async loadFlexRun(...args: unknown[]) {
       return loadFlexRunMock(...args)
     }
-    async loadPlanSnapshot(...args: any[]) {
+    async loadPlanSnapshot(...args: unknown[]) {
       return loadPlanSnapshotMock(...args)
     }
-    async recordResumeAudit(...args: any[]) {
+    async recordResumeAudit(...args: unknown[]) {
       return recordResumeAuditMock(...args)
     }
-    async loadFlexRunDebug(...args: any[]) {
+    async loadFlexRunDebug(...args: unknown[]) {
       return loadFlexRunDebugMock(...args)
     }
     async updateStatus() {}
@@ -42,7 +41,7 @@ const coordinatorRunMock = vi.fn()
 vi.mock('../src/services/flex-run-coordinator', () => {
   class MockFlexRunCoordinator {
     constructor() {}
-    async run(...args: any[]) {
+    async run(...args: unknown[]) {
       return coordinatorRunMock(...args)
     }
   }
@@ -65,11 +64,19 @@ const coordinatorMocks = {
   runMock: coordinatorRunMock
 }
 
-import { createApp, eventHandler, readBody as h3ReadBody, toNodeListener } from 'h3'
+import {
+  createApp,
+  eventHandler,
+  readBody as h3ReadBody,
+  toNodeListener,
+  type EventHandler,
+  type H3Event
+} from 'h3'
 import { fetchNodeRequestHandler } from 'node-mock-http'
-import type { TaskEnvelope } from '@awesomeposter/shared'
+import type { FlexEvent, TaskEnvelope } from '@awesomeposter/shared'
+import type { FlexRunDebugView } from '../src/services/orchestrator-persistence'
 
-function makeSseRequest(handler: any) {
+function makeSseRequest(handler: EventHandler) {
   const app = createApp()
   app.use('/api/v1/flex/run.resume', handler)
   const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
@@ -87,7 +94,9 @@ function makeSseRequest(handler: any) {
   }
 }
 
-function makeJsonRequest(handler: any) {
+type JsonResponse = { status: number; body: Record<string, unknown> | null }
+
+function makeJsonRequest(handler: EventHandler) {
   const app = createApp()
   app.use(
     '/api/v1/flex/runs',
@@ -99,18 +108,18 @@ function makeJsonRequest(handler: any) {
     })
   )
   const listener = toNodeListener(app) as unknown as Parameters<typeof fetchNodeRequestHandler>[0]
-  return async (id: string) => {
+  return async (id: string): Promise<JsonResponse> => {
     const res = await fetchNodeRequestHandler(listener, `http://test.local/api/v1/flex/runs/${id}`, {
       method: 'GET',
       headers: { accept: 'application/json' }
     })
     const text = await res.text()
-    let body: any = null
+    let body: Record<string, unknown> | null = null
     if (text) {
       try {
-        body = JSON.parse(text)
+        body = JSON.parse(text) as Record<string, unknown>
       } catch {
-        body = text
+        body = null
       }
     }
     return { status: res.status, body }
@@ -127,8 +136,8 @@ describe('Flex run routes', () => {
   }
 
   beforeEach(() => {
-    vi.stubGlobal('defineEventHandler', (fn: any) => eventHandler(fn))
-    vi.stubGlobal('readBody', (event: any) => h3ReadBody(event as any))
+    vi.stubGlobal('defineEventHandler', (fn: Parameters<typeof eventHandler>[0]) => eventHandler(fn))
+    vi.stubGlobal('readBody', (event: H3Event) => h3ReadBody(event))
   })
 
   afterEach(() => {
@@ -172,14 +181,27 @@ describe('Flex run routes', () => {
     })
     persistenceMocks.recordResumeAuditMock.mockResolvedValue()
 
-    coordinatorMocks.runMock.mockImplementation(async (_envelope, opts) => {
-      await opts.onEvent({ type: 'log', message: 'resumed', runId: 'flex_resume_1' } as any)
-      await opts.onEvent({ type: 'complete', payload: { output: { ok: true } }, runId: 'flex_resume_1' } as any)
+    coordinatorMocks.runMock.mockImplementation(async (_envelope: TaskEnvelope, opts: { onEvent: (event: FlexEvent) => Promise<void> | void }) => {
+      const timestamp = new Date().toISOString()
+      const logEvent: FlexEvent = {
+        type: 'log',
+        timestamp,
+        message: 'resumed',
+        runId: 'flex_resume_1'
+      }
+      await opts.onEvent(logEvent)
+      const completeEvent: FlexEvent = {
+        type: 'complete',
+        timestamp,
+        runId: 'flex_resume_1',
+        payload: { output: { ok: true } }
+      }
+      await opts.onEvent(completeEvent)
       return { runId: 'flex_resume_1', status: 'completed', output: { ok: true } }
     })
 
     const { default: handler } = await import('../routes/api/v1/flex/run.resume.post')
-    const request = makeSseRequest(handler as any)
+    const request = makeSseRequest(handler)
 
     const res = await request({ runId: 'flex_resume_1', expectedPlanVersion: 3 })
 
@@ -221,7 +243,7 @@ describe('Flex run routes', () => {
     persistenceMocks.recordResumeAuditMock.mockResolvedValue()
 
     const { default: handler } = await import('../routes/api/v1/flex/run.resume.post')
-    const request = makeSseRequest(handler as any)
+    const request = makeSseRequest(handler)
 
     const res = await request({ runId: 'flex_resume_2', expectedPlanVersion: 4 })
 
@@ -247,7 +269,7 @@ describe('Flex run routes', () => {
       nodes: []
     })
     const { default: handler } = await import('../routes/api/v1/flex/run.resume.post')
-    const request = makeSseRequest(handler as any)
+    const request = makeSseRequest(handler)
 
     const res = await request({ runId: 'flex_resume_3' })
 
@@ -256,7 +278,7 @@ describe('Flex run routes', () => {
   })
 
   it('returns redacted debug payloads', async () => {
-    const debugView = {
+    const debugView: FlexRunDebugView = {
       run: {
         runId: 'flex_debug_1',
         status: 'completed' as const,
@@ -285,6 +307,12 @@ describe('Flex run routes', () => {
           provenance: null,
           metadata: { token: 'abc' },
           rationale: ['first pass'],
+          postConditionGuards: [
+            { facet: 'b', path: '/result', condition: { dsl: 'output.result != ""' } }
+          ],
+          postConditionResults: [
+            { facet: 'b', path: '/result', expression: 'output.result != ""', satisfied: false }
+          ],
           startedAt: new Date('2025-01-01T00:00:00Z'),
           completedAt: new Date('2025-01-01T00:05:00Z')
         }
@@ -321,15 +349,23 @@ describe('Flex run routes', () => {
         output: { token: 'secret', safe: 'value' },
         facets: { foo: { value: 'bar', secret: 'hide' } },
         provenance: { foo: { secret: 'hide' } },
+        postConditionResults: [
+          {
+            nodeId: 'node_1',
+            capabilityId: 'strategy',
+            guards: [{ facet: 'b', path: '/result', condition: { dsl: 'output.result != ""' } }],
+            results: [{ facet: 'b', path: '/result', expression: 'output.result != ""', satisfied: false }]
+          }
+        ],
         recordedAt: new Date('2025-01-01T00:04:00Z'),
         updatedAt: new Date('2025-01-01T00:05:00Z')
       }
     }
 
-    persistenceMocks.loadFlexRunDebugMock.mockResolvedValue(debugView as any)
+    persistenceMocks.loadFlexRunDebugMock.mockResolvedValue(debugView)
 
     const { default: handler } = await import('../routes/api/v1/flex/runs/[id].get')
-    const request = makeJsonRequest(handler as any)
+    const request = makeJsonRequest(handler)
     const res = await request('flex_debug_1')
 
     expect(persistenceMocks.loadFlexRunDebugMock).toHaveBeenCalledWith('flex_debug_1')
@@ -337,6 +373,8 @@ describe('Flex run routes', () => {
     expect(res.body?.run?.metadata?.secretToken).toBe('[redacted]')
     expect(res.body?.output?.facets?.foo?.secret).toBe('[redacted]')
     expect(res.body?.nodes?.[0]?.context?.secretKey).toBe('[redacted]')
+    expect(res.body?.nodes?.[0]?.postConditionResults?.[0]?.satisfied).toBe(false)
+    expect(res.body?.output?.postConditionResults?.[0]?.results?.[0]?.satisfied).toBe(false)
     expect(Array.isArray(res.body?.planVersions)).toBe(true)
   })
 })

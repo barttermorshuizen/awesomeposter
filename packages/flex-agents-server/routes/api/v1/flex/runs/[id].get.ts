@@ -88,7 +88,10 @@ export default defineEventHandler(async (event) => {
           updatedAt: debugView.output.updatedAt ?? null,
           output: redact(debugView.output.output),
           facets: debugView.output.facets ? redact(debugView.output.facets) : null,
-          provenance: debugView.output.provenance ? redact(debugView.output.provenance) : null
+          provenance: debugView.output.provenance ? redact(debugView.output.provenance) : null,
+          postConditionResults: debugView.output.postConditionResults
+            ? redact(debugView.output.postConditionResults)
+            : null
         }
       : null,
     planVersions: debugView.snapshots.map((snapshot) => ({
@@ -97,7 +100,9 @@ export default defineEventHandler(async (event) => {
       pendingNodeIds: snapshot.pendingNodeIds,
       createdAt: snapshot.createdAt ?? null,
       updatedAt: snapshot.updatedAt ?? null,
-      metadata: snapshot.metadata ? redact(snapshot.metadata) : null
+      metadata: snapshot.metadata ? redact(snapshot.metadata) : null,
+      facets: snapshot.facets ? redact(snapshot.facets) : null,
+      snapshot: snapshot.snapshot ? redact(snapshot.snapshot) : null
     })),
     latestSnapshot: latestSnapshot
       ? {
@@ -123,6 +128,8 @@ export default defineEventHandler(async (event) => {
       provenance: node.provenance ? redact(node.provenance) : null,
       metadata: node.metadata ? redact(node.metadata) : null,
       rationale: node.rationale ? [...node.rationale] : null,
+      postConditionGuards: node.postConditionGuards ? redact(node.postConditionGuards) : null,
+      postConditionResults: node.postConditionResults ? redact(node.postConditionResults) : null,
       startedAt: node.startedAt ?? null,
       completedAt: node.completedAt ?? null
     }))

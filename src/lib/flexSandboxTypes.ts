@@ -1,4 +1,9 @@
-import type { ConditionalRoutingNode, RoutingEvaluationResult } from '@awesomeposter/shared'
+import type {
+  ConditionalRoutingNode,
+  RoutingEvaluationResult,
+  FlexPostConditionGuard,
+  FlexPostConditionResult
+} from '@awesomeposter/shared'
 
 export type FlexSandboxPlanNodeStatus =
   | 'pending'
@@ -33,6 +38,8 @@ export type FlexSandboxPlanNode = {
   lastUpdatedAt?: string
   routing?: ConditionalRoutingNode | null
   routingResult?: RoutingEvaluationResult | null
+  postConditionGuards?: FlexPostConditionGuard[] | null
+  postConditionResults?: FlexPostConditionResult[] | null
 }
 
 export type FlexSandboxPlanHistoryEntry = {

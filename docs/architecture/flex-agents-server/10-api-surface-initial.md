@@ -141,10 +141,10 @@ The resume stream rehydrates the latest persisted plan snapshot, validates that 
 `GET /api/v1/flex/runs/:id` returns a redacted snapshot of persisted state for support tooling:
 
 - `run`: envelope metadata, schema hash, plan version, and the most recent facet snapshot (sensitive keys such as `token`, `secret`, `apiKey`, etc. are redacted by default).
-- `output`: latest recorded result plus facet provenance when available.
-- `planVersions`: plan history with timestamps, pending node IDs, and planner metadata.
-- `latestSnapshot`: raw snapshot payload (`nodes`, `edges`, compiled contracts) for visual debuggers.
-- `nodes`: current node ledger (status, context, output, provenance) to diagnose partial executions.
+- `output`: latest recorded result plus facet provenance when available, and persisted `postConditionResults` summarising guard outcomes per node.
+- `planVersions`: plan history with timestamps, pending node IDs, planner metadata, facet snapshots, and the raw `snapshot` payload per version (guards/results included) for downstream visualizers.
+- `latestSnapshot`: raw snapshot payload (`nodes`, `edges`, compiled contracts, guard metadata) for visual debuggers.
+- `nodes`: current node ledger (status, context, output, provenance, post-condition guards/results) to diagnose partial executions.
 
 ```bash
 curl \

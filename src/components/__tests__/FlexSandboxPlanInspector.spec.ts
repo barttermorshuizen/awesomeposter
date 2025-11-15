@@ -61,7 +61,22 @@ describe('FlexSandboxPlanInspector', () => {
           contracts: { inputMode: undefined, outputMode: 'json_schema' },
           metadata: { plannerStage: 'execution' },
           derivedFrom: null,
-          lastUpdatedAt: new Date().toISOString()
+          lastUpdatedAt: new Date().toISOString(),
+          postConditionGuards: [
+            {
+              facet: 'copyVariants',
+              path: '/0/title',
+              condition: { dsl: 'output.title != ""' }
+            }
+          ],
+          postConditionResults: [
+            {
+              facet: 'copyVariants',
+              path: '/0/title',
+              expression: 'output.title != ""',
+              satisfied: false
+            }
+          ]
         },
         {
           id: 'node-2',
@@ -73,7 +88,22 @@ describe('FlexSandboxPlanInspector', () => {
           contracts: { inputMode: undefined, outputMode: 'json_schema' },
           metadata: { derived: true },
           derivedFrom: 'writer.v1',
-          lastUpdatedAt: new Date().toISOString()
+          lastUpdatedAt: new Date().toISOString(),
+          postConditionGuards: [
+            {
+              facet: 'qaFindings',
+              path: '/',
+              condition: { dsl: 'findings.count == 0' }
+            }
+          ],
+          postConditionResults: [
+            {
+              facet: 'qaFindings',
+              path: '/',
+              expression: 'findings.count == 0',
+              satisfied: true
+            }
+          ]
         }
       ],
       history: [
@@ -111,6 +141,9 @@ describe('FlexSandboxPlanInspector', () => {
     expect(wrapper.text()).toContain('QA review')
     expect(wrapper.text()).toContain('Derived via Writer')
     expect(wrapper.text()).toContain('Facets')
+    expect(wrapper.text()).toContain('Post-condition guards')
+    expect(wrapper.text()).toContain('Fail')
+    expect(wrapper.text()).toContain('Pass')
   })
 
   it('renders routing nodes and downstream edges', async () => {

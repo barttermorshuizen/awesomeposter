@@ -7,6 +7,7 @@ import type {
   FlexSandboxPlanHistoryEntry,
   FlexSandboxPlanEdge
 } from '@/lib/flexSandboxTypes'
+import { buildGuardStates, type GuardState } from '@/lib/postConditionUtils'
 
 interface Props {
   plan: FlexSandboxPlan | null
@@ -130,6 +131,45 @@ function routeStatusText(trace: ReturnType<typeof routingTrace>): string {
 
 function elseBranchState(node: FlexSandboxPlanNode): 'selected' | 'available' {
   return node.routingResult?.resolution === 'else' ? 'selected' : 'available'
+}
+
+function guardStates(node: FlexSandboxPlanNode): GuardState[] {
+  return buildGuardStates(node)
+}
+
+function guardStatusLabel(status: GuardState['status']) {
+  switch (status) {
+    case 'pass':
+      return 'Pass'
+    case 'fail':
+      return 'Fail'
+    case 'error':
+      return 'Error'
+    default:
+      return 'Pending'
+  }
+}
+
+function guardStatusColor(status: GuardState['status']) {
+  switch (status) {
+    case 'pass':
+      return 'success'
+    case 'fail':
+      return 'error'
+    case 'error':
+      return 'warning'
+    default:
+      return 'secondary'
+  }
+}
+
+function guardTooltip(state: GuardState) {
+  const parts = [
+    state.result?.expression ?? state.guard?.condition.dsl ?? '',
+    state.result?.error ? `Error: ${state.result.error}` : null,
+    state.result?.observedValue !== undefined ? `Observed: ${JSON.stringify(state.result.observedValue)}` : null
+  ].filter(Boolean)
+  return parts.join(' • ') || 'Awaiting evaluation'
 }
 </script>
 
@@ -268,6 +308,28 @@ function elseBranchState(node: FlexSandboxPlanNode): 'selected' | 'available' {
                     class="text-caption text-warning mt-1"
                   >
                     No routes matched; planner requested a replan.
+                  </div>
+                </div>
+                <div v-if="guardStates(node).length" class="post-conditions">
+                  <div class="text-caption text-medium-emphasis mb-1">Post-condition guards</div>
+                  <div class="d-flex flex-wrap ga-2">
+                    <v-tooltip
+                      v-for="state in guardStates(node)"
+                      :key="`${node.id}-${state.facet}-${state.path}`"
+                      location="bottom"
+                    >
+                      <template #activator="{ props }">
+                        <v-chip
+                          v-bind="props"
+                          size="small"
+                          :color="guardStatusColor(state.status)"
+                          variant="tonal"
+                        >
+                          {{ state.facet }} {{ state.path }} — {{ guardStatusLabel(state.status) }}
+                        </v-chip>
+                      </template>
+                      <span>{{ guardTooltip(state) }}</span>
+                    </v-tooltip>
                   </div>
                 </div>
                 <div v-if="node.facets && (node.facets.input?.length || node.facets.output?.length)">

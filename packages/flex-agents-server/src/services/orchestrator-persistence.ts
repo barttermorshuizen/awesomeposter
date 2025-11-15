@@ -15,7 +15,6 @@ import type {
   FlexPlanNodeContracts,
   FlexPlanNodeFacets,
   FlexPlanNodeProvenance,
-  FlexPlan,
   FlexPlanEdge,
   FlexPlanExecutor,
   FlexPlanNodeStatus
@@ -51,6 +50,8 @@ export type OrchestratorSnapshot = {
 const DEFAULT_PLAN: Plan = { version: 0, steps: [] }
 const DEFAULT_HITL_STATE: HitlRunState = { requests: [], responses: [], pendingRequestId: null, deniedCount: 0 }
 
+type DbClient = ReturnType<typeof getDb>
+
 type LegacyOrchestratorBridge = typeof globalThis & {
   __awesomeposter_setOrchestratorPersistence?: (instance: unknown) => void
   __awesomeposter_orchestratorPersistenceInstance?: unknown
@@ -61,6 +62,10 @@ const legacyBridge = globalThis as LegacyOrchestratorBridge
 function clone<T>(value: T): T {
   if (value == null) return value
   return JSON.parse(JSON.stringify(value))
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function extractFacetValues(
@@ -487,13 +492,21 @@ type PlanSnapshotState = {
   postConditionAttempts?: Record<string, number>
 }
 
+type ExtendedContextBundle = ContextBundle & {
+  runContextSnapshot?: RunContextSnapshot | null
+  currentInputs?: unknown
+  inputs?: unknown
+  currentOutput?: unknown
+  priorOutputs?: unknown
+}
+
 type SavePlanSnapshotOptions = {
   facets?: RunContextSnapshot
   schemaHash?: string | null
   edges?: FlexPlanEdge[]
   planMetadata?: Record<string, unknown>
   pendingState?: PlanSnapshotState
-  tx?: any
+  tx?: DbClient
 }
 
 type RecordResultOptions = {
@@ -631,7 +644,7 @@ export class FlexRunPersistence {
     options: SavePlanSnapshotOptions = {}
   ) {
     const now = new Date()
-    const execute = async (executor: any) => {
+    const execute = async (executor: DbClient) => {
       await executor
         .update(flexRuns)
         .set({ planVersion, updatedAt: now })
@@ -770,7 +783,7 @@ export class FlexRunPersistence {
     }
   }
 
-  async saveRunContext(runId: string, snapshot: RunContextSnapshot, options: { tx?: any } = {}) {
+  async saveRunContext(runId: string, snapshot: RunContextSnapshot, options: { tx?: DbClient } = {}) {
     const now = new Date()
     const executor = options.tx ?? this.db
     await executor
@@ -959,6 +972,8 @@ export class FlexRunPersistence {
       facets: (row.facetSnapshotJson as RunContextSnapshot | null) ?? null,
       provenance: (row.provenanceJson as Record<string, unknown> | null) ?? null,
       goalConditionResults: (row.goalConditionResultsJson as GoalConditionResult[] | null) ?? null,
+      postConditionResults:
+        (row.postConditionResultsJson as FlexRunOutputRow['postConditionResults'] | null) ?? null,
       recordedAt: row.recordedAt ?? null,
       updatedAt: row.updatedAt ?? null
     }
@@ -1017,6 +1032,8 @@ export class FlexRunPersistence {
       error: (node.errorJson as Record<string, unknown> | null) ?? null,
       startedAt: node.startedAt ?? null,
       completedAt: node.completedAt ?? null,
+      postConditionGuards: (node.postConditionGuardsJson as FacetCondition[] | null) ?? null,
+      postConditionResults: (node.postConditionResultsJson as GoalConditionResult[] | null) ?? null,
       facets: null,
       contracts: null,
       provenance: null,
@@ -1085,23 +1102,21 @@ export class FlexRunPersistence {
     const normalized = rows.map((row) => {
       const envelope = (row.envelope as TaskEnvelope | null | undefined) ?? null
       const context = (row.context as ContextBundle | null) ?? null
+      const contextBundle = context as ExtendedContextBundle | null
       const assignment = context?.assignment ?? null
       const status =
         typeof assignment?.status === 'string' && assignment.status
           ? (assignment.status as string)
           : 'awaiting_submission'
-      const facets = (context as any)?.facets
-      const facetProvenance = (context as any)?.facetProvenance as FlexFacetProvenanceMap | undefined
-      const contracts = (context as any)?.contracts
-      const storedRunContext: RunContextSnapshot | null =
-        ((context as any)?.runContextSnapshot as RunContextSnapshot | null | undefined) ?? null
+      const facets = contextBundle?.facets ?? null
+      const facetProvenance = contextBundle?.facetProvenance as FlexFacetProvenanceMap | undefined
+      const contracts = contextBundle?.contracts ?? null
+      const storedRunContext: RunContextSnapshot | null = contextBundle?.runContextSnapshot ?? null
       const persistedRunContext: RunContextSnapshot | null =
         (row.runContextSnapshot as RunContextSnapshot | null | undefined) ?? null
       const resolvedRunContext = storedRunContext ?? persistedRunContext ?? null
-      const inputsCandidateRaw =
-        (context as any)?.currentInputs ?? (context as any)?.inputs ?? null
-      const outputsCandidateRaw =
-        (context as any)?.currentOutput ?? (context as any)?.priorOutputs ?? null
+      const inputsCandidateRaw = contextBundle?.currentInputs ?? contextBundle?.inputs ?? null
+      const outputsCandidateRaw = contextBundle?.currentOutput ?? contextBundle?.priorOutputs ?? null
       const assignmentMetadata =
         assignment?.metadata && typeof assignment.metadata === 'object'
           ? clone(assignment.metadata as Record<string, unknown>)
@@ -1181,11 +1196,13 @@ export class FlexRunPersistence {
         assignment?.updatedAt ??
         (row.nodeUpdatedAt ? row.nodeUpdatedAt.toISOString() : null)
 
-      const expectedInputFacets = Array.isArray((assignmentMetadata as any)?.expectedInputFacets)
-        ? ((assignmentMetadata as any).expectedInputFacets as string[])
+      const expectedInputFacetsSource = assignmentMetadata?.expectedInputFacets
+      const expectedInputFacets = Array.isArray(expectedInputFacetsSource)
+        ? (expectedInputFacetsSource as string[])
         : []
-      const expectedOutputFacets = Array.isArray((assignmentMetadata as any)?.expectedOutputFacets)
-        ? ((assignmentMetadata as any).expectedOutputFacets as string[])
+      const expectedOutputFacetsSource = assignmentMetadata?.expectedOutputFacets
+      const expectedOutputFacets = Array.isArray(expectedOutputFacetsSource)
+        ? (expectedOutputFacetsSource as string[])
         : []
 
       const normalizedFacets = (() => {
@@ -1299,9 +1316,15 @@ export class FlexRunPersistence {
     audit: { operator?: Record<string, unknown> | null; note?: string | null }
   ) {
     const now = new Date()
-    const metadata = run.metadata ? clone(run.metadata) : {}
-    const auditLog = Array.isArray((metadata as any).auditLog)
-      ? [...((metadata as any).auditLog as Array<Record<string, unknown>>)]
+    type ResumeMetadataExtras = {
+      auditLog?: Array<Record<string, unknown>>
+      lastResumeAt?: string
+      lastOperator?: Record<string, unknown> | null
+      lastResumeNote?: string | null
+    }
+    const metadata = (run.metadata ? clone(run.metadata) : {}) as Record<string, unknown> & ResumeMetadataExtras
+    const auditLog = Array.isArray(metadata.auditLog)
+      ? [...metadata.auditLog]
       : []
 
     auditLog.push({
@@ -1311,13 +1334,13 @@ export class FlexRunPersistence {
       note: audit.note ?? null
     })
 
-    ;(metadata as any).auditLog = auditLog
-    ;(metadata as any).lastResumeAt = now.toISOString()
+    metadata.auditLog = auditLog
+    metadata.lastResumeAt = now.toISOString()
     if (audit.operator) {
-      ;(metadata as any).lastOperator = audit.operator
+      metadata.lastOperator = audit.operator
     }
     if (audit.note) {
-      ;(metadata as any).lastResumeNote = audit.note
+      metadata.lastResumeNote = audit.note
     }
 
     await this.db
@@ -1327,11 +1350,16 @@ export class FlexRunPersistence {
 
     try {
       const orchestratorSnapshot = await this.orchestrator.load(run.runId)
-      const runnerMetadata = orchestratorSnapshot.runnerMetadata
+      type RunnerMetadataExtras = {
+        auditLog?: Array<Record<string, unknown>>
+        lastResumeAt?: string
+        lastOperator?: Record<string, unknown> | null
+      }
+      const runnerMetadata = (orchestratorSnapshot.runnerMetadata
         ? clone(orchestratorSnapshot.runnerMetadata)
-        : {}
-      const runnerAuditLog = Array.isArray((runnerMetadata as any).auditLog)
-        ? [...((runnerMetadata as any).auditLog as Array<Record<string, unknown>>)]
+        : {}) as Record<string, unknown> & RunnerMetadataExtras
+      const runnerAuditLog = Array.isArray(runnerMetadata.auditLog)
+        ? [...runnerMetadata.auditLog]
         : []
       runnerAuditLog.push({
         action: 'resume',
@@ -1339,10 +1367,10 @@ export class FlexRunPersistence {
         operator: audit.operator ?? null,
         note: audit.note ?? null
       })
-      ;(runnerMetadata as any).auditLog = runnerAuditLog
-      ;(runnerMetadata as any).lastResumeAt = now.toISOString()
+      runnerMetadata.auditLog = runnerAuditLog
+      runnerMetadata.lastResumeAt = now.toISOString()
       if (audit.operator) {
-        ;(runnerMetadata as any).lastOperator = audit.operator
+        runnerMetadata.lastOperator = audit.operator
       }
       await this.orchestrator.save(run.runId, {
         runnerMetadata
@@ -1362,12 +1390,14 @@ export class FlexRunPersistence {
 
     const snapshotsWithMetadata = snapshots.map((snapshot) => {
       const snapshotPayload = snapshot.snapshot ?? {}
-      const metadata =
-        snapshotPayload && typeof snapshotPayload === 'object' && !Array.isArray(snapshotPayload)
-          ? ((snapshotPayload as any).metadata && typeof (snapshotPayload as any).metadata === 'object'
-              ? clone((snapshotPayload as any).metadata as Record<string, unknown>)
-              : null)
-          : null
+      let metadata: Record<string, unknown> | null = null
+      if (isPlainRecord(snapshotPayload)) {
+        const payloadMetadata = snapshotPayload.metadata
+        metadata =
+          payloadMetadata && isPlainRecord(payloadMetadata)
+            ? clone(payloadMetadata)
+            : null
+      }
       return { ...snapshot, metadata }
     })
 
@@ -1385,6 +1415,7 @@ export class FlexRunPersistence {
             facets: record.run.contextSnapshot ?? null,
             provenance: null,
             goalConditionResults: null,
+            postConditionResults: null,
             recordedAt: record.run.updatedAt ?? null,
             updatedAt: record.run.updatedAt ?? null
           }

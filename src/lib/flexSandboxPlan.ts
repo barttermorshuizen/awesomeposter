@@ -1,4 +1,9 @@
-import type { ConditionalRoutingNode, RoutingEvaluationResult } from '@awesomeposter/shared'
+import type {
+  ConditionalRoutingNode,
+  RoutingEvaluationResult,
+  FlexPostConditionGuard,
+  FlexPostConditionResult
+} from '@awesomeposter/shared'
 import type { FlexSandboxPlanHistoryEntry, FlexSandboxPlanNode, FlexSandboxPlanEdge } from '@/lib/flexSandboxTypes'
 
 type ExtractedPlan = {
@@ -57,6 +62,8 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
       }
       const derived = (node as Record<string, unknown>).derivedCapability
       const metadataValue = (node as Record<string, unknown>).metadata
+      const postConditionGuardsValue = (node as Record<string, unknown>).postConditionGuards
+      const postConditionResultsValue = (node as Record<string, unknown>).postConditionResults
       return {
         id: typeof node.id === 'string' ? node.id : '',
         capabilityId: typeof node.capabilityId === 'string' ? node.capabilityId : null,
@@ -102,7 +109,13 @@ export function extractPlanPayload(payload: unknown): ExtractedPlan | null {
         routingResult:
           node.routingResult && typeof node.routingResult === 'object'
             ? (node.routingResult as RoutingEvaluationResult)
-            : null
+            : null,
+        postConditionGuards: Array.isArray(postConditionGuardsValue)
+          ? (postConditionGuardsValue as FlexPostConditionGuard[])
+          : undefined,
+        postConditionResults: Array.isArray(postConditionResultsValue)
+          ? (postConditionResultsValue as FlexPostConditionResult[])
+          : undefined
       }
     })
     .filter((node) => node.id.length > 0)

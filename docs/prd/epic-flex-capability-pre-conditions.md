@@ -36,12 +36,12 @@ Instrument every flex capability with machine-verifiable pre-conditions so the o
 
 ## Risk Mitigation
 - **Primary Risk:** Overly strict or malformed pre-conditions could block nodes and force constant replans, causing churn or masking real failures.
-- **Mitigation:** Provide catalog linting + sandbox previews before enforcement, start in monitor-only mode, and fail closed only after confidence grows; add policy toggles per capability to tune behavior.
-- **Operational Triggers:** Alert if `flex.capability_pre_condition_failed` or replan counts exceed 5% of node dispatch attempts over 15 minutes, or if evaluator errors spike above 1%—roll back enforcement and inspect offending capability records.
-- **Rollback Plan:** Switch enforcement back to monitor-only mode (or temporarily remove pre-condition metadata from affected capabilities) so nodes skip evaluation; persisted metadata remains for future re-enable without another migration.
+- **Mitigation:** Provide catalog linting + sandbox previews before enforcement, and document policy toggles per capability to tune behavior; MVP posture is go-forward enforcement rather than staged monitor-only rollout.
+- **Operational Triggers:** Alert if `flex.capability_pre_condition_failed` or replan counts exceed 5% of node dispatch attempts over 15 minutes, or if evaluator errors spike above 1%—investigate offending capability records and policy settings.
+- **Rollback Plan:** Temporarily remove or relax pre-condition metadata/policy for affected capabilities if enforcement churns; persisted metadata remains for future re-enable without another migration.
 
 ## Definition of Done
-- [ ] All three stories delivered with passing acceptance criteria and reviewed documentation updates.
+- [ ] All four stories delivered with passing acceptance criteria and reviewed documentation updates.
 - [ ] Capability registry endpoints, planner, and execution engine pass regression/unit tests with and without pre-conditions.
 - [ ] Telemetry dashboards and alerts show the new metrics in staging with runbook links.
 - [ ] Operator UI (Flex Sandbox/plan inspector) clearly communicates pre-condition state without breaking existing layouts.
@@ -56,8 +56,8 @@ Instrument every flex capability with machine-verifiable pre-conditions so the o
 - [x] Work fits brownfield constraints and keeps the technology stack unchanged.
 
 **Risk Assessment:**
-- [x] Runtime risk is mitigated via additive schemas, monitor-first rollouts, and staged enablement plans.
-- [x] Rollback is feasible (disable enforcement, keep metadata for future tuning).
+- [x] Runtime risk is mitigated via additive schemas, documented policy toggles, and clear alerting/rollback paths under go-forward enforcement.
+- [x] Rollback is feasible (disable/relax pre-condition metadata or policy per capability, keep metadata for future tuning).
 - [x] Testing plan covers shared types, registry validation, evaluator logic, planner ordering, and UI indicators.
 - [x] Team has the required ownership across shared contracts, agents server, Nitro APIs, and Vue UI.
 
@@ -77,7 +77,7 @@ Key considerations:
 - Enhancement spans `@awesomeposter/shared` capability contracts, the flex capability registry/service, planner graph construction, `FlexExecutionEngine`, and Flex Sandbox/plan inspector Vue components.
 - Integration points: `/api/v1/flex/capabilities/register`, registry persistence in Postgres via Drizzle, `FlexEvent` SSE payloads, telemetry counters, and the Condition DSL helper shared across Nitro + agents server.
 - Follow existing patterns in `packages/flex-agents-server`, `server/api/flex/*`, `packages/shared/src/flex/*`, and `src/components/FlexSandbox*`.
-- Critical compatibility requirements: additive migrations only, policy-driven runtime enforcement (monitor-first enablement with default replan behavior), UI indicators that match current Vuetify styling, and no regressions in runs that omit pre-conditions.
+- Critical compatibility requirements: additive migrations only, policy-driven runtime enforcement with default replan behavior, UI indicators that match current Vuetify styling, and no regressions in runs that omit pre-conditions.
 - Each story must include validation that legacy capabilities continue to register/execute normally, that planner ordering respects declared pre-conditions, and that operators/telemetry can distinguish between failed predicates vs evaluator errors or policy-driven replans.
 
 This epic should maintain system integrity while giving planners and operators deterministic proof that every capability met its declared pre-conditions before execution."

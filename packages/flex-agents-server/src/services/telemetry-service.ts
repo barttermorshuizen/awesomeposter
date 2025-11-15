@@ -1,5 +1,10 @@
 import { EventEmitter } from 'node:events'
-import type { FlexEvent, FlexEventType, FlexFacetProvenanceMap } from '@awesomeposter/shared'
+import type {
+  FlexEvent,
+  FlexEventType,
+  FlexFacetProvenanceMap,
+  FlexPostConditionResult
+} from '@awesomeposter/shared'
 import { getLogger } from './logger'
 
 export type FlexTelemetryEvent = FlexEvent & {
@@ -392,10 +397,10 @@ class TelemetryService {
           status
         }
         if (Object.prototype.hasOwnProperty.call(payloadRecord, 'output')) {
-          logPayload.outputPreview = summarizeValue((payloadRecord as any).output)
+          logPayload.outputPreview = summarizeValue(payloadRecord.output)
         }
         if (Object.prototype.hasOwnProperty.call(payloadRecord, 'error')) {
-          logPayload.error = summarizeValue((payloadRecord as any).error)
+          logPayload.error = summarizeValue(payloadRecord.error)
         }
         logger.info('flex_run_complete', logPayload)
         {
@@ -422,13 +427,15 @@ class TelemetryService {
   }
 
   private trackMetrics(event: FlexTelemetryEvent) {
+    this.recordPostConditionMetrics(event)
     switch (event.type) {
       case 'plan_requested': {
-        this.recordCounter(
-          'flex.planner.requests',
-          { phase: (event.payload as any)?.phase ?? 'initial' },
-          event
-        )
+        {
+          const payloadRecord = event.payload as Record<string, unknown> | undefined
+          const phase =
+            typeof payloadRecord?.phase === 'string' ? payloadRecord.phase : 'initial'
+          this.recordCounter('flex.planner.requests', { phase }, event)
+        }
         break
       }
       case 'plan_rejected': {
@@ -464,11 +471,12 @@ class TelemetryService {
         break
       }
       case 'goal_condition_failed': {
+        const payloadRecord = event.payload as { attempt?: number } | undefined
+        const attempt =
+          typeof payloadRecord?.attempt === 'number' ? String(payloadRecord.attempt) : undefined
         this.recordCounter(
           'flex.goal_condition.replans',
-          {
-            attempt: typeof (event.payload as any)?.attempt === 'number' ? String((event.payload as any).attempt) : undefined
-          },
+          { attempt },
           event
         )
         break
@@ -482,9 +490,11 @@ class TelemetryService {
         break
       }
       case 'validation_error': {
+        const payloadRecord = event.payload as { scope?: string } | undefined
+        const scope = typeof payloadRecord?.scope === 'string' ? payloadRecord.scope : undefined
         this.recordCounter(
           'flex.validation.retries',
-          { scope: (event.payload as any)?.scope },
+          { scope },
           event
         )
         break
@@ -541,12 +551,14 @@ class TelemetryService {
     let errors = 0
     for (const entry of results) {
       if (!entry || typeof entry !== 'object') continue
-      const hasError = typeof (entry as any).error === 'string' && (entry as any).error.length > 0
+      const entryRecord = entry as Record<string, unknown>
+      const errorValue = entryRecord.error
+      const hasError = typeof errorValue === 'string' && errorValue.length > 0
       if (hasError) {
         errors += 1
         continue
       }
-      const isSatisfied = Boolean((entry as any).satisfied)
+      const isSatisfied = Boolean(entryRecord.satisfied)
       if (isSatisfied) {
         satisfied += 1
       } else {
@@ -559,6 +571,123 @@ class TelemetryService {
       failed,
       errors
     }
+  }
+
+  private extractPostConditionNodes(payload: Record<string, unknown> | undefined): Array<{
+    nodeId?: string | null
+    capabilityId?: string | null
+    results: FlexPostConditionResult[]
+  }> {
+    if (!payload) return []
+    const entries: Array<{ nodeId?: string | null; capabilityId?: string | null; results: FlexPostConditionResult[] }> =
+      []
+    const payloadRecord = payload as Record<string, unknown>
+    const payloadResults = payloadRecord['postConditionResults']
+    if (Array.isArray(payloadResults)) {
+      entries.push({
+        nodeId: typeof payloadRecord.nodeId === 'string' ? payloadRecord.nodeId : undefined,
+        capabilityId: typeof payloadRecord.capabilityId === 'string' ? payloadRecord.capabilityId : undefined,
+        results: payloadResults as FlexPostConditionResult[]
+      })
+    }
+
+    const plan = payloadRecord['plan']
+    if (plan && typeof plan === 'object' && !Array.isArray(plan)) {
+      const planRecord = plan as Record<string, unknown>
+      const nodesRaw = planRecord.nodes
+      if (Array.isArray(nodesRaw)) {
+        for (const node of nodesRaw) {
+          if (!node || typeof node !== 'object') continue
+          const nodeRecord = node as Record<string, unknown>
+          const nodeResults = nodeRecord.postConditionResults
+          if (!Array.isArray(nodeResults)) continue
+          entries.push({
+            nodeId: typeof nodeRecord.id === 'string' ? nodeRecord.id : undefined,
+            capabilityId: typeof nodeRecord.capabilityId === 'string' ? nodeRecord.capabilityId : undefined,
+            results: nodeResults as FlexPostConditionResult[]
+          })
+        }
+      }
+    }
+    const aggregated = payloadRecord['post_condition_results']
+    if (Array.isArray(aggregated)) {
+      for (const entry of aggregated) {
+        if (!entry || typeof entry !== 'object') continue
+        const record = entry as Record<string, unknown>
+        const aggregatedResults = record.results
+        if (!Array.isArray(aggregatedResults) || !aggregatedResults.length) continue
+        entries.push({
+          nodeId: typeof record.nodeId === 'string' ? record.nodeId : undefined,
+          capabilityId:
+            typeof record.capabilityId === 'string'
+              ? record.capabilityId
+              : record.capabilityId === null
+                ? null
+                : undefined,
+          results: aggregatedResults as FlexPostConditionResult[]
+        })
+      }
+    }
+    return entries
+  }
+
+  private recordPostConditionMetrics(event: FlexTelemetryEvent) {
+    const nodes = this.extractPostConditionNodes(event.payload as Record<string, unknown> | undefined)
+    if (!nodes.length) return
+    const logger = getLogger()
+    const attemptLabels = this.extractAttemptLabels(event.payload as Record<string, unknown> | undefined)
+    for (const entry of nodes) {
+      for (const result of entry.results) {
+        const labels: MetricLabels = {
+          capabilityId: entry.capabilityId ?? 'unknown',
+          nodeId: entry.nodeId ?? event.nodeId ?? 'unknown',
+          facet: result.facet,
+          path: result.path
+        }
+        if (attemptLabels) {
+          Object.assign(labels, attemptLabels)
+        }
+        if (typeof result.error === 'string' && result.error.length) {
+          this.recordCounter('flex.capability_condition_error', labels, event)
+          try {
+            logger.warn('flex_capability_condition_error', {
+              ...labels,
+              runId: event.runId,
+              correlationId: event.correlationId,
+              expression: result.expression ?? null,
+              error: result.error
+            })
+          } catch {}
+          continue
+        }
+        if (!result.satisfied) {
+          this.recordCounter('flex.capability_condition_failed', labels, event)
+          try {
+            logger.warn('flex_capability_condition_failed', {
+              ...labels,
+              runId: event.runId,
+              correlationId: event.correlationId,
+              expression: result.expression ?? null,
+              observedValue: result.observedValue ?? null
+            })
+          } catch {}
+        }
+      }
+    }
+  }
+
+  private extractAttemptLabels(payload: Record<string, unknown> | undefined): MetricLabels | null {
+    if (!payload) return null
+    const attempt = typeof payload.attempt === 'number' ? payload.attempt : undefined
+    const maxRetries = typeof payload.maxRetries === 'number' ? payload.maxRetries : undefined
+    const labels: MetricLabels = {}
+    if (attempt !== undefined) {
+      labels.attempt = attempt
+    }
+    if (maxRetries !== undefined) {
+      labels.maxRetries = maxRetries
+    }
+    return Object.keys(labels).length ? labels : null
   }
 
   private recordCounter(name: string, labels?: MetricLabels, event?: FlexTelemetryEvent) {
